@@ -1,3 +1,3 @@
 # Reference
 
-::: my_library.simulation
+::: eotorch.simulation

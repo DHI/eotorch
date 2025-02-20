@@ -1,4 +1,4 @@
-# Welcome to my_library
+# Welcome to eotorch
 
 See more in [Getting started](getting_started.md)
 

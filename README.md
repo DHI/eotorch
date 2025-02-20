@@ -1,4 +1,4 @@
-# my_library: Template Python repository
+# eotorch: Template Python repository
 
 This repository serves as a template for creating a Python library
 
@@ -7,7 +7,7 @@ This repository serves as a template for creating a Python library
 1. Create a new repository in GitHub with this repo as a starting point
     ![](images/new_repo.png)
 
-2. Change all occurences of `my_library` to match the name of your new library
+2. Change all occurences of `eotorch` to match the name of your new library
 
 3. Consider if the [license](LICENSE) should be modified.
 

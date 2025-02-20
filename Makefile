@@ -1,4 +1,4 @@
-LIB = my_library
+LIB = eotorch
 
 check: lint typecheck test doctest
 
