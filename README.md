@@ -1,20 +1,32 @@
-# eotorch: Template Python repository
+## Example of how to use SegmentationRasterDataset:
 
-This repository serves as a template for creating a Python library
+```python
+from eotorch.datasets.geo import SegmentationRasterDataset
+from eotorch.plot.plot import plot_samples
 
-## How do I use this?
+class_mapping = {
+    1: "Baresoil",
+    2: "Buildings",
+    3: "Coniferous Trees",
+    4: "Deciduous Trees",
+    5: "Grass",
+    6: "Impervious",
+    7: "Water",
+}
 
-1. Create a new repository in GitHub with this repo as a starting point
-    ![](images/new_repo.png)
+bla = SegmentationRasterDataset.create(
+    images_dir="dev_data/sr_data",
+    labels_dir="dev_data/labels",
+    image_kwargs=dict(
+        all_bands=("B02", "B03", "B04", "B08", "B11", "B12"),
+        rgb_bands=("B04", "B03", "B02"),
+    ),
+    label_kwargs=dict(
+        class_mapping=class_mapping,
+    ),
+)
+plot_samples(bla, n=2, patch_size=256)
+```
 
-2. Change all occurences of `eotorch` to match the name of your new library
-
-3. Consider if the [license](LICENSE) should be modified.
-
-
-## Additional resources
-
-If you're interested in learning more about best practices for developing Python packages, check out the following resources:
-
-- [Python Package Development at DHI](https://dhi.github.io/python-package-development/)
-- [Scientific Python Library Development Guide](https://learn.scientific-python.org/development/)
+![alt text](media/sample_1.png)
+![alt text](media/sample_2.png)

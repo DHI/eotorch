@@ -8,6 +8,7 @@ from matplotlib import pyplot as plt
 from rasterio.io import BufferedDatasetWriter
 
 from eotorch.inference import inference_utils as iu
+from eotorch.plot import plot
 
 
 def predict_on_tif(
@@ -101,5 +102,5 @@ def predict_on_tif(
 
     if show_results:
         print(f"Showing results for {out_file_path}")
-        return iu.plot_predictions_pyplot(out_file_path, classes, ax=ax)
+        return plot.plot_predictions_pyplot(out_file_path, classes, ax=ax)
     return out_file_path

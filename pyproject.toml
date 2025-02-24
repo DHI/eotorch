@@ -16,6 +16,7 @@ exclude = ["notebooks", "tests", "images"]
 name = "eotorch"
 version = "0.0.1"
 dependencies = [
+    "alive-progress>=3.2.0",
     "torchgeo>=0.6.2",
 ]
 
