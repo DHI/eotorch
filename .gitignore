@@ -133,3 +133,7 @@ dmypy.json
 
 # Sphinx
 /doc/_build/
+
+
+notebooks/geodataset.ipynb
+dev_data
