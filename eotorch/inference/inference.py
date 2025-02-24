@@ -23,22 +23,36 @@ def predict_on_tif(
     ax: plt.Axes = None,
 ) -> Path:
     """
-    Predict on a tif file using a prediction function.
+    Predict segmentation classes on a TIF file using a custom prediction function.
 
     Parameters
     ----------
-        tif_file_path: path to tif file
-        prediction_func: prediction function to call to get model predictions. The function should accept
-            a numpy array of shape (batch_size, patch_size, patch_size, n_channels) and return a numpy array
-            of shape (batch_size, patch_size, patch_size, n_classes)
-        patch_size: size of the patches to use for prediction
-        classes: mapping of prediction indices to class names
-        func_supports_batching: whether the prediction function supports batching
-        batch_size: batch size to use for prediction, ignored if func_supports_batching is False
-        out_file_path: path to save the results to, ignored if save_results is False. If None, the results
-            will be saved to config.DATA_DIR / "predictions" under the same name as the input tif file
-        show_results: whether to show the results in a notebook environment
-        ax: matplotlib axes to plot the results on, ignored if show_results is False
+    tif_file_path : str | Path
+        Path to the input TIF file.
+    prediction_func : Callable
+        Accepts a NumPy array of shape (batch_size, patch_size, patch_size, n_channels)
+        and returns a NumPy array of shape (batch_size, patch_size, patch_size, n_classes).
+    patch_size : int
+        Integer size of the patch to use for prediction.
+    overlap : int
+        Overlap factor between patches (larger values increase overlap).
+    classes : dict[int, str], optional
+        Mapping from predicted class indices to class names for visualization.
+    func_supports_batching : bool
+        Whether the prediction_func supports batched processing.
+    batch_size : int
+        The batch size used for prediction (ignored if func_supports_batching is False).
+    out_file_path : str | Path, optional
+        Output path for saving the results. Writes to a "predictions" subfolder if None.
+    show_results : bool
+        If True, display the prediction output in a notebook environment.
+    ax : plt.Axes, optional
+        Matplotlib Axes object for plotting if show_results is True.
+
+    Returns
+    -------
+    Path
+        The path to the produced TIF file or plot visualization (when show_results=True).
     """
     tif_file_path = Path(tif_file_path)
     with rst.open(tif_file_path) as src_in:
