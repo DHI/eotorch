@@ -27,8 +27,11 @@ class PlottableRasterDataset(RasterDataset):
             return show(image.numpy(), ax=ax, adjust=True, **kwargs)
 
         vals = sample["mask"].numpy()
-        ax = show(vals, ax=ax, cmap=self.colormap, **kwargs)
         values = np.unique(vals.ravel()).tolist()
+        plot_values = set(values + [self.nodata_value])
+        bounds = list(plot_values) + [max(values) + 1]
+        norm = plt.matplotlib.colors.BoundaryNorm(bounds, self.colormap.N)
+        ax = show(vals, ax=ax, cmap=self.colormap, norm=norm, **kwargs)
 
         class_mapping = self.class_mapping or {v: str(v) for v in values}
 
@@ -36,12 +39,18 @@ class PlottableRasterDataset(RasterDataset):
             class_mapping[self.nodata_value] = "No Data"
 
         im = ax.get_images()[0]
-        colors = [im.cmap(im.norm(value)) for value in range(len(self.colormap.colors))]
 
-        patches = [
+        colors = {v: im.cmap(im.norm(v)) for v in plot_values}
+
+        legend_patches = [
             mpatches.Patch(color=colors[i], label=class_mapping[i]) for i in values
         ]
-        ax.legend(handles=patches, bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0.0)
+        ax.legend(
+            handles=legend_patches,
+            bbox_to_anchor=(1.05, 1),
+            loc=2,
+            borderaxespad=0.0,
+        )
 
 
 class LabelledRasterDataset(IntersectionDataset):
