@@ -54,25 +54,24 @@ class LabelledRasterDataset(IntersectionDataset):
             else:
                 raise NotImplementedError("Dataset must be plottable")
 
+        plt.tight_layout()
+
         return fig
 
 
 class SegmentationRasterDataset:
     """
     A dataset for semantic segmentation of raster data.
+    Can be used with or without labels.
 
-    Args:
-        images_dir: A directory containing the image files.
-        labels_dir: A directory containing the label files.
-        image_glob: A glob pattern to match the image files.
-        label_glob: A glob pattern to match the label files.
-        image_kwargs: Keyword arguments to pass to the image dataset.
-        label_kwargs: Keyword arguments to pass to the label dataset.
-
-    This dataset is an intersection of two raster datasets: one for the images and one for the labels.
-    Both those datasets are based on TorchGeo's RasterDataset (which itself is a subclass of TorchGeo's GeoDataset).
-    Therefore it comes with strong capabilities for spatial and temporal indexing, however it is also limited
-    in how it handles global datasets spanning across multiple crs.
+    Parameters
+    ----------
+        images_dir: str or Path, path to the directory containing images
+        labels_dir: str or Path, path to the directory containing labels
+        image_glob: str, glob pattern for images
+        label_glob: str, glob pattern for labels
+        image_kwargs: dict, keyword arguments for the image dataset, used to override defaults and set custom values
+        label_kwargs: dict, keyword arguments for the label dataset, used to override defaults and set custom values
 
     """
 

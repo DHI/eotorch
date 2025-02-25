@@ -62,5 +62,6 @@ def plot_samples(dataset: GeoDataset, n: int = 3, patch_size: int = 256):
     batch = next(iter(dataloader))
     samples = unbind_samples(batch)
     for i, sample in enumerate(samples):
-        dataset.plot(sample, title=f"Sample {i + 1}")
+        dataset.plot(sample)
+        plt.suptitle(f"Sample {i + 1}")
         plt.show()
