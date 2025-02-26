@@ -1,8 +1,9 @@
 ## Example of how to use SegmentationRasterDataset:
 
 ```python
-from eotorch.datasets.geo import get_segmentation_dataset
-from eotorch.plot.plot import plot_samples
+from eotorch.datasets import get_segmentation_dataset
+from eotorch.plot import plot_samples
+
 
 class_mapping = {
     1: "Baresoil",
