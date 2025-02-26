@@ -16,7 +16,7 @@ class_mapping = {
 ds = get_segmentation_dataset(
     images_dir="dev_data/sr_data",
     labels_dir="dev_data/labels",
-    all_bands=("B02", "B03", "B04", "B08", "B11", "B12"),
+    all_image_bands=("B02", "B03", "B04", "B08", "B11", "B12"),
     rgb_bands=("B04", "B03", "B02"),
     class_mapping=class_mapping,
 )
