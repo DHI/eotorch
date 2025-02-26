@@ -18,6 +18,7 @@ version = "0.0.1"
 dependencies = [
     "alive-progress>=3.2.0",
     "geopandas>=1.0.1",
+    "numpy==2.2.3",
     "torchgeo>=0.6.2",
 ]
 
