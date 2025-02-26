@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
@@ -9,22 +9,28 @@ from rasterio.plot import show
 from torchgeo.datasets import IntersectionDataset, RasterDataset
 
 
-class PlottableRasterDataset(RasterDataset):
-    colormap = cm.tab20
-    nodata_value = 0
-    class_mapping = None
-
+class PlottableImageDataset(RasterDataset):
     def plot(self, sample, ax=None, **kwargs):
         if ax is None:
             _, ax = plt.subplots()
 
-        if self.is_image:
-            rgb_indices = []
-            for band in self.rgb_bands:
-                rgb_indices.append(self.all_bands.index(band))
+        rgb_indices = []
+        for band in self.rgb_bands:
+            rgb_indices.append(self.all_bands.index(band))
 
-            image = sample["image"][rgb_indices]
-            return show(image.numpy(), ax=ax, adjust=True, **kwargs)
+        image = sample["image"][rgb_indices]
+        return show(image.numpy(), ax=ax, adjust=True, **kwargs)
+
+
+class PlottabeLabelDataset(RasterDataset):
+    colormap = cm.tab20
+    nodata_value = 0
+    class_mapping = None
+    is_image = False
+
+    def plot(self, sample, ax=None, **kwargs):
+        if ax is None:
+            _, ax = plt.subplots()
 
         vals = sample["mask"].numpy()
         values = np.unique(vals.ravel()).tolist()
@@ -58,7 +64,7 @@ class LabelledRasterDataset(IntersectionDataset):
         fig, axes = plt.subplots(1, 2, figsize=(8, 4))
 
         for i, dataset in enumerate(self.datasets):
-            if isinstance(dataset, PlottableRasterDataset):
+            if isinstance(dataset, (PlottableImageDataset, PlottabeLabelDataset)):
                 dataset.plot(sample, ax=axes[i], **kwargs)
             else:
                 raise NotImplementedError("Dataset must be plottable")
@@ -68,48 +74,40 @@ class LabelledRasterDataset(IntersectionDataset):
         return fig
 
 
-class SegmentationRasterDataset:
-    """
-    A dataset for semantic segmentation of raster data.
-    Can be used with or without labels.
+def get_segmentation_dataset(
+    images_dir: str | Path,
+    labels_dir: str | Path = None,
+    image_glob="*.tif",
+    label_glob="*.tif",
+    all_image_bands: tuple[str] = (),
+    rgb_bands: tuple[str] = ("red", "green", "blue"),
+    bands_to_return: tuple[str] = None,
+    image_transforms: Callable[[dict[str, Any]], dict[str, Any]] = None,
+    label_transforms: Callable[[dict[str, Any]], dict[str, Any]] = None,
+    class_mapping: dict[int, str] = None,
+    cache: bool = True,
+) -> PlottableImageDataset | LabelledRasterDataset:
+    image_ds_class = PlottableImageDataset
+    image_ds_class.filename_glob = image_glob
+    image_ds_class.all_bands = all_image_bands
+    image_ds_class.rgb_bands = rgb_bands
 
-    Parameters
-    ----------
-        images_dir: str or Path, path to the directory containing images
-        labels_dir: str or Path, path to the directory containing labels
-        image_glob: str, glob pattern for images
-        label_glob: str, glob pattern for labels
-        image_kwargs: dict, keyword arguments for the image dataset, used to override defaults and set custom values
-        label_kwargs: dict, keyword arguments for the label dataset, used to override defaults and set custom values
+    image_ds = image_ds_class(
+        paths=images_dir,
+        bands=bands_to_return,
+        transforms=image_transforms,
+        cache=cache,
+    )
 
-    """
+    if labels_dir:
+        label_ds_class = PlottabeLabelDataset
+        label_ds_class.filename_glob = label_glob
+        label_ds_class.class_mapping = class_mapping
 
-    @classmethod
-    def create(
-        cls,
-        images_dir: str | Path,
-        labels_dir: str | Path = None,
-        image_glob="*.tif",
-        label_glob="*.tif",
-        image_kwargs: dict[str, Any] = None,
-        label_kwargs: dict[str, Any] = None,
-    ):
-        image_kwargs = image_kwargs or {}
-        label_kwargs = label_kwargs or {}
+        label_ds = label_ds_class(
+            paths=labels_dir, transforms=label_transforms, cache=cache
+        )
 
-        image_ds = PlottableRasterDataset(paths=images_dir)
-        image_ds.filename_glob = image_glob
-        for k, v in image_kwargs.items():
-            setattr(image_ds, k, v)
+        return LabelledRasterDataset(image_ds, label_ds)
 
-        if labels_dir:
-            label_ds = PlottableRasterDataset(paths=labels_dir)
-            label_ds.is_image = False
-            label_ds.filename_glob = label_glob
-            for k, v in label_kwargs.items():
-                setattr(label_ds, k, v)
-
-            return LabelledRasterDataset(image_ds, label_ds)
-
-        else:
-            return image_ds
+    return image_ds

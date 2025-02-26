@@ -1,7 +1,7 @@
 ## Example of how to use SegmentationRasterDataset:
 
 ```python
-from eotorch.datasets.geo import SegmentationRasterDataset
+from eotorch.datasets.geo import get_segmentation_dataset
 from eotorch.plot.plot import plot_samples
 
 class_mapping = {
@@ -13,19 +13,14 @@ class_mapping = {
     6: "Impervious",
     7: "Water",
 }
-
-bla = SegmentationRasterDataset.create(
+ds = get_segmentation_dataset(
     images_dir="dev_data/sr_data",
     labels_dir="dev_data/labels",
-    image_kwargs=dict(
-        all_bands=("B02", "B03", "B04", "B08", "B11", "B12"),
-        rgb_bands=("B04", "B03", "B02"),
-    ),
-    label_kwargs=dict(
-        class_mapping=class_mapping,
-    ),
+    all_bands=("B02", "B03", "B04", "B08", "B11", "B12"),
+    rgb_bands=("B04", "B03", "B02"),
+    class_mapping=class_mapping,
 )
-plot_samples(bla, n=2, patch_size=256)
+plot_samples(ds, n=2, patch_size=256)
 ```
 
 ![alt text](media/sample_1.png)

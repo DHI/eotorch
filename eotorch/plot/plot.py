@@ -3,9 +3,6 @@ from pathlib import Path
 import numpy as np
 import rasterio as rst
 from matplotlib import pyplot as plt
-from torch.utils.data import DataLoader
-from torchgeo.datasets import GeoDataset, stack_samples, unbind_samples
-from torchgeo.samplers import RandomGeoSampler
 
 
 def plot_predictions_pyplot(
@@ -52,7 +49,11 @@ def plot_predictions_pyplot(
     ax.legend(handles=patches, bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0.0)
 
 
-def plot_samples(dataset: GeoDataset, n: int = 3, patch_size: int = 256):
+def plot_samples(dataset, n: int = 3, patch_size: int = 256):
+    from torch.utils.data import DataLoader
+    from torchgeo.datasets import stack_samples, unbind_samples
+    from torchgeo.samplers import RandomGeoSampler
+
     assert hasattr(dataset, "plot"), "Dataset must have a plot method"
     # sampler = GridGeoSampler(dataset, size=patch_size, stride=100)
     sampler = RandomGeoSampler(dataset, size=patch_size)
