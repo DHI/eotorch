@@ -9,8 +9,8 @@ import numpy as np
 import rasterio as rst
 from rasterio.enums import Resampling
 
-from .bandindex import BAND_INDEX
-from .utils import get_outpath, slice_image
+from eotorch.bandindex import BAND_INDEX
+from eotorch.utils import get_outpath, slice_image
 
 logger = logging.getLogger(__name__)
 
@@ -19,10 +19,10 @@ def normalize(
     img_path: Path | str,
     sensor: str,
     limits: Dict | Tuple = (1, 99),
-    out_res: float = None,
-    bands: List = None,
-    out_dir: str = None,
-    out_path: str = None,
+    out_res: float | None = None,
+    bands: List | None = None,
+    out_dir: str | None = None,
+    out_path: str | None = None,
     sample_size: int | float = 0.5,
 ) -> None:
     """
@@ -195,23 +195,26 @@ def band_scaling(
 
 
 def resample(
-    img_path: Path | str, res: float, resampling: str = "nearest", **kwargs
-) -> np.ndarray:
+    img_path: Path | str, 
+    res: float, 
+    resampling: str = 'nearest', 
+    **kwargs
+) -> Tuple[np.ndarray, dict]:
     """
     Resamples the input raster to the target spatial resolution using the specified resampling method.
 
     Parameters:
-        raster (Path | str):
+        img_path (Path | str): 
             Input raster to be resampled.
-        res (float):
+        res (float): 
             Target spatial output resolution in georeferenced units.
-        how (str, optional):
+        resampling (str, optional): 
             Resampling method to use when up- or downsampling the image. Defaults to 'nearest'.
 
     Returns:
-        xr.DataArray:
-            DataArray with the resampling input image, and metadata as attributes.
-    """
+        Tuple[np.ndarray, dict]: 
+            Tuple of resampled data array and updated metadata.
+    """    
     rs_method = {
         "nearest": Resampling(0),
         "bilinear": Resampling(1),
