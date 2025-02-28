@@ -60,7 +60,7 @@ def normalize(
         img_path, out_dir, out_path, subfolder="input", suffix="_norm"
     )
 
-    band_index = BAND_INDEX[sensor]
+    band_index = BAND_INDEX[sensor]['bandmap']
     if bands is not None:
         band_index = {band: band_index[band] for band in bands}
     band_list = [b + 1 for b in list(band_index.values())]

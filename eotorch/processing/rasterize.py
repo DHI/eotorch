@@ -12,7 +12,7 @@ import rasterio as rst
 from pyogrio import read_dataframe
 from rasterio.features import rasterize
 
-from .utils import get_outpath
+from ..utils import get_outpath
 
 if TYPE_CHECKING:
     import rasterio.Affine
@@ -53,14 +53,14 @@ class VectorSource(ABC):
             "crs": crs,
         }
 
-    def rasterize_polygons(self, **kwargs):
+    def rasterize_polygons(self, out_path: Path | str, **kwargs):
         geoms = self._get_geoms()
-        self.labels = np.zeros(self.shape, dtype="uint8")
+        labels = np.zeros(self.shape, dtype="uint8")
         for i, geom in enumerate(geoms, start=1):
             try:
                 rasterize(
                     geom,
-                    out=self.labels,
+                    out=labels,
                     transform=self.transform,
                     default_value=i,
                     **kwargs,
@@ -68,15 +68,9 @@ class VectorSource(ABC):
             except ValueError:
                 pass
         self.profile.update(dtype="uint8")
-        return self
 
-    def export(self, out_path: Path | str) -> None:
-        assert self.labels is not None, (
-            "No label geometries have been created.\
-            Rasterize the features before exporting them"
-        )
         with rst.open(Path(out_path), "w", **self.profile) as dst:
-            dst.write(self.labels, 1)
+            dst.write(labels, 1)
 
 
 class FileSource(VectorSource):
@@ -155,7 +149,9 @@ def infer_meta(img_path: Path | str) -> tuple[rasterio.Affine, tuple, rasterio.C
 
 
 def read_shp(
-    fn: Path | str, root_dir: Path | str, crs: rasterio.CRS | str
+    fn: Path | str, 
+    root_dir: Path | str, 
+    crs: rasterio.CRS | str
 ) -> list[Polygon | MultiPolygon]:
     """
     Read shapefiles matching either the filename `fn` or looks for the shapefile/geojson
