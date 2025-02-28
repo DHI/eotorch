@@ -13,6 +13,11 @@ from eotorch.utils import get_init_args
 
 
 class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
+    """
+    Task based on TorchGeo's SemanticSegmentationTask, but with the ability to use custom models.
+    We still have access to all the architectures and backbones from TorchGeo.
+    """
+
     def __init__(
         self,
         num_classes: int,
