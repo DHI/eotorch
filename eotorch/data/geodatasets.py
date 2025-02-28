@@ -1,12 +1,14 @@
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable, Sequence
 
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib import cm
+from rasterio.crs import CRS
 from rasterio.plot import show
 from torchgeo.datasets import IntersectionDataset, RasterDataset
+from torchgeo.datasets.utils import BoundingBox
 
 
 class PlottableImageDataset(RasterDataset):
@@ -28,11 +30,38 @@ class PlottabeLabelDataset(RasterDataset):
     class_mapping = None
     is_image = False
 
+    def __init__(
+        self,
+        paths: Path | Iterable[Path] = "data",
+        crs: CRS | None = None,
+        res: float | None = None,
+        bands: Sequence[str] | None = None,
+        transforms: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        cache: bool = True,
+        reduce_zero_label: bool = True,
+    ) -> None:
+        """
+        reduce_zero_label (bool): Subtract 1 from all labels. Useful when labels start from 1 instead of the
+        expected 0. Defaults to True."""
+
+        super().__init__(paths, crs, res, bands, transforms, cache)
+        self.reduce_zero_label = reduce_zero_label
+
+    def __getitem__(self, query: BoundingBox) -> dict[str, Any]:
+        sample = super().__getitem__(query)
+
+        if self.reduce_zero_label:
+            sample["mask"] -= 1
+
+        return sample
+
     def plot(self, sample, ax=None, **kwargs):
         if ax is None:
             _, ax = plt.subplots()
 
         vals = sample["mask"].numpy()
+        if self.reduce_zero_label:
+            vals += 1
         values = np.unique(vals.ravel()).tolist()
         plot_values = set(values + [self.nodata_value])
         bounds = list(plot_values) + [max(values) + 1]
@@ -86,6 +115,7 @@ def get_segmentation_dataset(
     label_transforms: Callable[[dict[str, Any]], dict[str, Any]] = None,
     class_mapping: dict[int, str] = None,
     cache: bool = True,
+    reduce_zero_label: bool = True,
 ) -> PlottableImageDataset | LabelledRasterDataset:
     image_ds_class = PlottableImageDataset
     image_ds_class.filename_glob = image_glob
@@ -105,7 +135,10 @@ def get_segmentation_dataset(
         label_ds_class.class_mapping = class_mapping
 
         label_ds = label_ds_class(
-            paths=labels_dir, transforms=label_transforms, cache=cache
+            paths=labels_dir,
+            transforms=label_transforms,
+            cache=cache,
+            reduce_zero_label=reduce_zero_label,
         )
 
         return LabelledRasterDataset(image_ds, label_ds)
