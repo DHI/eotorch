@@ -1,6 +1,6 @@
 BAND_INDEX = {
     "sentinel-2": {
-        "bandmap" : {
+        "bandmap": {
             "coastal": 0,
             "blue": 1,
             "green": 2,
@@ -15,22 +15,20 @@ BAND_INDEX = {
             "swir3": 11,
             "swir4": 12,
         },
-        "res" : 10,
-        
+        "res": 10,
     },
     "sentinel-2-bathy": {
-        "bandmap" : {
+        "bandmap": {
             "coastal": 0,
             "blue": 1,
             "green": 2,
             "red": 3,
             "nir": 4,
         },
-        "res" : 10,
-
+        "res": 10,
     },
     "landsat5": {
-        "bandmap" : {
+        "bandmap": {
             "blue": 0,
             "green": 1,
             "red": 2,
@@ -38,12 +36,11 @@ BAND_INDEX = {
             "swir1": 4,
             "swir2": 5,
         },
-        "res" : 30,
-        
+        "res": 30,
     },
     # VHR sensors
     "pneo": {
-        "bandmap" : {
+        "bandmap": {
             "red": 0,
             "green": 1,
             "blue": 2,
@@ -51,19 +48,19 @@ BAND_INDEX = {
             "rededge": 4,
             "deepblue": 5,
         },
-        "res" : 0.3, 
+        "res": 0.3,
     },
     "phr": {
-        "bandmap" : {
+        "bandmap": {
             "red": 0,
             "green": 1,
             "blue": 2,
             "nir": 3,
         },
-        "res" : 0.5,
+        "res": 0.5,
     },
     "wv": {
-        "bandmap" : {
+        "bandmap": {
             "coastal": 0,
             "blue": 1,
             "green": 2,
@@ -73,42 +70,41 @@ BAND_INDEX = {
             "nir1": 6,
             "nir2": 7,
         },
-        "res" : 0.5,
-
+        "res": 0.5,
     },
     # 4-band / Aerial
     "rgb": {
-        "bandmap" : {
+        "bandmap": {
             "red": 0,
             "green": 1,
             "blue": 2,
         },
-        "res" : 0.125,
+        "res": 0.125,
     },
     "bgr": {
-        "bandmap" : {
+        "bandmap": {
             "blue": 0,
             "green": 1,
             "red": 2,
         },
-        "res" : 0.125,
+        "res": 0.125,
     },
     "rgbi": {
-        "bandmap" : {
+        "bandmap": {
             "red": 0,
             "green": 1,
             "blue": 2,
             "nir": 3,
         },
-        "res" : 0.125,
+        "res": 0.125,
     },
     "bgri": {
-        "bandmap" : {
+        "bandmap": {
             "blue": 0,
             "green": 1,
             "red": 2,
             "nir": 3,
         },
-        "res" : 0.125,
+        "res": 0.125,
     },
 }

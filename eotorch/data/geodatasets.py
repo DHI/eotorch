@@ -10,6 +10,8 @@ from rasterio.plot import show
 from torchgeo.datasets import IntersectionDataset, RasterDataset
 from torchgeo.datasets.utils import BoundingBox
 
+from eotorch.bandindex import BAND_INDEX
+
 
 class PlottableImageDataset(RasterDataset):
     def plot(self, sample, ax=None, **kwargs):
@@ -110,6 +112,9 @@ def get_segmentation_dataset(
     label_glob="*.tif",
     all_image_bands: tuple[str] = (),
     rgb_bands: tuple[str] = ("red", "green", "blue"),
+    sensor_name: str = None,
+    crs: CRS | None = None,
+    res: float | None = None,
     bands_to_return: tuple[str] = None,
     image_transforms: Callable[[dict[str, Any]], dict[str, Any]] = None,
     label_transforms: Callable[[dict[str, Any]], dict[str, Any]] = None,
@@ -117,6 +122,18 @@ def get_segmentation_dataset(
     cache: bool = True,
     reduce_zero_label: bool = True,
 ) -> PlottableImageDataset | LabelledRasterDataset:
+    if sensor_name:
+        if sensor_name not in BAND_INDEX:
+            raise ValueError(f"Sensor {sensor_name} not found in BAND_INDEX")
+        if all_image_bands:
+            print(
+                "Warning: param all_image_bands will be ignored as sensor_name is provided"
+            )
+        all_image_bands = tuple(BAND_INDEX[sensor_name]["bandmap"].keys())
+        if res:
+            print("Warning: param res will be ignored as sensor_name is provided")
+        res = BAND_INDEX[sensor_name]["res"]
+
     image_ds_class = PlottableImageDataset
     image_ds_class.filename_glob = image_glob
     image_ds_class.all_bands = all_image_bands
@@ -127,6 +144,8 @@ def get_segmentation_dataset(
         bands=bands_to_return,
         transforms=image_transforms,
         cache=cache,
+        res=res,
+        crs=crs,
     )
 
     if labels_dir:
@@ -139,6 +158,8 @@ def get_segmentation_dataset(
             transforms=label_transforms,
             cache=cache,
             reduce_zero_label=reduce_zero_label,
+            res=res,
+            crs=crs,
         )
 
         return LabelledRasterDataset(image_ds, label_ds)
