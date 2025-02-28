@@ -135,5 +135,6 @@ dmypy.json
 /doc/_build/
 
 
-notebooks/geodataset.ipynb
 dev_data
+**/hparams.yaml
+**/events.out.tfevents.*

@@ -1,8 +1,17 @@
+import inspect
 import os
 from pathlib import Path
 from typing import Sequence
 
 from rasterio.windows import Window
+
+
+def get_init_args(cls):
+    """Returns the argument names of a class's __init__ method, excluding 'self'."""
+    signature = inspect.signature(cls.__init__)  # Get the signature of __init__
+    return [
+        param.name for param in signature.parameters.values() if param.name != "self"
+    ]
 
 
 def slice_image(
