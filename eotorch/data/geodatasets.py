@@ -1,16 +1,20 @@
+from __future__ import annotations
 from pathlib import Path
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence, TYPE_CHECKING
 
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib import cm
-from rasterio.crs import CRS
+
 from rasterio.plot import show
 from torchgeo.datasets import IntersectionDataset, RasterDataset
 from torchgeo.datasets.utils import BoundingBox
 
 from eotorch.bandindex import BAND_INDEX
+
+if TYPE_CHECKING:
+    from rasterio.crs import CRS
 
 
 class PlottableImageDataset(RasterDataset):

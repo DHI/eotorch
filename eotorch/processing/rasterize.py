@@ -13,8 +13,8 @@ from pyogrio import read_dataframe
 from rasterio.features import rasterize
 
 if TYPE_CHECKING:
-    import rasterio.Affine
     import rasterio.CRS
+    from affine import Affine
     from shapely.geometry import MultiPolygon, Polygon
 
 logger = logging.getLogger(__name__)
@@ -27,7 +27,7 @@ class VectorSource(ABC):
 
     def __init__(
         self,
-        transform: rasterio.Affine | None = None,
+        transform: Affine | None = None,
         shape: tuple[int, int] | None = None,
         crs: rasterio.CRS | str | None = None,
     ):
@@ -85,7 +85,7 @@ class FileSource(VectorSource):
         classes: list,
         root_dir: Path | str,
         img_path: Path | str | None = None,
-        transform: rasterio.Affine | None = None,
+        transform: Affine | None = None,
         shape: tuple[int, int] | None = None,
         crs: rasterio.CRS | str | None = None,
     ):

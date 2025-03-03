@@ -20,6 +20,7 @@ dependencies = [
     "geopandas>=1.0.1",
     "numpy==2.2.3",
     "torchgeo>=0.6.2",
+    "rasterio>=1.4.3",
 ]
 
 authors = [
