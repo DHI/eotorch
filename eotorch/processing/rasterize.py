@@ -12,8 +12,6 @@ import rasterio as rst
 from pyogrio import read_dataframe
 from rasterio.features import rasterize
 
-from ..utils import get_outpath
-
 if TYPE_CHECKING:
     import rasterio.Affine
     import rasterio.CRS

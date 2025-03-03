@@ -81,16 +81,3 @@ def slice_image(
                 slices.append((slice(*height), slice(*width)))
 
     return slices
-
-
-def get_outpath(img_path, out_dir, out_path, subfolder=None, suffix=""):
-    scene = Path(img_path).stem
-    if subfolder is None:
-        out_dir = os.getcwd()
-    else:
-        out_dir = os.path.join(os.getcwd(), subfolder) if out_dir is None else out_dir
-        Path(out_dir).mkdir(exist_ok=True)
-    out_path = (
-        os.path.join(out_dir, f"{scene}{suffix}.tif") if out_path is None else out_path
-    )
-    return out_path
