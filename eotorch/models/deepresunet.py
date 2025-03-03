@@ -94,14 +94,14 @@ class Decoder(nn.Module):
         super().__init__()
         self.upsample = nn.UpsamplingNearest2d(scale_factor=2)
         self.conv = Conv2d(
-            in_channels, out_channels, kernel_size=(1, 1), padding="valid"
+            2 * in_channels, out_channels, kernel_size=(1, 1), padding="valid"
         )
         self.resblock1 = ResBlock(in_channels, out_channels, kernel_sizes=[3, 3, 1])
         self.resblock2 = ResBlock(in_channels, out_channels, kernel_sizes=[3, 3, 1])
 
     def forward(self, inputs: torch.Tensor, skip: torch.Tensor):
         x = self.upsample(inputs)
-        x = torch.cat((x, skip), dim=-1)
+        x = torch.cat((x, skip), dim=-3)
         x = self.conv(x)
         x = self.resblock1(x)
         x = self.resblock2(x)
