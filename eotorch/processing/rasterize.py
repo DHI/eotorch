@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
-from abc import ABC
+from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -52,6 +52,10 @@ class VectorSource(ABC):
             "count": 1,
             "crs": crs,
         }
+
+    @abstractmethod
+    def _get_geoms(self) -> list:
+        pass
 
     def rasterize_polygons(self, out_path: Path | str, **kwargs):
         geoms = self._get_geoms()
@@ -149,9 +153,7 @@ def infer_meta(img_path: Path | str) -> tuple[rasterio.Affine, tuple, rasterio.C
 
 
 def read_shp(
-    fn: Path | str, 
-    root_dir: Path | str, 
-    crs: rasterio.CRS | str
+    fn: Path | str, root_dir: Path | str, crs: rasterio.CRS | str
 ) -> list[Polygon | MultiPolygon]:
     """
     Read shapefiles matching either the filename `fn` or looks for the shapefile/geojson
