@@ -33,7 +33,7 @@ class PlottableImageDataset(RasterDataset):
 class PlottabeLabelDataset(RasterDataset):
     colormap = cm.tab20
     nodata_value = 0
-    class_mapping = None
+    class_mapping: dict = None
     is_image = False
 
     def __init__(
@@ -74,7 +74,7 @@ class PlottabeLabelDataset(RasterDataset):
         norm = plt.matplotlib.colors.BoundaryNorm(bounds, self.colormap.N)
         ax = show(vals, ax=ax, cmap=self.colormap, norm=norm, **kwargs)
 
-        class_mapping = self.class_mapping or {v: str(v) for v in values}
+        class_mapping = self.class_mapping.copy() or {v: str(v) for v in values}
 
         if (self.nodata_value in values) and (self.nodata_value not in class_mapping):
             class_mapping[self.nodata_value] = "No Data"
