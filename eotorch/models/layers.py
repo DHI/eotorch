@@ -23,7 +23,7 @@ class Conv2d(nn.Module):
     ):
         super().__init__()
         self.bn = bn
-        self.relu = relu
+        self.relu = nn.ReLU(inplace=True) if relu else None
 
         self.conv = nn.Conv2d(
             in_channels,
@@ -33,15 +33,14 @@ class Conv2d(nn.Module):
             padding=padding,
             **kwargs,
         )
-        self.batchnorm = norm_layer
-        self.ReLU = nn.ReLU(inplace=True)
+        self.batchnorm = norm_layer(num_features=out_channels)
 
     def forward(self, inputs: torch.Tensor):
         x = self.conv(inputs)
         if self.bn:
             x = self.batchnorm(x)
-        if self.ReLU:
-            x = self.ReLU(x)
+        if self.relu:
+            x = self.relu(x)
         return x
 
 
@@ -67,7 +66,7 @@ class ResBlock(nn.Module):
             in_channels, out_channels, kernel_size=kernel_sizes[2], **kwargs
         )
         self.ReLU = nn.ReLU(inplace=True)
-        self.batchnorm = norm_layer
+        self.batchnorm = norm_layer(num_features=out_channels)
 
     def forward(self, inputs: torch.Tensor):
         x = self.conv1(inputs)
