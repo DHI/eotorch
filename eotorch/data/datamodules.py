@@ -74,7 +74,7 @@ class SegmentationDataModule(GeoDataModule):
             self.test_dataset,
         ) = random_grid_cell_assignment(
             dataset=self.dataset,
-            fractions=[0.6, 0.2, 0.2],
+            fractions=[0.8, 0.1, 0.1],
             grid_size=6,
             generator=generator,
         )
@@ -91,3 +91,9 @@ class SegmentationDataModule(GeoDataModule):
             self.test_sampler = GridGeoSampler(
                 self.test_dataset, self.patch_size, self.patch_size
             )
+
+    def val_dataloader(self):  # -> DataLoader[dict[str, Tensor]]:
+        loader = self._dataloader_factory("val")
+        # loader.num_workers = 0
+        loader.num_workers = 2
+        return loader

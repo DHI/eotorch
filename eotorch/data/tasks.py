@@ -77,3 +77,30 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
 
         else:
             super().configure_models()
+
+    def training_step(
+        self, batch: Any, batch_idx: int, dataloader_idx: int = 0
+    ) -> Tensor:
+        """Compute the training loss and additional metrics.
+
+        Args:
+            batch: The output of your DataLoader.
+            batch_idx: Integer displaying index of this batch.
+            dataloader_idx: Index of the current dataloader.
+
+        Returns:
+            The loss tensor.
+        """
+
+        x = batch["image"]
+        if (x == self.hparams["ignore_index"]).all():
+            return None
+        y = batch["mask"]
+        batch_size = x.shape[0]
+        y_hat = self(x)
+        loss: Tensor = self.criterion(y_hat, y)
+
+        self.log("train_loss", loss, batch_size=batch_size, prog_bar=True)
+        self.train_metrics(y_hat, y)
+        self.log_dict(self.train_metrics, batch_size=batch_size)
+        return loss

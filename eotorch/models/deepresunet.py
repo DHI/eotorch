@@ -63,7 +63,7 @@ class DeepResUNet(nn.Module):
         x = self.decoder4(x, skip1)
 
         x = self.output(x)
-        x = self.activation(x)
+        # x = self.activation(x)
         return x
 
 
