@@ -1,5 +1,5 @@
-from .deepresunet import DeepResUNet
+from .deepresunet import ClfDeepResUNet
 
 MODEL_MAPPING = {
-    "deepresunet": DeepResUNet,
+    "deepresunet": ClfDeepResUNet,
 }
