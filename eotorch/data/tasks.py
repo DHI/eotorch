@@ -1,7 +1,9 @@
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
+import numpy as np
 import torch
+from matplotlib import pyplot as plt
 from torch import Tensor, nn
 from torchgeo.trainers import (
     SemanticSegmentationTask as TorchGeoSemanticSegmentationTask,
@@ -104,3 +106,81 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
         self.train_metrics(y_hat, y)
         self.log_dict(self.train_metrics, batch_size=batch_size)
         return loss
+
+    @staticmethod
+    def get_prediction_func(checkpoint_path: str | Path) -> Callable:
+        lightning_module = SemanticSegmentationTask.load_from_checkpoint(
+            checkpoint_path
+        )
+
+        def predict(image: np.ndarray) -> np.ndarray:
+            image = torch.from_numpy(image)
+            if image.ndim == 3:
+                image = image.unsqueeze(0)
+
+            image = image.permute(0, -1, 1, 2)
+            with torch.no_grad():
+                return lightning_module(image).cpu().numpy()
+
+        return predict
+
+    @staticmethod
+    def predict_on_tif_file(
+        tif_file_path: str | Path,
+        weights_path: str | Path,
+        patch_size: int = 64,
+        overlap: int = 2,
+        class_mapping: dict[int, str] = None,
+        func_supports_batching: bool = True,
+        batch_size: int = 8,
+        out_file_path: str | Path = None,
+        show_results: bool = False,
+        ax: plt.Axes = None,
+        argmax_dim: int = -3,
+    ):
+        """
+        Use a trained model to predict segmentation classes on a TIF file
+
+        Parameters
+        ----------
+        tif_file_path : str | Path
+            Path to the input TIF file.
+        weights_path : str | Path
+            Path to the model weights used for prediction.
+        patch_size : int
+            Integer size of the patch to use for prediction.
+        overlap : int
+            Overlap factor between patches (larger values increase overlap).
+        class_mapping : dict[int, str], optional
+            Mapping from predicted class indices to class names for visualization. Used for plotting only.
+        func_supports_batching : bool
+            Whether the prediction_func supports batched processing.
+        batch_size : int
+            The batch size used for prediction (ignored if func_supports_batching is False).
+        out_file_path : str | Path, optional
+            Output path for saving the results. Writes to a "predictions" subfolder if None.
+        show_results : bool
+            If True, display the prediction output in a notebook environment.
+        ax : plt.Axes, optional
+            Matplotlib Axes object for plotting if show_results is True.
+
+        Returns
+        -------
+        Path
+            The path to the produced TIF file or plot visualization (when show_results=True).
+        """
+        from eotorch.inference import predict_on_tif
+
+        return predict_on_tif(
+            tif_file_path=tif_file_path,
+            prediction_func=SemanticSegmentationTask.get_prediction_func(weights_path),
+            patch_size=patch_size,
+            overlap=overlap,
+            class_mapping=class_mapping,
+            func_supports_batching=func_supports_batching,
+            batch_size=batch_size,
+            out_file_path=out_file_path,
+            show_results=show_results,
+            ax=ax,
+            argmax_dim=argmax_dim,
+        )

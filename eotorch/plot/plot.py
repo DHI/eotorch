@@ -1,52 +1,48 @@
 from pathlib import Path
 
+import matplotlib.patches as mpatches
 import numpy as np
 import rasterio as rst
+from matplotlib import cm
 from matplotlib import pyplot as plt
+from rasterio.plot import show
 
 
-def plot_predictions_pyplot(
-    predictions_path: str | Path, classes: dict[int, str], ax: plt.Axes = None
+def plot_numpy_array(
+    array: np.ndarray,
+    ax: plt.Axes = None,
+    class_mapping: dict[int, str] = None,
+    nodata_value: int = 0,
+    colormap=cm.tab20,
+    **kwargs,
 ):
-    """
-    Plot predictions using matplotlib.pyplot.
-
-    Parameters
-    ----------
-        predictions_path: str or Path, path to the predictions file
-        classes: dict, mapping of class indices to class names
-        ax: matplotlib.axes.Axes, axes to plot on
-    """
-
-    import matplotlib.patches as mpatches
-    import matplotlib.pyplot as plt
-
     if ax is None:
-        _, ax = plt.subplots(nrows=1, ncols=1)
+        _, ax = plt.subplots()
 
-    with rst.open(predictions_path) as src:
-        predictions = src.read(1)
-        no_data_val = src.nodata
-    im = ax.imshow(predictions, interpolation="none")
-    values = np.unique(predictions.ravel()).tolist()
+    values = np.unique(array.ravel()).tolist()
+    plot_values = set(values + [nodata_value])
+    bounds = list(plot_values) + [max(values) + 1]
+    norm = plt.matplotlib.colors.BoundaryNorm(bounds, colormap.N)
+    ax = show(array, ax=ax, cmap=colormap, norm=norm, **kwargs)
 
-    if no_data_val not in values:
-        plot_values = values + [no_data_val]
-    else:
-        plot_values = values
+    class_mapping = class_mapping.copy() or {v: str(v) for v in values}
 
-    if not classes:
-        classes = {v: str(v) for v in values}
-    if (no_data_val in values) and (no_data_val not in classes):
-        classes[no_data_val] = "No Data"
+    if (nodata_value in values) and (nodata_value not in class_mapping):
+        class_mapping[nodata_value] = "No Data"
 
-    colors = [im.cmap(im.norm(value)) for value in plot_values]
-    patches = [
-        mpatches.Patch(color=colors[i], label=classes[i])
-        for i in values
-        # mpatches.Patch(color=colors[i - 1], label=classes[i - 1]) for i in values
+    im = ax.get_images()[0]
+
+    colors = {v: im.cmap(im.norm(v)) for v in plot_values}
+
+    legend_patches = [
+        mpatches.Patch(color=colors[i], label=class_mapping[i]) for i in values
     ]
-    ax.legend(handles=patches, bbox_to_anchor=(1.05, 1), loc=2, borderaxespad=0.0)
+    ax.legend(
+        handles=legend_patches,
+        bbox_to_anchor=(1.05, 1),
+        loc=2,
+        borderaxespad=0.0,
+    )
 
 
 def plot_samples(dataset, n: int = 3, patch_size: int = 256):

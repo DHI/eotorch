@@ -4,15 +4,14 @@ import functools
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Sequence
 
-import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
-import numpy as np
 from matplotlib import cm
 from rasterio.plot import show
 from torchgeo.datasets import IntersectionDataset, RasterDataset
 from torchgeo.datasets.utils import BoundingBox
 
 from eotorch.bandindex import BAND_INDEX
+from eotorch.plot.plot import plot_numpy_array
 
 if TYPE_CHECKING:
     from rasterio.crs import CRS
@@ -84,35 +83,17 @@ class PlottabeLabelDataset(CustomCacheRasterDataset):
         return sample
 
     def plot(self, sample, ax=None, **kwargs):
-        if ax is None:
-            _, ax = plt.subplots()
-
         vals = sample["mask"].numpy()
         if self.reduce_zero_label:
             vals += 1
-        values = np.unique(vals.ravel()).tolist()
-        plot_values = set(values + [self.nodata_value])
-        bounds = list(plot_values) + [max(values) + 1]
-        norm = plt.matplotlib.colors.BoundaryNorm(bounds, self.colormap.N)
-        ax = show(vals, ax=ax, cmap=self.colormap, norm=norm, **kwargs)
 
-        class_mapping = self.class_mapping.copy() or {v: str(v) for v in values}
-
-        if (self.nodata_value in values) and (self.nodata_value not in class_mapping):
-            class_mapping[self.nodata_value] = "No Data"
-
-        im = ax.get_images()[0]
-
-        colors = {v: im.cmap(im.norm(v)) for v in plot_values}
-
-        legend_patches = [
-            mpatches.Patch(color=colors[i], label=class_mapping[i]) for i in values
-        ]
-        ax.legend(
-            handles=legend_patches,
-            bbox_to_anchor=(1.05, 1),
-            loc=2,
-            borderaxespad=0.0,
+        plot_numpy_array(
+            array=vals,
+            ax=ax,
+            class_mapping=self.class_mapping,
+            colormap=self.colormap,
+            nodata_value=self.nodata_value,
+            **kwargs,
         )
 
 
