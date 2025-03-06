@@ -34,7 +34,7 @@ def get_dataset_args(ds):
     args["image_glob"] = image_ds.filename_glob
     args["bands_to_return"] = image_ds.bands
     args["image_transforms"] = image_ds.transforms
-    args["cache"] = image_ds.cache
+    args["cache_size"] = image_ds.cache_size
 
     return args
 
@@ -103,6 +103,7 @@ class SegmentationDataModule(GeoDataModule):
     #     # loader.num_workers = 0
     #     loader.num_workers = 2
     #     return loader
+
     def _dataloader_factory(self, split: str) -> DataLoader[dict[str, Tensor]]:
         """
         Same as GeoDataModule._dataloader_factory but allows for customization of dataloader behavior.
@@ -141,4 +142,5 @@ class SegmentationDataModule(GeoDataModule):
             collate_fn=self.collate_fn,
             persistent_workers=self.persistent_workers,
             pin_memory=self.pin_memory,
+            # prefetch_factor=1,
         )

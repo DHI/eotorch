@@ -1,12 +1,13 @@
 from __future__ import annotations
+
+import functools
 from pathlib import Path
-from typing import Any, Callable, Iterable, Sequence, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Sequence
 
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib import cm
-
 from rasterio.plot import show
 from torchgeo.datasets import IntersectionDataset, RasterDataset
 from torchgeo.datasets.utils import BoundingBox
@@ -17,7 +18,28 @@ if TYPE_CHECKING:
     from rasterio.crs import CRS
 
 
-class PlottableImageDataset(RasterDataset):
+class CustomCacheRasterDataset(RasterDataset):
+    """
+    Implementing RasterDatset with customisable cache size, as it is hardcoded to 128 in torchgeo's RasterDataset.
+    """
+
+    def __init__(
+        self,
+        paths: Path | Iterable[Path] = "data",
+        crs: CRS | None = None,
+        res: float | None = None,
+        bands: Sequence[str] | None = None,
+        transforms: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        cache_size: int = 20,
+    ) -> None:
+        super().__init__(paths, crs, res, bands, transforms, cache=cache_size > 0)
+        self.cache_size = cache_size
+        self._cached_load_warp_file = functools.lru_cache(maxsize=cache_size)(
+            self._load_warp_file
+        )
+
+
+class PlottableImageDataset(CustomCacheRasterDataset):
     def plot(self, sample, ax=None, **kwargs):
         if ax is None:
             _, ax = plt.subplots()
@@ -30,7 +52,7 @@ class PlottableImageDataset(RasterDataset):
         return show(image.numpy(), ax=ax, adjust=True, **kwargs)
 
 
-class PlottabeLabelDataset(RasterDataset):
+class PlottabeLabelDataset(CustomCacheRasterDataset):
     colormap = cm.tab20
     nodata_value = 0
     class_mapping: dict = None
@@ -43,14 +65,14 @@ class PlottabeLabelDataset(RasterDataset):
         res: float | None = None,
         bands: Sequence[str] | None = None,
         transforms: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
-        cache: bool = True,
+        cache_size: int = 20,
         reduce_zero_label: bool = True,
     ) -> None:
         """
         reduce_zero_label (bool): Subtract 1 from all labels. Useful when labels start from 1 instead of the
         expected 0. Defaults to True."""
 
-        super().__init__(paths, crs, res, bands, transforms, cache)
+        super().__init__(paths, crs, res, bands, transforms, cache_size)
         self.reduce_zero_label = reduce_zero_label
 
     def __getitem__(self, query: BoundingBox) -> dict[str, Any]:
@@ -123,7 +145,7 @@ def get_segmentation_dataset(
     image_transforms: Callable[[dict[str, Any]], dict[str, Any]] = None,
     label_transforms: Callable[[dict[str, Any]], dict[str, Any]] = None,
     class_mapping: dict[int, str] = None,
-    cache: bool = True,
+    cache_size: int = 20,
     reduce_zero_label: bool = True,
 ) -> PlottableImageDataset | LabelledRasterDataset:
     if sensor_name:
@@ -147,7 +169,7 @@ def get_segmentation_dataset(
         paths=images_dir,
         bands=bands_to_return,
         transforms=image_transforms,
-        cache=cache,
+        cache_size=cache_size,
         res=res,
         crs=crs,
     )
@@ -160,7 +182,7 @@ def get_segmentation_dataset(
         label_ds = label_ds_class(
             paths=labels_dir,
             transforms=label_transforms,
-            cache=cache,
+            cache_size=cache_size,
             reduce_zero_label=reduce_zero_label,
             res=res,
             crs=crs,
