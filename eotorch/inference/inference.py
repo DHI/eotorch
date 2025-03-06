@@ -106,7 +106,7 @@ def predict_on_tif(
         with rst.open(out_file_path) as src:
             predictions = src.read(1)
             nodata_value = src.nodata
-            plot.plot_numpy_array(
+            return plot.plot_numpy_array(
                 array=predictions,
                 class_mapping=class_mapping,
                 ax=ax,
