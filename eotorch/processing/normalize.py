@@ -10,21 +10,20 @@ import rasterio as rst
 from rasterio.enums import Resampling
 
 from eotorch.bandindex import BAND_INDEX
-from eotorch.utils import get_outpath, slice_image
+from eotorch.utils import slice_image
 
 logger = logging.getLogger(__name__)
 
 
 def normalize(
-    img_path: Path | str,
-    sensor: str,
+    img_path: str | Path,
+    sensor: str = None,
     limits: Dict | Tuple = (1, 99),
     out_res: float | None = None,
     bands: List | None = None,
-    out_dir: str | None = None,
-    out_path: str | None = None,
+    out_path: str | Path = None,
     sample_size: int | float = 0.5,
-) -> None:
+) -> Path:
     """
     Normalizes images within given bounds (percentile or fixed) and converts it to float values in range (0, 1).
 
@@ -32,7 +31,7 @@ def normalize(
     and resampled and then written.
 
     Parameters:
-        img_path (Path |str):
+        img_path (str | Path):
             Path of the input image.
         sensor (str):
             Name of the sensor to find the correct band order.
@@ -45,34 +44,50 @@ def normalize(
         bands (List, optional):
             List of named bands to include from the output image. The bands are stacked in the order they are listed.
             If None, includes all. Defaults to None.
-        out_dir (str, optional):
-            Output directory. If None is specified, the output file is placed in the current working directory. Defaults to None.
-        out_path (str, optional):
+        out_path (str | Path, optional):
             Full output path. If None is specified, the output file is placed in the `out_dir`
             and named '[input_image_name]_norm.tif'. Defaults to None.
         sample_size (int | float, optional):
             Sample size for finding the scaling limits of the input image. Values <= 1 will use a fraction of the image for
             limit estimation, while values above 1 will read `sample_size` number of blocks to estimate the limits from.
             Defaults to 0.5.
+
+    Returns:
+
+        out_path: The path to the output normalized image.
     """
     img_path = Path(img_path)
-    out_path = get_outpath(
-        img_path, out_dir, out_path, subfolder="input", suffix="_norm"
+    out_path = (
+        Path(out_path) if out_path else img_path.parent / f"{img_path.stem}_norm.tif"
     )
 
-    band_index = BAND_INDEX[sensor]['bandmap']
-    if bands is not None:
-        band_index = {band: band_index[band] for band in bands}
-    band_list = [b + 1 for b in list(band_index.values())]
+    if sensor:
+        band_index = BAND_INDEX[sensor]["bandmap"]
+        if bands is not None:
+            band_index = {band: band_index[band] for band in bands}
+        band_list = [b + 1 for b in list(band_index.values())]
+    else:
+        with rst.open(img_path) as src:
+            band_list = list(range(1, src.count + 1))
 
     if isinstance(limits, tuple):
-        limits = sample_limits(img_path, limits, band_list, sample_size)
+        limits = sample_limits(
+            img_path=img_path,
+            limits=limits,
+            sample_size=sample_size,
+            band_list=band_list,
+        )
 
     if out_res is not None:
         image, profile = resample(
             img_path, res=out_res, resampling="bilinear", indexes=band_list
         )
-        profile.update(driver="GTiff", dtype="float32", count=len(band_list), nodata=0)
+        profile.update(
+            driver="GTiff",
+            dtype="float32",
+            count=len(band_list),
+            nodata=0,
+        )
         image = np.nan_to_num(image, nan=0.0)
         out_img = band_scaling(image, limits)
         with rst.open(out_path, "w", **profile) as dst:
@@ -82,7 +97,10 @@ def normalize(
         with rst.open(img_path) as src:
             profile = src.profile.copy()
             profile.update(
-                driver="GTiff", dtype="float32", count=len(band_list), nodata=0
+                driver="GTiff",
+                dtype="float32",
+                count=len(band_list),
+                nodata=0,
             )
             windows = slice_image(*src.shape, as_windows=True)
             with rst.open(out_path, "w", **profile) as dst:
@@ -92,12 +110,14 @@ def normalize(
                     out_img = band_scaling(image, limits)
                     dst.write(out_img, window=w)
 
+    return out_path
+
 
 def sample_limits(
     img_path: Path | str,
     limits: Tuple,
-    band_list: List,
     sample_size: int | float,
+    band_list: List = None,
 ) -> Dict:
     """
     Finds the percentile `limits` of the input image by sampling a number of internal tiles/blocks.
@@ -128,6 +148,9 @@ def sample_limits(
         sample_size = (
             int(len(windows) * sample_size) if sample_size <= 1 else sample_size
         )
+
+        if not band_list:
+            band_list = list(range(1, src.count + 1))
         if sample_size > len(windows):
             raise ValueError(
                 "The number of samples specified exceed the total number of blocks."
@@ -195,26 +218,23 @@ def band_scaling(
 
 
 def resample(
-    img_path: Path | str, 
-    res: float, 
-    resampling: str = 'nearest', 
-    **kwargs
+    img_path: Path | str, res: float, resampling: str = "nearest", **kwargs
 ) -> Tuple[np.ndarray, dict]:
     """
     Resamples the input raster to the target spatial resolution using the specified resampling method.
 
     Parameters:
-        img_path (Path | str): 
+        img_path (Path | str):
             Input raster to be resampled.
-        res (float): 
+        res (float):
             Target spatial output resolution in georeferenced units.
-        resampling (str, optional): 
+        resampling (str, optional):
             Resampling method to use when up- or downsampling the image. Defaults to 'nearest'.
 
     Returns:
-        Tuple[np.ndarray, dict]: 
+        Tuple[np.ndarray, dict]:
             Tuple of resampled data array and updated metadata.
-    """    
+    """
     rs_method = {
         "nearest": Resampling(0),
         "bilinear": Resampling(1),

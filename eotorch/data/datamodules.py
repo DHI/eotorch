@@ -1,6 +1,8 @@
 from typing import Any
 
 import torch
+from torch import Tensor
+from torch.utils.data import DataLoader
 from torchgeo.datamodules import GeoDataModule
 from torchgeo.datasets import (
     GeoDataset,
@@ -8,7 +10,7 @@ from torchgeo.datasets import (
     RasterDataset,
     random_grid_cell_assignment,
 )
-from torchgeo.samplers import GridGeoSampler, RandomBatchGeoSampler, RandomGeoSampler
+from torchgeo.samplers import BatchGeoSampler, GridGeoSampler, RandomBatchGeoSampler
 
 from eotorch.data.geodatasets import get_segmentation_dataset
 
@@ -32,7 +34,7 @@ def get_dataset_args(ds):
     args["image_glob"] = image_ds.filename_glob
     args["bands_to_return"] = image_ds.bands
     args["image_transforms"] = image_ds.transforms
-    args["cache"] = image_ds.cache
+    args["cache_size"] = image_ds.cache_size
 
     return args
 
@@ -45,6 +47,8 @@ class SegmentationDataModule(GeoDataModule):
         patch_size: int | tuple[int, int] = 64,
         length: int | None = None,
         num_workers: int = 0,
+        persistent_workers: bool = False,
+        pin_memory: bool = False,
         **kwargs: Any,
     ):
         if isinstance(dataset, (RasterDataset, IntersectionDataset)):
@@ -57,6 +61,8 @@ class SegmentationDataModule(GeoDataModule):
         super().__init__(
             dataset_class, batch_size, patch_size, length, num_workers, **dataset_kwargs
         )
+        self.persistent_workers = persistent_workers
+        self.pin_memory = pin_memory
 
     def setup(self, stage: str) -> None:
         """Set up datasets.
@@ -74,7 +80,7 @@ class SegmentationDataModule(GeoDataModule):
             self.test_dataset,
         ) = random_grid_cell_assignment(
             dataset=self.dataset,
-            fractions=[0.6, 0.2, 0.2],
+            fractions=[0.8, 0.1, 0.1],
             grid_size=6,
             generator=generator,
         )
@@ -91,3 +97,50 @@ class SegmentationDataModule(GeoDataModule):
             self.test_sampler = GridGeoSampler(
                 self.test_dataset, self.patch_size, self.patch_size
             )
+
+    # def val_dataloader(self):  # -> DataLoader[dict[str, Tensor]]:
+    #     loader = self._dataloader_factory("val")
+    #     # loader.num_workers = 0
+    #     loader.num_workers = 2
+    #     return loader
+
+    def _dataloader_factory(self, split: str) -> DataLoader[dict[str, Tensor]]:
+        """
+        Same as GeoDataModule._dataloader_factory but allows for customization of dataloader behavior.
+
+        Implement one or more PyTorch DataLoaders.
+
+        Args:
+            split: Either 'train', 'val', 'test', or 'predict'.
+
+        Returns:
+            A collection of data loaders specifying samples.
+
+        Raises:
+            MisconfigurationException: If :meth:`setup` does not define a
+                dataset or sampler, or if the dataset or sampler has length 0.
+        """
+        dataset = self._valid_attribute(f"{split}_dataset", "dataset")
+        sampler = self._valid_attribute(
+            f"{split}_batch_sampler", f"{split}_sampler", "batch_sampler", "sampler"
+        )
+        batch_size = self._valid_attribute(f"{split}_batch_size", "batch_size")
+
+        if isinstance(sampler, BatchGeoSampler):
+            batch_size = 1
+            batch_sampler = sampler
+            sampler = None
+        else:
+            batch_sampler = None
+
+        return DataLoader(
+            dataset=dataset,
+            batch_size=batch_size,
+            sampler=sampler,
+            batch_sampler=batch_sampler,
+            num_workers=self.num_workers,
+            collate_fn=self.collate_fn,
+            persistent_workers=self.persistent_workers,
+            pin_memory=self.pin_memory,
+            # prefetch_factor=1,
+        )

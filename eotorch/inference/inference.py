@@ -16,12 +16,13 @@ def predict_on_tif(
     prediction_func: Callable,
     patch_size: int = 64,
     overlap: int = 2,
-    classes: dict[int, str] = None,
+    class_mapping: dict[int, str] = None,
     func_supports_batching: bool = True,
     batch_size: int = 8,
     out_file_path: str | Path = None,
     show_results: bool = False,
     ax: plt.Axes = None,
+    argmax_dim: int = -3,
 ) -> Path:
     """
     Predict segmentation classes on a TIF file using a custom prediction function.
@@ -90,7 +91,7 @@ def predict_on_tif(
 
             # with BufferedDatasetWriter(dest) as writer:
             for i, window in enumerate(windows):
-                class_pred = np.argmax(pred[i], axis=-1).astype("uint8") + 1
+                class_pred = np.argmax(pred[i], axis=argmax_dim).astype("uint8") + 1
                 unbuffered_window = iu.buffered_to_unbuffered(
                     window,
                     buffer=int(patch_size * (1 / (2 * overlap))),
@@ -102,5 +103,13 @@ def predict_on_tif(
 
     if show_results:
         print(f"Showing results for {out_file_path}")
-        return plot.plot_predictions_pyplot(out_file_path, classes, ax=ax)
+        with rst.open(out_file_path) as src:
+            predictions = src.read(1)
+            nodata_value = src.nodata
+            return plot.plot_numpy_array(
+                array=predictions,
+                class_mapping=class_mapping,
+                ax=ax,
+                nodata_value=nodata_value,
+            )
     return out_file_path
