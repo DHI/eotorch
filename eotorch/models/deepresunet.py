@@ -50,54 +50,63 @@ class RegDeepResUNet(nn.Module):
     A fully convolutional neural network for regression tasks.
 
     DeepResUNet is adapated from the architecture proposed in:
-    Yi, Y.; Zhang, Z.; Zhang, W.; Zhang, C.; Li, W.; Zhao, T.: Semantic Segmentation of Urban Buildings from VHR Remote 
-    Sensing Imagery Using a Deep Convolutional Neural Network. 
+    Yi, Y.; Zhang, Z.; Zhang, W.; Zhang, C.; Li, W.; Zhao, T.: Semantic Segmentation of Urban Buildings from VHR Remote
+    Sensing Imagery Using a Deep Convolutional Neural Network.
     Remote Sens. 2019, 11, 1774. https://doi.org/10.3390/rs11151774.
 
     Parameters:
-        in_channels (int): 
+        in_channels (int):
             Number of input channels.
-        n_filters (int, optional): 
+        num_filters (int, optional):
             Number of filters. Defaults to 128.
-        static_filters (bool, optional): 
+        static_filters (bool, optional):
             Keep the number of filters consistent for each layer. If False, the number of filters
             are doubled after each encoder block and halved again after each decoder block.
             Defaults to True.
-    """    
+    """
+
     def __init__(
         self,
         in_channels: int,
-        n_filters: int = 128,
+        num_filters: int = 128,
         static_filters: bool = True,
     ):
         super().__init__()
-        self.n_filters = (
-            [n_filters] * 4
+        self.num_filters = (
+            [num_filters] * 4
             if static_filters
-            else list(reversed([n_filters // (2**i) for i in range(4)]))
+            else list(reversed([num_filters // (2**i) for i in range(4)]))
         )
 
         # Encoder
         self.input_conv = Conv2d(
-            in_channels, self.n_filters[0], kernel_size=(5, 5), padding="same", stride=(1, 1)
+            in_channels,
+            self.num_filters[0],
+            kernel_size=(5, 5),
+            padding="same",
+            stride=(1, 1),
         )
         self.maxpool = nn.MaxPool2d((2, 2))
-        self.encoder1 = Encoder(self.n_filters[0], self.n_filters[1])
-        self.encoder2 = Encoder(self.n_filters[1], self.n_filters[2])
-        self.encoder3 = Encoder(self.n_filters[2], self.n_filters[3])
+        self.encoder1 = Encoder(self.num_filters[0], self.num_filters[1])
+        self.encoder2 = Encoder(self.num_filters[1], self.num_filters[2])
+        self.encoder3 = Encoder(self.num_filters[2], self.num_filters[3])
 
         # Bridge
-        self.resblock1 = ResBlock(self.n_filters[3], self.n_filters[3], kernel_sizes=[3, 3, 1])
-        self.resblock2 = ResBlock(self.n_filters[3], self.n_filters[3], kernel_sizes=[3, 3, 1])
+        self.resblock1 = ResBlock(
+            self.num_filters[3], self.num_filters[3], kernel_sizes=[3, 3, 1]
+        )
+        self.resblock2 = ResBlock(
+            self.num_filters[3], self.num_filters[3], kernel_sizes=[3, 3, 1]
+        )
 
         # Decoder
-        self.decoder1 = Decoder(self.n_filters[3], self.n_filters[3])
-        self.decoder2 = Decoder(self.n_filters[3], self.n_filters[2])
-        self.decoder3 = Decoder(self.n_filters[2], self.n_filters[1])
-        self.decoder4 = Decoder(self.n_filters[1], self.n_filters[0])
+        self.decoder1 = Decoder(self.num_filters[3], self.num_filters[3])
+        self.decoder2 = Decoder(self.num_filters[3], self.num_filters[2])
+        self.decoder3 = Decoder(self.num_filters[2], self.num_filters[1])
+        self.decoder4 = Decoder(self.num_filters[1], self.num_filters[0])
 
         self.output = nn.Conv2d(
-            self.n_filters[0],
+            self.num_filters[0],
             1,
             kernel_size=(1, 1),
             stride=(1, 1),
@@ -130,56 +139,65 @@ class ClfDeepResUNet(nn.Module):
     A fully convolutional neural network for semantic segmentation tasks.
 
     DeepResUNet is adapated from the architecture proposed in:
-    Yi, Y.; Zhang, Z.; Zhang, W.; Zhang, C.; Li, W.; Zhao, T.: Semantic Segmentation of Urban Buildings from VHR Remote 
-    Sensing Imagery Using a Deep Convolutional Neural Network. 
+    Yi, Y.; Zhang, Z.; Zhang, W.; Zhang, C.; Li, W.; Zhao, T.: Semantic Segmentation of Urban Buildings from VHR Remote
+    Sensing Imagery Using a Deep Convolutional Neural Network.
     Remote Sens. 2019, 11, 1774. https://doi.org/10.3390/rs11151774.
 
     Parameters:
-        in_channels (int): 
+        in_channels (int):
             Number of input channels.
-        n_filters (int, optional): 
-            Number of self.n_filters. Defaults to 128.
-        static_filters (bool, optional): 
-            Keep the number of self.n_filters consistent for each layer. If False, the number of self.n_filters
+        num_filters (int, optional):
+            Number of self.num_filters. Defaults to 128.
+        static_filters (bool, optional):
+            Keep the number of self.num_filters consistent for each layer. If False, the number of self.num_filters
             are doubled after each encoder block and halved again after each decoder block.
             Defaults to True.
-    """ 
+    """
+
     def __init__(
         self,
-        n_classes: int,
+        num_classes: int,
         in_channels: int,
-        n_filters: int = 128,
+        num_filters: int = 128,
         static_filters: bool = True,
     ):
         super().__init__()
-        self.n_filters = (
-            [n_filters] * 4
+        self.num_filters = (
+            [num_filters] * 4
             if static_filters
-            else list(reversed([n_filters // (2**i) for i in range(4)]))
+            else list(reversed([num_filters // (2**i) for i in range(4)]))
         )
 
         # Encoder
         self.input_conv = Conv2d(
-            in_channels, self.n_filters[0], kernel_size=(5, 5), padding="same", stride=(1, 1)
+            in_channels,
+            self.num_filters[0],
+            kernel_size=(5, 5),
+            padding="same",
+            stride=(1, 1),
         )
         self.maxpool = nn.MaxPool2d((2, 2))
-        self.encoder1 = Encoder(self.n_filters[0], self.n_filters[1])
-        self.encoder2 = Encoder(self.n_filters[1], self.n_filters[2])
-        self.encoder3 = Encoder(self.n_filters[2], self.n_filters[3])
+        self.encoder1 = Encoder(self.num_filters[0], self.num_filters[1])
+        self.encoder2 = Encoder(self.num_filters[1], self.num_filters[2])
+        self.encoder3 = Encoder(self.num_filters[2], self.num_filters[3])
 
         # Bridge
-        self.resblock1 = ResBlock(self.n_filters[3], self.n_filters[3], kernel_sizes=[3, 3, 1])
-        self.resblock2 = ResBlock(self.n_filters[3], self.n_filters[3], kernel_sizes=[3, 3, 1])
+        self.resblock1 = ResBlock(
+            self.num_filters[3], self.num_filters[3], kernel_sizes=[3, 3, 1]
+        )
+        self.resblock2 = ResBlock(
+            self.num_filters[3], self.num_filters[3], kernel_sizes=[3, 3, 1]
+        )
 
         # Decoder
-        self.decoder1 = Decoder(self.n_filters[3], self.n_filters[3])
-        self.decoder2 = Decoder(self.n_filters[3], self.n_filters[2])
-        self.decoder3 = Decoder(self.n_filters[2], self.n_filters[1])
-        self.decoder4 = Decoder(self.n_filters[1], self.n_filters[0])
+        self.decoder1 = Decoder(self.num_filters[3], self.num_filters[3])
+        self.decoder2 = Decoder(self.num_filters[3], self.num_filters[2])
+        self.decoder3 = Decoder(self.num_filters[2], self.num_filters[1])
+        self.decoder4 = Decoder(self.num_filters[1], self.num_filters[0])
 
         self.output = nn.Conv2d(
-            self.n_filters[0],
-            n_classes,
+            self.num_filters[0],
+            num_classes,
             kernel_size=(1, 1),
             stride=(1, 1),
             padding="same",

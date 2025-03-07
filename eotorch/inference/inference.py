@@ -33,7 +33,7 @@ def predict_on_tif(
         Path to the input TIF file.
     prediction_func : Callable
         Accepts a NumPy array of shape (batch_size, patch_size, patch_size, n_channels)
-        and returns a NumPy array of shape (batch_size, patch_size, patch_size, n_classes).
+        and returns a NumPy array of shape (batch_size, patch_size, patch_size, num_classes).
     patch_size : int
         Integer size of the patch to use for prediction.
     overlap : int
