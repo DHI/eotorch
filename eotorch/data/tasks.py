@@ -4,7 +4,9 @@ from typing import Any, Callable
 import numpy as np
 import torch
 from matplotlib import pyplot as plt
+from matplotlib.figure import Figure
 from torch import Tensor, nn
+from torchgeo.datasets import RGBBandsMissingError, unbind_samples
 from torchgeo.trainers import (
     SemanticSegmentationTask as TorchGeoSemanticSegmentationTask,
 )
@@ -106,6 +108,75 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
         self.train_metrics(y_hat, y)
         self.log_dict(self.train_metrics, batch_size=batch_size)
         return loss
+
+    def validation_step(
+        self, batch: Any, batch_idx: int, dataloader_idx: int = 0
+    ) -> None:
+        """Compute the validation loss and additional metrics.
+
+        Args:
+            batch: The output of your DataLoader.
+            batch_idx: Integer displaying index of this batch.
+            dataloader_idx: Index of the current dataloader.
+        """
+        x = batch["image"]
+        if (x == self.hparams["ignore_index"]).all():
+            return None
+
+        y = batch["mask"]
+        batch_size = x.shape[0]
+        y_hat = self(x)
+        loss = self.criterion(y_hat, y)
+        self.log("val_loss", loss, batch_size=batch_size)
+        self.val_metrics(y_hat, y)
+        self.log_dict(self.val_metrics, batch_size=batch_size)
+
+        if (
+            batch_idx < 10
+            and hasattr(self.trainer, "datamodule")
+            and hasattr(self.trainer.datamodule, "plot")
+            and self.logger
+            and hasattr(self.logger, "experiment")
+            and hasattr(self.logger.experiment, "add_figure")
+        ):
+            datamodule = self.trainer.datamodule
+            batch["prediction"] = y_hat.argmax(dim=1)
+            for key in ["image", "mask", "prediction"]:
+                batch[key] = batch[key].cpu()
+            sample = unbind_samples(batch)[0]
+
+            fig: Figure | None = None
+            try:
+                fig = datamodule.plot(sample)
+            except RGBBandsMissingError:
+                pass
+
+            if fig:
+                summary_writer = self.logger.experiment
+                summary_writer.add_figure(
+                    f"image/{batch_idx}", fig, global_step=self.global_step
+                )
+                plt.close()
+
+    def test_step(self, batch: Any, batch_idx: int, dataloader_idx: int = 0) -> None:
+        """Compute the test loss and additional metrics.
+
+        Args:
+            batch: The output of your DataLoader.
+            batch_idx: Integer displaying index of this batch.
+            dataloader_idx: Index of the current dataloader.
+        """
+        x = batch["image"]
+        if (x == self.hparams["ignore_index"]).all():
+            return None
+
+        y = batch["mask"]
+        batch_size = x.shape[0]
+        y_hat = self(x)
+        loss = self.criterion(y_hat, y)
+        self.log("test_loss", loss, batch_size=batch_size)
+        self.test_metrics(y_hat, y)
+        self.log_dict(self.test_metrics, batch_size=batch_size)
 
     @staticmethod
     def get_prediction_func(checkpoint_path: str | Path) -> Callable:
