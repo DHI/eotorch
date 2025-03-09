@@ -93,19 +93,36 @@ class PlottabeLabelDataset(CustomCacheRasterDataset):
             class_mapping=self.class_mapping,
             colormap=self.colormap,
             nodata_value=self.nodata_value,
+            title="Label",
             **kwargs,
         )
 
 
 class LabelledRasterDataset(IntersectionDataset):
     def plot(self, sample: dict[str, Any], **kwargs):
-        fig, axes = plt.subplots(1, 2, figsize=(8, 4))
+        n_cols = 2 if "prediction" not in sample else 3
+        fig, axes = plt.subplots(1, n_cols, figsize=(n_cols * 4, 4))
 
         for i, dataset in enumerate(self.datasets):
             if isinstance(dataset, (PlottableImageDataset, PlottabeLabelDataset)):
                 dataset.plot(sample, ax=axes[i], **kwargs)
             else:
                 raise NotImplementedError("Dataset must be plottable")
+
+        if "prediction" in sample:
+            label_ds: PlottabeLabelDataset = self.datasets[-1]
+            data = sample["prediction"].numpy()
+            if label_ds.reduce_zero_label:
+                data += 1
+            plot_numpy_array(
+                array=data,
+                ax=axes[-1],
+                class_mapping=label_ds.class_mapping,
+                colormap=label_ds.colormap,
+                nodata_value=label_ds.nodata_value,
+                title="Prediction",
+                **kwargs,
+            )
 
         plt.tight_layout()
 

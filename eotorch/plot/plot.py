@@ -21,7 +21,11 @@ def plot_numpy_array(
 
     values = np.unique(array.ravel()).tolist()
     plot_values = set(values + [nodata_value])
-    bounds = list(plot_values) + [max(values) + 1]
+    # bounds = list(plot_values) + [max(values) + 1]
+    if class_mapping:
+        bounds = list(range(len(class_mapping) + 1))
+    else:
+        bounds = list(plot_values) + [max(values) + 1]
     norm = plt.matplotlib.colors.BoundaryNorm(bounds, colormap.N)
     ax = show(array, ax=ax, cmap=colormap, norm=norm, **kwargs)
 
