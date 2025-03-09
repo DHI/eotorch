@@ -149,7 +149,7 @@ def get_segmentation_dataset(
     cache_size: int = 20,
     reduce_zero_label: bool = True,
 ) -> PlottableImageDataset | LabelledRasterDataset:
-    """
+    r"""
     Create a segmentation dataset from images and labels. Labels are optional.
 
     Args:
