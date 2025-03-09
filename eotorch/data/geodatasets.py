@@ -136,7 +136,8 @@ def get_segmentation_dataset(
     label_glob="*.tif",
     image_filename_regex: str = None,
     label_filename_regex: str = None,
-    date_format: str = None,
+    image_date_format: str = None,
+    label_date_format: str = None,
     all_image_bands: tuple[str] = (),
     rgb_bands: tuple[str] = ("red", "green", "blue"),
     sensor_name: str = None,
@@ -200,8 +201,8 @@ def get_segmentation_dataset(
     image_ds_class.rgb_bands = rgb_bands
     if image_filename_regex:
         image_ds_class.filename_regex = image_filename_regex
-    if date_format:
-        image_ds_class.date_format = date_format
+    if image_date_format:
+        image_ds_class.date_format = image_date_format
 
     image_ds = image_ds_class(
         paths=images_dir,
@@ -218,8 +219,8 @@ def get_segmentation_dataset(
         label_ds_class.class_mapping = class_mapping
         if label_filename_regex:
             label_ds_class.filename_regex = label_filename_regex
-        if date_format:
-            label_ds_class.date_format = date_format
+        if label_date_format:
+            label_ds_class.date_format = label_date_format
 
         label_ds = label_ds_class(
             paths=labels_dir,
