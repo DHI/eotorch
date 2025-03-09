@@ -97,9 +97,16 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
         """
 
         x = batch["image"]
-        if (x == self.hparams["ignore_index"]).all():
-            return None
         y = batch["mask"]
+
+        if ignore_index := self.hparams["ignore_index"]:
+            # filter out patches with only ignore_index in the mask
+            valid_patches = ~(y == ignore_index).all(dim=(-2, -1))
+            # Skip processing if all pixels in the patch are ignore_index
+            if not valid_patches.any():
+                return None
+            x = x[valid_patches]
+            y = y[valid_patches]
         batch_size = x.shape[0]
         y_hat = self(x)
         loss: Tensor = self.criterion(y_hat, y)
@@ -120,10 +127,15 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
             dataloader_idx: Index of the current dataloader.
         """
         x = batch["image"]
-        if (x == self.hparams["ignore_index"]).all():
-            return None
-
         y = batch["mask"]
+
+        if ignore_index := self.hparams["ignore_index"]:
+            valid_patches = ~(y == ignore_index).all(dim=(-2, -1))
+            if not valid_patches.any():
+                return None
+            x = x[valid_patches]
+            y = y[valid_patches]
+
         batch_size = x.shape[0]
         y_hat = self(x)
         loss = self.criterion(y_hat, y)
@@ -143,7 +155,14 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
             batch["prediction"] = y_hat.argmax(dim=1)
             for key in ["image", "mask", "prediction"]:
                 batch[key] = batch[key].cpu()
-            sample = unbind_samples(batch)[0]
+
+            # only sample from valid patches
+            if ignore_index:
+                sample_idx = valid_patches.int().argmax()
+            else:
+                sample_idx = 0
+            sample = unbind_samples(batch)[sample_idx]
+            # sample = unbind_samples(batch)[0]
 
             fig: Figure | None = None
             try:
@@ -167,10 +186,13 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
             dataloader_idx: Index of the current dataloader.
         """
         x = batch["image"]
-        if (x == self.hparams["ignore_index"]).all():
-            return None
-
         y = batch["mask"]
+        if ignore_index := self.hparams["ignore_index"]:
+            valid_patches = ~(y == ignore_index).all(dim=(-2, -1))
+            if not valid_patches.any():
+                return None
+            x = x[valid_patches]
+            y = y[valid_patches]
         batch_size = x.shape[0]
         y_hat = self(x)
         loss = self.criterion(y_hat, y)
