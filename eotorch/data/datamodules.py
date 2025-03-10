@@ -35,6 +35,7 @@ def get_dataset_args(ds):
     args["bands_to_return"] = image_ds.bands
     args["image_transforms"] = image_ds.transforms
     args["cache_size"] = image_ds.cache_size
+    args["image_separate_files"] = image_ds.separate_files
 
     return args
 
