@@ -1,17 +1,21 @@
+from __future__ import annotations
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, TYPE_CHECKING
 
 import numpy as np
 import torch
 from matplotlib import pyplot as plt
-from torch import Tensor, nn
+
 from torchgeo.trainers import (
     SemanticSegmentationTask as TorchGeoSemanticSegmentationTask,
 )
-from torchvision.models._api import WeightsEnum
 
 from eotorch.models import MODEL_MAPPING
 from eotorch.utils import get_init_args
+
+if TYPE_CHECKING:
+    from torch import Tensor, nn
+    from torchvision.models._api import WeightsEnum
 
 
 class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
