@@ -149,6 +149,7 @@ def get_segmentation_dataset(
     class_mapping: dict[int, str] = None,
     cache_size: int = 20,
     reduce_zero_label: bool = True,
+    image_separate_files: bool = False,
 ) -> PlottableImageDataset | LabelledRasterDataset:
     r"""
     Create a segmentation dataset from images and labels. Labels are optional.
@@ -178,6 +179,7 @@ def get_segmentation_dataset(
         class_mapping (dict): Mapping of class indices to class names. Used for visualization.
         cache_size (int): Size of the memory file cache to use for image and label file reading.
         reduce_zero_label (bool): Subtract 1 from all labels. Useful when labels start from 1 instead of the expected 0.
+        image_separate_files (bool): Set to True if you images are stored in individual files, e.g. red.tif, green.tif, blue.tif.
 
     Returns:
         PlottableImageDataset or LabelledRasterDataset: The dataset.
@@ -199,6 +201,7 @@ def get_segmentation_dataset(
     image_ds_class.filename_glob = image_glob
     image_ds_class.all_bands = all_image_bands
     image_ds_class.rgb_bands = rgb_bands
+    image_ds_class.separate_files = image_separate_files
     if image_filename_regex:
         image_ds_class.filename_regex = image_filename_regex
     if image_date_format:
