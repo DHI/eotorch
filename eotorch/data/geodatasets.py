@@ -93,19 +93,36 @@ class PlottabeLabelDataset(CustomCacheRasterDataset):
             class_mapping=self.class_mapping,
             colormap=self.colormap,
             nodata_value=self.nodata_value,
+            title="Label",
             **kwargs,
         )
 
 
 class LabelledRasterDataset(IntersectionDataset):
     def plot(self, sample: dict[str, Any], **kwargs):
-        fig, axes = plt.subplots(1, 2, figsize=(8, 4))
+        n_cols = 2 if "prediction" not in sample else 3
+        fig, axes = plt.subplots(1, n_cols, figsize=(n_cols * 4, 4))
 
         for i, dataset in enumerate(self.datasets):
             if isinstance(dataset, (PlottableImageDataset, PlottabeLabelDataset)):
                 dataset.plot(sample, ax=axes[i], **kwargs)
             else:
                 raise NotImplementedError("Dataset must be plottable")
+
+        if "prediction" in sample:
+            label_ds: PlottabeLabelDataset = self.datasets[-1]
+            data = sample["prediction"].numpy()
+            if label_ds.reduce_zero_label:
+                data += 1
+            plot_numpy_array(
+                array=data,
+                ax=axes[-1],
+                class_mapping=label_ds.class_mapping,
+                colormap=label_ds.colormap,
+                nodata_value=label_ds.nodata_value,
+                title="Prediction",
+                **kwargs,
+            )
 
         plt.tight_layout()
 
@@ -117,18 +134,57 @@ def get_segmentation_dataset(
     labels_dir: str | Path = None,
     image_glob="*.tif",
     label_glob="*.tif",
+    image_filename_regex: str = None,
+    label_filename_regex: str = None,
+    image_date_format: str = None,
+    label_date_format: str = None,
     all_image_bands: tuple[str] = (),
     rgb_bands: tuple[str] = ("red", "green", "blue"),
     sensor_name: str = None,
-    crs: CRS | None = None,
-    res: float | None = None,
+    crs: CRS = None,
+    res: float = None,
     bands_to_return: tuple[str] = None,
     image_transforms: Callable[[dict[str, Any]], dict[str, Any]] = None,
     label_transforms: Callable[[dict[str, Any]], dict[str, Any]] = None,
     class_mapping: dict[int, str] = None,
     cache_size: int = 20,
     reduce_zero_label: bool = True,
+    image_separate_files: bool = False,
 ) -> PlottableImageDataset | LabelledRasterDataset:
+    r"""
+    Create a segmentation dataset from images and labels. Labels are optional.
+
+    Args:
+        images_dir (str or Path): Path to the directory containing the images.
+        labels_dir (str or Path): Path to the directory containing the labels.
+        image_glob (str): Glob pattern for the image files. Defaults to "*.tif". Modify if not all .tif files in the directory should be used.
+        label_glob (str): Glob pattern for the label files. Defaults to "*.tif". Modify if not all .tif files in the directory should be used.
+        image_filename_regex (str): Regular expression to extract metadata from image filenames.
+                                    See https://torchgeo.readthedocs.io/en/stable/tutorials/custom_raster_dataset.html#filename_regex
+        date_format (str): Date format to extract metadata from image filenames. Should be specified if image_filename_regex is used.
+                            See https://torchgeo.readthedocs.io/en/stable/tutorials/custom_raster_dataset.html#date_format
+                            Example for matching files from the same year, when the filenames have the format "image_YYYY_3.tif" and "label_YYYY_whatever.tif":
+                                image_filename_regex=r'.*_(?P<date>\d{4})_.*',
+                                label_filename_regex=r'.*_(?P<date>\d{4})_.*',
+                                date_format='%Y'
+        label_filename_regex (str): Regular expression to extract metadata from label filenames.
+        all_image_bands (tuple): All bands in the image files.
+        rgb_bands (tuple): Bands to use for RGB visualization.
+        sensor_name (str): Name of the sensor to use. Overrides all_image_bands and res. For valid sensor names, see BAND_INDEX in eotorch.bandindex.py.
+        crs (CRS): Coordinate reference system of the data.
+        res (float): Resolution of the data.
+        bands_to_return (tuple): Bands to return from the dataset.
+        image_transforms (callable): Transforms to apply to the images.
+        label_transforms (callable): Transforms to apply to the labels.
+        class_mapping (dict): Mapping of class indices to class names. Used for visualization.
+        cache_size (int): Size of the memory file cache to use for image and label file reading.
+        reduce_zero_label (bool): Subtract 1 from all labels. Useful when labels start from 1 instead of the expected 0.
+        image_separate_files (bool): Set to True if you images are stored in individual files, e.g. red.tif, green.tif, blue.tif.
+
+    Returns:
+        PlottableImageDataset or LabelledRasterDataset: The dataset.
+    """
+
     if sensor_name:
         if sensor_name not in BAND_INDEX:
             raise ValueError(f"Sensor {sensor_name} not found in BAND_INDEX")
@@ -145,6 +201,11 @@ def get_segmentation_dataset(
     image_ds_class.filename_glob = image_glob
     image_ds_class.all_bands = all_image_bands
     image_ds_class.rgb_bands = rgb_bands
+    image_ds_class.separate_files = image_separate_files
+    if image_filename_regex:
+        image_ds_class.filename_regex = image_filename_regex
+    if image_date_format:
+        image_ds_class.date_format = image_date_format
 
     image_ds = image_ds_class(
         paths=images_dir,
@@ -159,6 +220,10 @@ def get_segmentation_dataset(
         label_ds_class = PlottabeLabelDataset
         label_ds_class.filename_glob = label_glob
         label_ds_class.class_mapping = class_mapping
+        if label_filename_regex:
+            label_ds_class.filename_regex = label_filename_regex
+        if label_date_format:
+            label_ds_class.date_format = label_date_format
 
         label_ds = label_ds_class(
             paths=labels_dir,
