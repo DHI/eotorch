@@ -203,8 +203,12 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
     @staticmethod
     def get_prediction_func(checkpoint_path: str | Path) -> Callable:
         lightning_module = SemanticSegmentationTask.load_from_checkpoint(
-            checkpoint_path
+            checkpoint_path,
+            map_location=torch.device("cuda")
+            if torch.cuda.is_available()
+            else torch.device("cpu"),
         )
+        cuda = torch.cuda.is_available()
 
         def predict(image: np.ndarray) -> np.ndarray:
             image = torch.from_numpy(image)
@@ -212,6 +216,8 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
                 image = image.unsqueeze(0)
 
             image = image.permute(0, -1, 1, 2)
+            if cuda:
+                image = image.cuda().float()
             with torch.no_grad():
                 return lightning_module(image).cpu().numpy()
 
