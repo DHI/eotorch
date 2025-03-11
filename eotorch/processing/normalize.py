@@ -60,6 +60,7 @@ def normalize(
     out_path = (
         Path(out_path) if out_path else img_path.parent / f"{img_path.stem}_norm.tif"
     )
+    out_path.parent.mkdir(exist_ok=True, parents=True)
 
     if sensor:
         band_index = BAND_INDEX[sensor]["bandmap"]
