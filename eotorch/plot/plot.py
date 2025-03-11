@@ -1,3 +1,4 @@
+from typing import Tuple
 from pathlib import Path
 
 import matplotlib.patches as mpatches
@@ -52,7 +53,7 @@ def plot_numpy_array(
     )
 
 
-def plot_samples(dataset, n: int = 3, patch_size: int = 256):
+def plot_samples(dataset, n: int = 3, patch_size: int = 256, nodata_val: int = 0):
     from torch.utils.data import DataLoader
     from torchgeo.datasets import stack_samples, unbind_samples
     from torchgeo.samplers import RandomGeoSampler
@@ -61,11 +62,27 @@ def plot_samples(dataset, n: int = 3, patch_size: int = 256):
     # sampler = GridGeoSampler(dataset, size=patch_size, stride=100)
     sampler = RandomGeoSampler(dataset, size=patch_size)
     dataloader = DataLoader(
-        dataset, sampler=sampler, collate_fn=stack_samples, batch_size=n
+        dataset, sampler=sampler, collate_fn=stack_samples, batch_size=1
     )
+
     batch = next(iter(dataloader))
-    samples = unbind_samples(batch)
-    for i, sample in enumerate(samples):
-        dataset.plot(sample)
-        plt.suptitle(f"Sample {i + 1}")
-        plt.show()
+    sample = unbind_samples(batch)[0]
+
+    samples = []
+    tries = 0
+    while len(samples)<n and tries<100:
+        if (sample['image']==0).all() or (sample['mask']==nodata_val).all():
+            pass
+        else:
+            samples.append(sample)
+        batch = next(iter(dataloader))
+        sample = unbind_samples(batch)[0]
+        tries += 1
+
+    if len(samples)==0:
+        print("No samples found.")
+    else:
+        for i, sample in enumerate(samples):
+            dataset.plot(sample)
+            plt.suptitle(f"Sample {i + 1}")
+            plt.show()
