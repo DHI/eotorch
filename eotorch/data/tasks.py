@@ -1,11 +1,11 @@
 from __future__ import annotations
+
 from pathlib import Path
-from typing import Any, Callable, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Callable
 
 import numpy as np
 import torch
 from matplotlib import pyplot as plt
-
 from torchgeo.datasets import RGBBandsMissingError, unbind_samples
 from torchgeo.trainers import (
     SemanticSegmentationTask as TorchGeoSemanticSegmentationTask,
@@ -221,9 +221,9 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
 
             image = image.permute(0, -1, 1, 2)
             if cuda:
-                image = image.cuda().float()
+                image = image.cuda()
             with torch.no_grad():
-                return lightning_module(image).cpu().numpy()
+                return lightning_module(image.float()).cpu().numpy()
 
         return predict
 

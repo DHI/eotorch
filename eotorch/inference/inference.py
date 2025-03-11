@@ -78,30 +78,7 @@ def predict_on_tif(
         / batch_size
     )
 
-    with rst.open(out_file_path, "w", **meta) as dest:
-        for batch, windows in alive_it(
-            iu.patch_generator(tif_file_path, patch_size, overlap, batch_size),
-            total=total_windows,
-            force_tty=True,
-            finalize=lambda bar: bar.title("Inference finished."),
-        ):
-            if (batch == old_no_data).all():
-                continue
-            pred = prediction_func(batch)
-
-            # with BufferedDatasetWriter(dest) as writer:
-            for i, window in enumerate(windows):
-                class_pred = np.argmax(pred[i], axis=argmax_dim).astype("uint8") + 1
-                unbuffered_window = iu.buffered_to_unbuffered(
-                    window,
-                    buffer=int(patch_size * (1 / (2 * overlap))),
-                    img_height=meta["height"],
-                    img_width=meta["width"],
-                )
-                window_arr = iu.crop_np_to_window(class_pred, window, unbuffered_window)
-                dest.write_band(1, window_arr, window=unbuffered_window)
-
-    if show_results:
+    def _plot():
         print(f"Showing results for {out_file_path}")
         with rst.open(out_file_path) as src:
             predictions = src.read(1)
@@ -112,4 +89,41 @@ def predict_on_tif(
                 ax=ax,
                 nodata_value=nodata_value,
             )
+
+    try:
+        with rst.open(out_file_path, "w", **meta) as dest:
+            for batch, windows in alive_it(
+                iu.patch_generator(tif_file_path, patch_size, overlap, batch_size),
+                total=total_windows,
+                force_tty=True,
+                finalize=lambda bar: bar.title("Inference finished."),
+            ):
+                if (batch == old_no_data).all():
+                    continue
+                # handle case of there being nan values that are not set to nodata
+                batch = np.nan_to_num(batch, nan=old_no_data)
+
+                pred = prediction_func(batch)
+
+                # with BufferedDatasetWriter(dest) as writer:
+                for i, window in enumerate(windows):
+                    class_pred = np.argmax(pred[i], axis=argmax_dim).astype("uint8") + 1
+                    unbuffered_window = iu.buffered_to_unbuffered(
+                        window,
+                        buffer=int(patch_size * (1 / (2 * overlap))),
+                        img_height=meta["height"],
+                        img_width=meta["width"],
+                    )
+                    window_arr = iu.crop_np_to_window(
+                        class_pred, window, unbuffered_window
+                    )
+                    dest.write_band(1, window_arr, window=unbuffered_window)
+
+    except KeyboardInterrupt:
+        print("Inference interrupted.")
+        if show_results:
+            return _plot()
+
+    if show_results:
+        return _plot()
     return out_file_path
