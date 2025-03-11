@@ -161,6 +161,9 @@ def sample_limits(
         )
         for n, w in enumerate(random.sample(windows, sample_size)):
             sample_arr[n] = src.read(indexes=band_list, window=w)
+
+        # handle nan values
+        sample_arr = np.nan_to_num(sample_arr, nan=src.meta["nodata"])
     return {
         i + 1: (
             np.percentile(sample_arr[:, i, ...], limits[0]).astype(src.meta["dtype"]),
