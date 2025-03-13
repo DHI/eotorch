@@ -135,7 +135,6 @@ def patch_generator(
     with rst.open(tif_file_path) as src:
         height = src.height
         width = src.width
-        transform = src.transform
 
         batch, windows = [], []
         last_row = False
@@ -153,14 +152,7 @@ def patch_generator(
                     left = right - patch_size
                     row_finished = True
 
-                # Calculate window bounds in coordinates
-                left_coord, top_coord = transform * (left, top)
-                right_coord, bottom_coord = transform * (right, bottom)
-
-                # Create a window from bounds
-                window = from_bounds(
-                    left_coord, bottom_coord, right_coord, top_coord, transform
-                )
+                window = Window(left, top, patch_size, patch_size)
                 windows.append(window)
                 img_data = src.read(window=window)
                 batch.append(img_data)

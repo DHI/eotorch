@@ -214,12 +214,21 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
         )
         cuda = torch.cuda.is_available()
 
+        in_channels = lightning_module.hparams.get("in_channels")
+
         def predict(image: np.ndarray) -> np.ndarray:
+            in_channels_checked = False
             image = torch.from_numpy(image)
             if image.ndim == 3:
                 image = image.unsqueeze(0)
 
             image = image.permute(0, -1, 1, 2)
+            if in_channels and not in_channels_checked:
+                if image.shape[1] != in_channels:
+                    raise ValueError(
+                        f"Input image has {image.shape[1]} channels, but model expects {in_channels}."
+                    )
+                in_channels_checked = True
             if cuda:
                 image = image.cuda()
             with torch.no_grad():
