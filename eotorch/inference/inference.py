@@ -93,6 +93,7 @@ def predict_on_tif(
                 iu.patch_generator(tif_file_path, patch_size, overlap, batch_size),
                 total=total_windows,
                 force_tty=True,
+                monitor_end=False,
                 finalize=lambda bar: bar.title("Inference finished."),
             ):
                 if (batch == old_no_data).all():
