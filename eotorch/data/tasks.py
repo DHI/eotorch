@@ -204,17 +204,24 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
         self.test_metrics(y_hat, y)
         self.log_dict(self.test_metrics, batch_size=batch_size)
 
-    @staticmethod
-    def get_prediction_func(checkpoint_path: str | Path) -> Callable:
-        lightning_module = SemanticSegmentationTask.load_from_checkpoint(
-            checkpoint_path,
-            map_location=torch.device("cuda")
-            if torch.cuda.is_available()
-            else torch.device("cpu"),
-        )
-        cuda = torch.cuda.is_available()
+    def get_prediction_func(
+        self, device=None, reduce_zero_label: bool = None
+    ) -> Callable:
+        if not device:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        in_channels = lightning_module.hparams.get("in_channels")
+        cuda = device.type == "cuda"
+
+        in_channels = self.hparams.get("in_channels")
+        if hasattr(self, "datamodule_params"):
+            reduce_zero_label = self.datamodule_params.get("dataset_args", {}).get(
+                "reduce_zero_label"
+            )
+            print(
+                "Found reduce_zero_label = True in datamodule_params. Adding 1 to class predictions."
+            )
+        else:
+            reduce_zero_label = reduce_zero_label or False
 
         def predict(image: np.ndarray) -> np.ndarray:
             in_channels_checked = False
@@ -222,7 +229,6 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
             if image.ndim == 3:
                 image = image.unsqueeze(0)
 
-            image = image.permute(0, -1, 1, 2)
             if in_channels and not in_channels_checked:
                 if image.shape[1] != in_channels:
                     raise ValueError(
@@ -231,15 +237,20 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
                 in_channels_checked = True
             if cuda:
                 image = image.cuda()
-            with torch.no_grad():
-                return lightning_module(image.float()).cpu().numpy()
+            with torch.inference_mode():
+                batch_logits = self(image.float()).cpu().numpy()
+                class_pred = np.argmax(batch_logits, axis=-3).astype("uint8")
+                if reduce_zero_label:
+                    class_pred += 1
+
+                return class_pred
 
         return predict
 
     @staticmethod
     def predict_on_tif_file(
         tif_file_path: str | Path,
-        weights_path: str | Path,
+        checkpoint_path: str | Path,
         patch_size: int = 64,
         overlap: int = 2,
         class_mapping: dict[int, str] = None,
@@ -248,7 +259,6 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
         out_file_path: str | Path = None,
         show_results: bool = False,
         ax: plt.Axes = None,
-        argmax_dim: int = -3,
     ):
         """
         Use a trained model to predict segmentation classes on a TIF file
@@ -283,9 +293,26 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
         """
         from eotorch.inference import predict_on_tif
 
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        lightning_module = SemanticSegmentationTask.load_from_checkpoint(
+            checkpoint_path,
+            map_location=device,
+        )
+        data_module_params = torch.load(
+            checkpoint_path, weights_only=False, map_location=device
+        ).get("datamodule_hyper_parameters")
+        if data_module_params:
+            lightning_module.datamodule_params = data_module_params
+            dataset_args = data_module_params.get("dataset_args", {})
+            class_mapping = class_mapping or dataset_args.get("class_mapping")
+            patch_size = data_module_params.get("patch_size") or patch_size
+
         return predict_on_tif(
             tif_file_path=tif_file_path,
-            prediction_func=SemanticSegmentationTask.get_prediction_func(weights_path),
+            prediction_func=lightning_module.get_prediction_func(
+                device=device,
+                reduce_zero_label=True,
+            ),
             patch_size=patch_size,
             overlap=overlap,
             class_mapping=class_mapping,
@@ -294,5 +321,4 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
             out_file_path=out_file_path,
             show_results=show_results,
             ax=ax,
-            argmax_dim=argmax_dim,
         )

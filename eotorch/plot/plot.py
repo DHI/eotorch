@@ -1,4 +1,3 @@
-from typing import Tuple
 from pathlib import Path
 
 import matplotlib.patches as mpatches
@@ -7,6 +6,33 @@ import rasterio as rst
 from matplotlib import cm
 from matplotlib import pyplot as plt
 from rasterio.plot import show
+from rasterio.windows import get_data_window
+
+from eotorch import utils
+
+
+def plot_class_raster(
+    tif_file_path: str | Path,
+    ax: plt.Axes = None,
+    class_mapping: dict[int, str] = None,
+    colormap=cm.tab20,
+    data_window_only: bool = False,
+    **kwargs,
+) -> None:
+    """
+    Plot a raster image with class labels.
+    """
+    with rst.open(tif_file_path) as src:
+        array = src.read(1)
+        plot_numpy_array(
+            array,
+            ax=ax,
+            class_mapping=class_mapping,
+            nodata_value=src.nodata,
+            colormap=colormap,
+            data_window_only=data_window_only,
+            **kwargs,
+        )
 
 
 def plot_numpy_array(
@@ -15,21 +41,26 @@ def plot_numpy_array(
     class_mapping: dict[int, str] = None,
     nodata_value: int = 0,
     colormap=cm.tab20,
+    data_window_only: bool = False,
     **kwargs,
 ):
     if ax is None:
         _, ax = plt.subplots()
 
-    values = np.unique(array.ravel()).tolist()
+    if data_window_only:
+        window = get_data_window(array, nodata=nodata_value)
+        plot_array = array[utils.window_to_np_idc(window)]
+    else:
+        plot_array = array
+
+    values = np.unique(plot_array.ravel()).tolist()
     plot_values = set(values + [nodata_value])
-    # bounds = list(plot_values) + [max(values) + 1]
     if class_mapping:
-        bounds = list(range(len(class_mapping) + 1))
+        bounds = list(range(len(plot_values) + 1))
     else:
         bounds = list(plot_values) + [max(values) + 1]
     norm = plt.matplotlib.colors.BoundaryNorm(bounds, len(bounds))
-    # norm = plt.matplotlib.colors.BoundaryNorm(bounds, colormap.N)
-    ax = show(array, ax=ax, cmap=colormap, norm=norm, **kwargs)
+    ax = show(plot_array, ax=ax, cmap=colormap, norm=norm, **kwargs)
 
     class_mapping = (
         class_mapping.copy() if class_mapping else {v: str(v) for v in values}
@@ -43,7 +74,8 @@ def plot_numpy_array(
     colors = {v: im.cmap(im.norm(v)) for v in plot_values}
 
     legend_patches = [
-        mpatches.Patch(color=colors[i], label=class_mapping[i]) for i in values
+        mpatches.Patch(color=colors[i], label=class_mapping.get(i, str(i)))
+        for i in values
     ]
     ax.legend(
         handles=legend_patches,
@@ -64,25 +96,29 @@ def plot_samples(dataset, n: int = 3, patch_size: int = 256, nodata_val: int = 0
     dataloader = DataLoader(
         dataset, sampler=sampler, collate_fn=stack_samples, batch_size=1
     )
-
-    batch = next(iter(dataloader))
-    sample = unbind_samples(batch)[0]
-
+    _iterator = iter(dataloader)
     samples = []
-    tries = 0
-    while len(samples)<n and tries<100:
-        if (sample['image']==0).all() or (sample['mask']==nodata_val).all():
-            pass
-        else:
+    for _ in range(100):
+        try:
+            batch = next(_iterator)
+            sample = unbind_samples(batch)[0]
+            if (
+                (sample["image"] == 0).all()
+                or (sample["mask"] == nodata_val).all()
+                or (sample["mask"] == -1).all()
+            ):
+                continue
             samples.append(sample)
-        batch = next(iter(dataloader))
-        sample = unbind_samples(batch)[0]
-        tries += 1
+            if len(samples) == n:
+                break
+        except StopIteration:
+            break
 
-    if len(samples)==0:
-        print("No samples found.")
-    else:
-        for i, sample in enumerate(samples):
-            dataset.plot(sample)
-            plt.suptitle(f"Sample {i + 1}")
-            plt.show()
+    if not samples:
+        print("No valid samples found.")
+        return
+
+    for i, sample in enumerate(samples):
+        dataset.plot(sample)
+        plt.suptitle(f"Sample {i + 1}")
+        plt.show()

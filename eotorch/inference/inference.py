@@ -5,7 +5,6 @@ import numpy as np
 import rasterio as rst
 from alive_progress import alive_it
 from matplotlib import pyplot as plt
-from rasterio.io import BufferedDatasetWriter
 
 from eotorch.inference import inference_utils as iu
 from eotorch.plot import plot
@@ -22,7 +21,6 @@ def predict_on_tif(
     out_file_path: str | Path = None,
     show_results: bool = False,
     ax: plt.Axes = None,
-    argmax_dim: int = -3,
 ) -> Path:
     """
     Predict segmentation classes on a TIF file using a custom prediction function.
@@ -38,7 +36,7 @@ def predict_on_tif(
         Integer size of the patch to use for prediction.
     overlap : int
         Overlap factor between patches (larger values increase overlap).
-    classes : dict[int, str], optional
+    class_mapping : dict[int, str], optional
         Mapping from predicted class indices to class names for visualization.
     func_supports_batching : bool
         Whether the prediction_func supports batched processing.
@@ -50,6 +48,7 @@ def predict_on_tif(
         If True, display the prediction output in a notebook environment.
     ax : plt.Axes, optional
         Matplotlib Axes object for plotting if show_results is True.
+
 
     Returns
     -------
@@ -78,18 +77,16 @@ def predict_on_tif(
         / batch_size
     )
 
-    def _plot():
+    def _plot(data_window_only: bool):
         print(f"Showing results for {out_file_path}")
-        with rst.open(out_file_path) as src:
-            predictions = src.read(1)
-            nodata_value = src.nodata
-            return plot.plot_numpy_array(
-                array=predictions,
-                class_mapping=class_mapping,
-                ax=ax,
-                nodata_value=nodata_value,
-            )
+        return plot.plot_class_raster(
+            tif_file_path=out_file_path,
+            class_mapping=class_mapping,
+            ax=ax,
+            data_window_only=data_window_only,
+        )
 
+    any_predictions_written, nan_inputs_logged = False, False
     try:
         with rst.open(out_file_path, "w", **meta) as dest:
             for batch, windows in alive_it(
@@ -100,14 +97,20 @@ def predict_on_tif(
             ):
                 if (batch == old_no_data).all():
                     continue
+
+                if not nan_inputs_logged:
+                    if np.isnan(batch).any():
+                        print(
+                            f"NaN values found in the input image which are not equal to the nodata value. They will be replaced with the nodata value {old_no_data}."
+                        )
+                        nan_inputs_logged = True
                 # handle case of there being nan values that are not set to nodata
                 batch = np.nan_to_num(batch, nan=old_no_data)
 
                 pred = prediction_func(batch)
 
-                # with BufferedDatasetWriter(dest) as writer:
                 for i, window in enumerate(windows):
-                    class_pred = np.argmax(pred[i], axis=argmax_dim).astype("uint8") + 1
+                    class_pred = pred[i]
                     unbuffered_window = iu.buffered_to_unbuffered(
                         window,
                         buffer=int(patch_size * (1 / (2 * overlap))),
@@ -118,12 +121,18 @@ def predict_on_tif(
                         class_pred, window, unbuffered_window
                     )
                     dest.write_band(1, window_arr, window=unbuffered_window)
+                    if not any_predictions_written:
+                        any_predictions_written = True
 
     except KeyboardInterrupt:
+        if show_results and any_predictions_written:
+            print(
+                "Inference interrupted. Showing predictions that have been generated so far."
+            )
+            return _plot(data_window_only=True)
         print("Inference interrupted.")
-        if show_results:
-            return _plot()
+        return
 
     if show_results:
-        return _plot()
+        return _plot(data_window_only=False)
     return out_file_path

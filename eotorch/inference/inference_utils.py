@@ -4,7 +4,7 @@ from typing import Optional, Tuple, Union
 import numpy as np
 import rasterio as rst
 from affine import Affine
-from rasterio.windows import Window, from_bounds
+from rasterio.windows import Window
 
 
 def crop_np_to_window(arr: np.ndarray, w_buffered: Window, w_unbuffered: Window):
@@ -157,21 +157,13 @@ def patch_generator(
                 img_data = src.read(window=window)
                 batch.append(img_data)
                 if len(batch) == batch_size:
-                    yield np.array(batch).transpose(0, 2, 3, 1), windows
+                    yield np.array(batch), windows
                     batch, windows = [], []
                 if row_finished:
                     break
             if last_row:
                 if len(batch) > 0:
-                    yield np.array(batch).transpose(0, 2, 3, 1), windows
+                    yield np.array(batch), windows
                     break
                 else:
                     break
-
-
-def window_to_np_idc(window: Window) -> Tuple[slice, slice]:
-    """Convert a window to numpy array indices."""
-    return (
-        slice(int(round(window.row_off)), int(round(window.row_off + window.height))),
-        slice(int(round(window.col_off)), int(round(window.col_off + window.width))),
-    )

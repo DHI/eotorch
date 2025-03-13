@@ -1,9 +1,15 @@
 import inspect
-import os
-from pathlib import Path
-from typing import Sequence
+from typing import Sequence, Tuple
 
 from rasterio.windows import Window
+
+
+def window_to_np_idc(window: Window) -> Tuple[slice, slice]:
+    """Convert a window to numpy array indices."""
+    return (
+        slice(int(round(window.row_off)), int(round(window.row_off + window.height))),
+        slice(int(round(window.col_off)), int(round(window.col_off + window.width))),
+    )
 
 
 def get_init_args(cls):
