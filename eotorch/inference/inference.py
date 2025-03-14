@@ -7,7 +7,7 @@ from alive_progress import alive_it
 from matplotlib import pyplot as plt
 
 from eotorch.inference import inference_utils as iu
-from eotorch.plot import plot
+from eotorch.plot import plot_class_raster
 
 
 def predict_on_tif(
@@ -79,7 +79,7 @@ def predict_on_tif(
 
     def _plot(data_window_only: bool):
         print(f"Showing results for {out_file_path}")
-        return plot.plot_class_raster(
+        return plot_class_raster(
             tif_file_path=out_file_path,
             class_mapping=class_mapping,
             ax=ax,

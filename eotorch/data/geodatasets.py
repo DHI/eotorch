@@ -11,7 +11,7 @@ from torchgeo.datasets import IntersectionDataset, RasterDataset
 from torchgeo.datasets.utils import BoundingBox
 
 from eotorch.bandindex import BAND_INDEX
-from eotorch.plot.plot import plot_numpy_array
+from eotorch.plot import plot_numpy_array
 
 if TYPE_CHECKING:
     from rasterio.crs import CRS

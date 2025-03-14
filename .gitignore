@@ -139,6 +139,8 @@ dev_data
 **/hparams.yaml
 **/events.out.tfevents.*
 **/*.ckpt
+*.tif
+*.parquet
 
 notebooks/**
 !notebooks/segmentation.ipynb

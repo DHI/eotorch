@@ -11,6 +11,9 @@ import numpy as np
 import rasterio as rst
 from pyogrio import read_dataframe
 from rasterio.features import rasterize
+from rasterio.windows import get_data_window
+
+from eotorch import utils
 
 if TYPE_CHECKING:
     import rasterio.CRS
@@ -55,21 +58,28 @@ class VectorSource(ABC):
     def _get_geoms(self) -> list:
         pass
 
-    def rasterize_polygons(self, out_path: Path | str, **kwargs):
+    def rasterize_polygons(
+        self, out_path: Path | str, exclude_nodata_bounds: bool = False, **kwargs
+    ):
         geoms = self._get_geoms()
         labels = np.zeros(self.shape, dtype="uint8")
         for i, geom in enumerate(geoms, start=1):
-            try:
-                rasterize(
-                    geom,
-                    out=labels,
-                    transform=self.transform,
-                    default_value=i,
-                    **kwargs,
-                )
-            except ValueError:
-                pass
+            # try:
+            rasterize(
+                geom,
+                out=labels,
+                transform=self.transform,
+                default_value=i,
+                **kwargs,
+            )
+            # except ValueError:
+            # pass
         self.profile.update(dtype="uint8")
+
+        if exclude_nodata_bounds:
+            window = get_data_window(labels, nodata=0)
+            labels = labels[utils.window_to_np_idc(window)]
+            self.profile.update(height=labels.shape[0], width=labels.shape[1])
 
         with rst.open(Path(out_path), "w", **self.profile) as dst:
             dst.write(labels, 1)
