@@ -71,12 +71,12 @@ class VectorSource(ABC):
         if class_order is None:
             class_order = list(range(1, len(geoms) + 1))
 
-        idc_not_in_class_order = [
-            i for i in range(1, len(geoms) + 1) if i not in class_order
-        ]
+        class_order = [c for c in class_order if c in geoms]
+
+        idc_not_in_class_order = [i for i in geoms.keys() if i not in class_order]
 
         for i in idc_not_in_class_order:
-            geom = geoms[i - 1]
+            geom = geoms[i]
             rasterize(
                 geom,
                 out=labels,
@@ -86,7 +86,7 @@ class VectorSource(ABC):
             )
 
         for i in class_order:
-            geom = geoms[i - 1]
+            geom = geoms[i]
             rasterize(
                 geom,
                 out=labels,
@@ -130,6 +130,7 @@ class FileSource(VectorSource):
         features = []
         for c in self.classes:
             features.append(read_shp(c, self.root_dir, self.crs))
+        features = {i: f for i, f in enumerate(features, start=1)}
         return features
 
 
@@ -156,7 +157,7 @@ class DataframeSource(VectorSource):
 
     def _get_geoms(self) -> list:
         self.gdf = self.gdf.to_crs(self.crs)
-        features = [g.geometry for _, g in self.gdf.groupby([self.class_column])]
+        features = {c: g.geometry for c, g in self.gdf.groupby(self.class_column)}
         return features
 
 
