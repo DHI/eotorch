@@ -44,6 +44,18 @@ def plot_numpy_array(
     data_window_only: bool = False,
     **kwargs,
 ):
+    """
+    Plot a numpy array with class labels and consistent colors.
+
+    Args:
+        array: The input array to plot
+        ax: Matplotlib axes to plot on (creates new figure if None)
+        class_mapping: Dictionary mapping class values to their string labels
+        nodata_value: Value to treat as no data
+        colormap: Matplotlib colormap to use
+        data_window_only: If True, crops to non-nodata region
+        **kwargs: Additional arguments for rasterio's show function
+    """
     if ax is None:
         _, ax = plt.subplots()
 
@@ -54,29 +66,55 @@ def plot_numpy_array(
         plot_array = array
 
     values = np.unique(plot_array.ravel()).tolist()
-    plot_values = set(values + [nodata_value])
+
+    # Determine min/max class values based on mapping or array values
     if class_mapping:
-        bounds = list(range(len(plot_values) + 1))
+        class_keys = sorted(list(class_mapping.keys()))
+        min_class = min(class_keys) if class_keys else 0
+        max_class = max(class_keys) if class_keys else 0
     else:
-        bounds = list(plot_values) + [max(values) + 1]
-    norm = plt.matplotlib.colors.BoundaryNorm(bounds, len(bounds))
+        min_class = min(values) if values else 0
+        max_class = max(values) if values else 0
+
+    # Ensure nodata_value is included in the range if negative
+    if nodata_value < min_class:
+        min_class = nodata_value
+
+    # Make sure the maximum class index is at least 7 to ensure colormap compatibility
+    max_class = max(max_class, 7)
+
+    # Create a more stable boundary norm - reliable for categorical data
+    bounds = np.arange(min_class - 0.5, max_class + 1.5)
+    norm = plt.matplotlib.colors.BoundaryNorm(bounds, colormap.N)
+
+    # Plot using rasterio's show function
     ax = show(plot_array, ax=ax, cmap=colormap, norm=norm, **kwargs)
 
-    class_mapping = (
-        class_mapping.copy() if class_mapping else {v: str(v) for v in values}
-    )
+    # Prepare class mapping
+    if class_mapping is None:
+        class_mapping = {v: str(v) for v in values}
+    else:
+        class_mapping = class_mapping.copy()
 
-    if (nodata_value in values) and (nodata_value not in class_mapping):
+    # Add nodata to class mapping if needed
+    if (nodata_value in values) and (
+        nodata_value not in class_mapping
+        or class_mapping[nodata_value] == str(nodata_value)
+    ):
         class_mapping[nodata_value] = "No Data"
 
-    im = ax.get_images()[0]
+    # Create deterministic color mapping based on class values
+    colors = {}
+    for cls_val in range(min_class, max_class + 1):
+        colors[cls_val] = colormap(norm(cls_val))
 
-    colors = {v: im.cmap(im.norm(v)) for v in plot_values}
-
+    # Create legend only for values present in this image
     legend_patches = [
         mpatches.Patch(color=colors[i], label=class_mapping.get(i, str(i)))
         for i in values
+        if i in colors
     ]
+
     ax.legend(
         handles=legend_patches,
         bbox_to_anchor=(1.05, 1),
