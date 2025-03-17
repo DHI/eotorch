@@ -28,7 +28,7 @@ def plot_class_raster(
             array,
             ax=ax,
             class_mapping=class_mapping,
-            nodata_value=src.nodata,
+            nodata_value=int(src.nodata),
             colormap=colormap,
             data_window_only=data_window_only,
             **kwargs,
