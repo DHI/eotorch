@@ -12,6 +12,7 @@ import rasterio as rst
 from pyogrio import read_dataframe
 from rasterio.features import rasterize
 from rasterio.windows import get_data_window
+from rasterio.windows import transform as window_transform
 
 from eotorch import utils
 
@@ -99,7 +100,13 @@ class VectorSource(ABC):
         if exclude_nodata_bounds:
             window = get_data_window(labels, nodata=0)
             labels = labels[utils.window_to_np_idc(window)]
-            self.profile.update(height=labels.shape[0], width=labels.shape[1])
+            # Update the transform to reflect the new origin after cropping
+            updated_transform = window_transform(window, self.transform)
+            self.profile.update(
+                height=labels.shape[0],
+                width=labels.shape[1],
+                transform=updated_transform,
+            )
 
         with rst.open(Path(out_path), "w", **self.profile) as dst:
             dst.write(labels, 1)
