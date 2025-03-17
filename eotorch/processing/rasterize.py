@@ -4,7 +4,7 @@ import logging
 import os
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, List
 
 import geopandas as gpd
 import numpy as np
@@ -59,12 +59,24 @@ class VectorSource(ABC):
         pass
 
     def rasterize_polygons(
-        self, out_path: Path | str, exclude_nodata_bounds: bool = False, **kwargs
+        self,
+        out_path: Path | str,
+        exclude_nodata_bounds: bool = True,
+        class_order: List[int] = None,
+        **kwargs,
     ):
         geoms = self._get_geoms()
         labels = np.zeros(self.shape, dtype="uint8")
-        for i, geom in enumerate(geoms, start=1):
-            # try:
+
+        if class_order is None:
+            class_order = list(range(1, len(geoms) + 1))
+
+        idc_not_in_class_order = [
+            i for i in range(1, len(geoms) + 1) if i not in class_order
+        ]
+
+        for i in idc_not_in_class_order:
+            geom = geoms[i - 1]
             rasterize(
                 geom,
                 out=labels,
@@ -72,8 +84,16 @@ class VectorSource(ABC):
                 default_value=i,
                 **kwargs,
             )
-            # except ValueError:
-            # pass
+
+        for i in class_order:
+            geom = geoms[i - 1]
+            rasterize(
+                geom,
+                out=labels,
+                transform=self.transform,
+                default_value=i,
+                **kwargs,
+            )
         self.profile.update(dtype="uint8")
 
         if exclude_nodata_bounds:
