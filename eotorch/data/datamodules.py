@@ -177,3 +177,27 @@ class SegmentationDataModule(GeoDataModule):
             pin_memory=self.pin_memory,
             # prefetch_factor=1,
         )
+
+    def transfer_batch_to_device(
+        self, batch: dict[str, Tensor], device: torch.device, dataloader_idx: int
+    ) -> dict[str, Tensor]:
+        """Transfer batch to device.
+
+        Defines how custom data types are moved to the target device.
+
+        Args:
+            batch: A batch of data that needs to be transferred to a new device.
+            device: The target device as defined in PyTorch.
+            dataloader_idx: The index of the dataloader to which the batch belongs.
+
+        Returns:
+            A reference to the data on the new device.
+        """
+        # Non-Tensor values cannot be moved to a device
+
+        for key in {"image_filepaths", "mask_filepaths"}:
+            if key in batch:
+                del batch[key]
+
+        batch = super().transfer_batch_to_device(batch, device, dataloader_idx)
+        return batch

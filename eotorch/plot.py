@@ -123,7 +123,13 @@ def plot_numpy_array(
     )
 
 
-def plot_samples(dataset, n: int = 3, patch_size: int = 256, nodata_val: int = 0):
+def plot_samples(
+    dataset,
+    n: int = 3,
+    patch_size: int = 256,
+    nodata_val: int = 0,
+    show_filepaths: bool = False,
+):
     from torch.utils.data import DataLoader
     from torchgeo.datasets import stack_samples, unbind_samples
     from torchgeo.samplers import RandomGeoSampler
@@ -157,6 +163,6 @@ def plot_samples(dataset, n: int = 3, patch_size: int = 256, nodata_val: int = 0
         return
 
     for i, sample in enumerate(samples):
-        dataset.plot(sample)
+        dataset.plot(sample, show_filepaths=show_filepaths)
         plt.suptitle(f"Sample {i + 1}")
         plt.show()

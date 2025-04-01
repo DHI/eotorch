@@ -1,4 +1,5 @@
 import inspect
+from pathlib import Path
 from typing import Sequence, Tuple
 
 from rasterio.windows import Window
@@ -87,3 +88,68 @@ def slice_image(
                 slices.append((slice(*height), slice(*width)))
 
     return slices
+
+
+def _format_filepaths(filepaths):
+    """Format filepaths for display in plot titles."""
+    if not filepaths:
+        return ""
+
+    # If only one filepath, show it directly
+    if len(filepaths) == 1:
+        path = Path(filepaths[0])
+        # Show truncated path with at least two parent directories if path is too long
+        if len(str(path)) > 50:
+            # Check if it's in home directory or current working directory
+            home_dir = Path.home()
+            cwd = Path.cwd()
+
+            if home_dir in path.parents or cwd in path.parents:
+                return f".../{path.name}"
+
+            # Include at least two parent directories
+            parent_parts = list(path.parents)
+            if len(parent_parts) >= 2:
+                return f".../{parent_parts[1].name}/{parent_parts[0].name}/{path.name}"
+            elif len(parent_parts) == 1:
+                return f".../{parent_parts[0].name}/{path.name}"
+            else:
+                return f".../{path.name}"
+        return str(path)
+
+    # Convert all paths to Path objects
+    paths = [Path(p) for p in filepaths]
+
+    # Find common prefix to avoid repetition
+    try:
+        common_path = Path(Path(*paths[0].parts[:1]).anchor)
+        for i in range(1, len(paths[0].parts)):
+            potential_common = Path(*paths[0].parts[: i + 1])
+            if all(str(potential_common) in str(p) for p in paths):
+                common_path = potential_common
+            else:
+                break
+    except (IndexError, ValueError):
+        common_path = None
+
+    if common_path and len(str(common_path)) > 10:
+        formatted = f"{common_path}/\n"
+        # Show only the unique parts after the common prefix
+        unique_parts = [str(p).replace(str(common_path), "").lstrip("/") for p in paths]
+
+        # If there are too many files, limit display
+        if len(unique_parts) > 3:
+            formatted += "\n".join(unique_parts[:2])
+            formatted += f"\n...and {len(unique_parts) - 2} more files"
+        else:
+            formatted += "\n".join(unique_parts)
+        return formatted
+
+    # If no common prefix or too short, show first few and indicate total count
+    if len(paths) > 3:
+        return (
+            "\n".join([str(p) for p in paths[:2]])
+            + f"\n...and {len(paths) - 2} more files"
+        )
+
+    return "\n".join([str(p) for p in paths])

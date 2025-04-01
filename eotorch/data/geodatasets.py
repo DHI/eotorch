@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import functools
+import os
+import re
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Iterable, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Sequence, cast
 
 import matplotlib.pyplot as plt
+import torch
 from matplotlib import cm
 from rasterio.plot import show
 from torchgeo.datasets import IntersectionDataset, RasterDataset
@@ -12,9 +15,11 @@ from torchgeo.datasets.utils import BoundingBox
 
 from eotorch.bandindex import BAND_INDEX
 from eotorch.plot import plot_numpy_array
+from eotorch.utils import _format_filepaths
 
 if TYPE_CHECKING:
     from rasterio.crs import CRS
+    from torch import Tensor
 
 
 class CustomCacheRasterDataset(RasterDataset):
@@ -37,6 +42,61 @@ class CustomCacheRasterDataset(RasterDataset):
             self._load_warp_file
         )
 
+    def __getitem__(self, query: BoundingBox) -> dict[str, Any]:
+        """Retrieve image/mask and metadata indexed by query.
+
+        Args:
+            query: (minx, maxx, miny, maxy, mint, maxt) coordinates to index
+
+        Returns:
+            sample of image/mask and metadata at that index
+
+        Raises:
+            IndexError: if query is not found in the index
+        """
+        hits = self.index.intersection(tuple(query), objects=True)
+        filepaths = cast(list[str], [hit.object for hit in hits])
+
+        if not filepaths:
+            raise IndexError(
+                f"query: {query} not found in index with bounds: {self.bounds}"
+            )
+
+        if self.separate_files:
+            data_list: list[Tensor] = []
+            filename_regex = re.compile(self.filename_regex, re.VERBOSE)
+            for band in self.bands:
+                band_filepaths = []
+                for filepath in filepaths:
+                    filename = os.path.basename(filepath)
+                    directory = os.path.dirname(filepath)
+                    match = re.match(filename_regex, filename)
+                    if match:
+                        if "band" in match.groupdict():
+                            start = match.start("band")
+                            end = match.end("band")
+                            filename = filename[:start] + band + filename[end:]
+                    filepath = os.path.join(directory, filename)
+                    band_filepaths.append(filepath)
+                data_list.append(self._merge_files(band_filepaths, query))
+            data = torch.cat(data_list)
+        else:
+            data = self._merge_files(filepaths, query, self.band_indexes)
+
+        sample = {"crs": self.crs, "bounds": query}
+
+        data = data.to(self.dtype)
+        if self.is_image:
+            sample["image"] = data
+            sample["image_filepaths"] = filepaths
+        else:
+            sample["mask"] = data
+            sample["mask_filepaths"] = filepaths
+
+        if self.transforms is not None:
+            sample = self.transforms(sample)
+        return sample
+
 
 class PlottableImageDataset(CustomCacheRasterDataset):
     def plot(self, sample, ax=None, **kwargs):
@@ -48,7 +108,19 @@ class PlottableImageDataset(CustomCacheRasterDataset):
             rgb_indices.append(self.all_bands.index(band))
 
         image = sample["image"][rgb_indices]
-        return show(image.numpy(), ax=ax, adjust=True, **kwargs)
+
+        if show_filepaths := kwargs.pop("show_filepaths", False):
+            filepaths = sample["image_filepaths"]
+            formatted_paths = _format_filepaths(filepaths)
+            ax.set_title(formatted_paths, fontsize=8, wrap=True)
+
+        return show(
+            image.numpy(),
+            ax=ax,
+            adjust=True,
+            title="Image" if not show_filepaths else None,
+            **kwargs,
+        )
 
 
 class PlottabeLabelDataset(CustomCacheRasterDataset):
@@ -86,6 +158,10 @@ class PlottabeLabelDataset(CustomCacheRasterDataset):
         vals = sample["mask"].numpy()
         if self.reduce_zero_label:
             vals += 1
+        if show_filepaths := kwargs.pop("show_filepaths", False):
+            filepaths = sample["mask_filepaths"]
+            formatted_paths = _format_filepaths(filepaths)
+            ax.set_title(formatted_paths, fontsize=8, wrap=True)
 
         plot_numpy_array(
             array=vals,
@@ -93,7 +169,7 @@ class PlottabeLabelDataset(CustomCacheRasterDataset):
             class_mapping=self.class_mapping,
             colormap=self.colormap,
             nodata_value=self.nodata_value,
-            title="Label",
+            title="Label" if not show_filepaths else None,
             **kwargs,
         )
 
