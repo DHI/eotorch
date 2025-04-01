@@ -104,7 +104,7 @@ def _format_filepaths(filepaths):
             home_dir = Path.home()
             cwd = Path.cwd()
 
-            if home_dir in path.parents or cwd in path.parents:
+            if home_dir == path.parent or cwd == path.parent:
                 return f".../{path.name}"
 
             # Include at least two parent directories
