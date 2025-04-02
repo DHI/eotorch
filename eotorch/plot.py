@@ -1,14 +1,96 @@
 from pathlib import Path
 
 import matplotlib.patches as mpatches
+import matplotlib.pyplot as plt
 import numpy as np
 import rasterio as rst
 from matplotlib import cm
 from matplotlib import pyplot as plt
 from rasterio.plot import show
-from rasterio.windows import get_data_window
+from rasterio.windows import from_bounds, get_data_window
+from torch.utils.data import DataLoader
+from torchgeo.datasets import stack_samples, unbind_samples
+from torchgeo.samplers import BatchGeoSampler
 
 from eotorch import utils
+
+
+def visualize_samplers(
+    datasets: list, samplers: list, n_samples: int = None, class_mapping: dict = None
+):
+    dataloaders = []
+    for dataset, sampler in zip(datasets, samplers):
+        if isinstance(sampler, BatchGeoSampler):
+            batch_sampler = sampler
+            sampler = None
+        else:
+            batch_sampler = None
+
+        dataloader = DataLoader(
+            dataset,
+            batch_sampler=batch_sampler,
+            sampler=sampler,
+            collate_fn=stack_samples,
+        )
+        dataloaders.append(dataloader)
+
+    file_mapping = {}
+    colors = ["r", "g", "b", "c", "m", "y", "k"]
+    for j, (color, dataloader) in enumerate(zip(colors, dataloaders)):
+        for i, batch in enumerate(dataloader, start=1):
+            if (n_samples is not None) and (i > n_samples):
+                break
+
+            samples = unbind_samples(batch)
+
+            for sample in samples:
+                for mask_path in sample["mask_filepaths"]:
+                    if mask_path not in file_mapping:
+                        with rst.open(mask_path) as src:
+                            transform = src.transform
+                        file_mapping[mask_path] = {
+                            "fig": plot_class_raster(
+                                tif_file_path=mask_path,
+                                title=mask_path,
+                                class_mapping=class_mapping,
+                            ),
+                            "transform": transform,
+                            "height": src.height,
+                            "width": src.width,
+                        }
+                    bounds = sample["bounds"]
+                    height, width = (
+                        file_mapping[mask_path]["height"],
+                        file_mapping[mask_path]["width"],
+                    )
+                    pixel_bounds = from_bounds(
+                        left=bounds[0],
+                        bottom=bounds[2],
+                        right=bounds[1],
+                        top=bounds[3],
+                        transform=file_mapping[mask_path]["transform"],
+                    )
+                    fig = file_mapping[mask_path]["fig"]
+                    xy = (
+                        pixel_bounds.col_off / width,
+                        pixel_bounds.row_off / height,
+                    )
+                    rect = plt.Rectangle(
+                        xy=xy,
+                        width=pixel_bounds.width / width,
+                        height=pixel_bounds.height / height,
+                        fill=False,
+                        color=color,
+                        # alpha=0.5,
+                        # zorder=1000,
+                        transform=fig.transFigure,
+                        figure=fig,
+                        lw=2,
+                    )
+                    ax = fig.get_axes()[0]
+                    ax.add_patch(rect)
+
+    plt.show(block=True)
 
 
 def plot_class_raster(
@@ -24,7 +106,7 @@ def plot_class_raster(
     """
     with rst.open(tif_file_path) as src:
         array = src.read(1)
-        plot_numpy_array(
+        return plot_numpy_array(
             array,
             ax=ax,
             class_mapping=class_mapping,
@@ -56,6 +138,8 @@ def plot_numpy_array(
         data_window_only: If True, crops to non-nodata region
         **kwargs: Additional arguments for rasterio's show function
     """
+
+    plt.ioff()
     if ax is None:
         _, ax = plt.subplots()
 
@@ -121,6 +205,8 @@ def plot_numpy_array(
         loc=2,
         borderaxespad=0.0,
     )
+
+    return ax.get_figure()
 
 
 def plot_samples(

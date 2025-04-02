@@ -52,6 +52,25 @@ def get_dataset_args(ds):
 
 
 class SegmentationDataModule(GeoDataModule):
+    """
+
+    A data module for segmentation tasks using GeoDataModule.
+    Inherits from GeoDataModule and provides additional generic functionality for
+    segmentation datasets.
+
+    The following customizations are made:
+    - In TorchGeo's standard approach when initializing subclasses of GeoDataModule, the dataset is passed as a class type
+      (e.g., RasterDataset, IntersectionDataset) instead of an instance. This is due to the fact that the dataset
+      might have to be initialized on multiple different workers / nodes. However, this requires the user to
+      provide all the necessary parameters for dataset initialization, which might not be intuitive for
+      users who are not familiar with the library. Instead, we would like to allow users of the high-level
+      interfaces of eotorch to first initialize a dataset, inspect some samples from it, and then just pass
+      the dataset instance directly to the data module. This behavior is supported by SegmentationDataModule.
+    - Parameters such as the number of workers, persistent workers, and pin memory can be set modified when
+        initializing the data module. This allows for more control over the data loading process.
+
+    """
+
     def __init__(
         self,
         dataset: type[GeoDataset] | RasterDataset | IntersectionDataset,
@@ -140,8 +159,6 @@ class SegmentationDataModule(GeoDataModule):
     def _dataloader_factory(self, split: str) -> DataLoader[dict[str, Tensor]]:
         """
         Same as GeoDataModule._dataloader_factory but allows for customization of dataloader behavior.
-
-        Implement one or more PyTorch DataLoaders.
 
         Args:
             split: Either 'train', 'val', 'test', or 'predict'.
