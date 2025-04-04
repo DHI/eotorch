@@ -10,8 +10,8 @@ import shapely
 from matplotlib import cm
 from matplotlib import pyplot as plt
 from rasterio.plot import show
+from rasterio.vrt import WarpedVRT
 from rasterio.windows import from_bounds, get_data_window
-from shapely.ops import transform
 from torch.utils.data import DataLoader
 from torchgeo.datasets import stack_samples, unbind_samples
 from torchgeo.samplers import BatchGeoSampler
@@ -39,7 +39,7 @@ def plot_dataset_index(dataset, map=None, color="olive"):
     style_dict = dict(fill=False, weight=5, opacity=0.7, color=color)
     # style_dict.update(kwargs)
 
-    projection = pyproj.Transformer.from_proj(
+    projection = pyproj.Transformer.from_crs(
         dataset.crs,  # source crs
         pyproj.CRS("EPSG:4326"),  # target_crs
         always_xy=True,
@@ -49,7 +49,7 @@ def plot_dataset_index(dataset, map=None, color="olive"):
         box = shapely.geometry.box(
             minx=bounds[0], miny=bounds[2], maxx=bounds[1], maxy=bounds[3]
         )
-        return transform(projection.transform, box)
+        return shapely.ops.transform(projection.transform, box)
 
     for o in objs:
         folium.GeoJson(
@@ -101,19 +101,27 @@ def visualize_samplers(
                     if mask_path not in file_mapping:
                         if max_files is not None and len(file_mapping) >= max_files:
                             continue
-                            # break
                         with rst.open(mask_path) as src:
-                            transform = src.transform
-                        file_mapping[mask_path] = {
-                            "fig": plot_class_raster(
-                                tif_file_path=mask_path,
-                                title=mask_path,
-                                class_mapping=class_mapping,
-                            ),
-                            "transform": transform,
-                            "height": src.height,
-                            "width": src.width,
-                        }
+                            with WarpedVRT(src, crs=datasets[j].crs) as vrt:
+                                bounds = vrt.bounds
+                                transform = rst.transform.from_bounds(
+                                    west=bounds[0],
+                                    south=bounds[1],
+                                    east=bounds[2],
+                                    north=bounds[3],
+                                    width=vrt.width,
+                                    height=vrt.height,
+                                )
+                                file_mapping[mask_path] = {
+                                    "fig": plot_class_raster(
+                                        tif_file_path=mask_path,
+                                        title=mask_path,
+                                        class_mapping=class_mapping,
+                                    ),
+                                    "height": src.height,
+                                    "width": src.width,
+                                    "transform": transform,
+                                }
                     bounds = sample["bounds"]
                     height, width = (
                         file_mapping[mask_path]["height"],
@@ -131,7 +139,6 @@ def visualize_samplers(
                         pixel_bounds.col_off / width,
                         pixel_bounds.row_off / height,
                     )
-                    # ax = fig.get_axes()[0]
                     ax = fig.gca()
                     rect = plt.Rectangle(
                         xy=xy,
@@ -147,16 +154,6 @@ def visualize_samplers(
                         lw=2,
                     )
                     ax.add_patch(rect)
-                    print(f"Added rectangle to {mask_path} at {xy}")
-
-    # save all figures to disk
-    # for mask_path, data in file_mapping.items():
-    #     fig = data["fig"]
-    #     fig.savefig(mask_path.replace(".tif", ".png"), dpi=300)
-    #     plt.close(fig)
-
-    # plt.tight_layout()
-    # plt.show()
     plt.show(block=True)
 
 
