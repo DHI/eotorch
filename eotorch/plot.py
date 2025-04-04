@@ -1,13 +1,17 @@
 from pathlib import Path
 
+import folium
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
+import pyproj
 import rasterio as rst
+import shapely
 from matplotlib import cm
 from matplotlib import pyplot as plt
 from rasterio.plot import show
 from rasterio.windows import from_bounds, get_data_window
+from shapely.ops import transform
 from torch.utils.data import DataLoader
 from torchgeo.datasets import stack_samples, unbind_samples
 from torchgeo.samplers import BatchGeoSampler
@@ -15,8 +19,57 @@ from torchgeo.samplers import BatchGeoSampler
 from eotorch import utils
 
 
+def convert_bounds(bbox, invert_y=False):
+    """
+    Helper method for changing bounding box representation to leaflet notation
+
+    ``(lon1, lat1, lon2, lat2) -> ((lat1, lon1), (lat2, lon2))``
+    """
+    x1, y1, x2, y2 = bbox
+    if invert_y:
+        y1, y2 = y2, y1
+    return ((y1, x1), (y2, x2))
+
+
+def plot_dataset_index(dataset, map=None, color="olive"):
+    objs = dataset.index.intersection(dataset.index.bounds, objects=True)
+
+    map = map or folium.Map()
+
+    style_dict = dict(fill=False, weight=5, opacity=0.7, color=color)
+    # style_dict.update(kwargs)
+
+    projection = pyproj.Transformer.from_proj(
+        dataset.crs,  # source crs
+        pyproj.CRS("EPSG:4326"),  # target_crs
+        always_xy=True,
+    )
+
+    def _to_latlon_box(bounds):
+        box = shapely.geometry.box(
+            minx=bounds[0], miny=bounds[2], maxx=bounds[1], maxy=bounds[3]
+        )
+        return transform(projection.transform, box)
+
+    for o in objs:
+        folium.GeoJson(
+            # shapely.geometry.box(*_tmp.bounds),
+            _to_latlon_box(o.bounds),
+            style_function=lambda x: style_dict,
+            name="Bounds",
+        ).add_to(map)
+
+    map.fit_bounds(bounds=convert_bounds(_to_latlon_box(dataset.index.bounds).bounds))
+    # map.fit_bounds(bounds=utils.convert_bounds(_tmp.bounds))
+    return map
+
+
 def visualize_samplers(
-    datasets: list, samplers: list, n_samples: int = None, class_mapping: dict = None
+    datasets: list,
+    samplers: list,
+    max_samples: int = None,
+    max_files: int = None,
+    class_mapping: dict = None,
 ):
     dataloaders = []
     for dataset, sampler in zip(datasets, samplers):
@@ -38,7 +91,7 @@ def visualize_samplers(
     colors = ["r", "g", "b", "c", "m", "y", "k"]
     for j, (color, dataloader) in enumerate(zip(colors, dataloaders)):
         for i, batch in enumerate(dataloader, start=1):
-            if (n_samples is not None) and (i > n_samples):
+            if (max_samples is not None) and (i > max_samples):
                 break
 
             samples = unbind_samples(batch)
@@ -46,6 +99,9 @@ def visualize_samplers(
             for sample in samples:
                 for mask_path in sample["mask_filepaths"]:
                     if mask_path not in file_mapping:
+                        if max_files is not None and len(file_mapping) >= max_files:
+                            continue
+                            # break
                         with rst.open(mask_path) as src:
                             transform = src.transform
                         file_mapping[mask_path] = {
@@ -75,6 +131,8 @@ def visualize_samplers(
                         pixel_bounds.col_off / width,
                         pixel_bounds.row_off / height,
                     )
+                    # ax = fig.get_axes()[0]
+                    ax = fig.gca()
                     rect = plt.Rectangle(
                         xy=xy,
                         width=pixel_bounds.width / width,
@@ -84,12 +142,21 @@ def visualize_samplers(
                         # alpha=0.5,
                         # zorder=1000,
                         transform=fig.transFigure,
+                        # transform=ax.transAxes,
                         figure=fig,
                         lw=2,
                     )
-                    ax = fig.get_axes()[0]
                     ax.add_patch(rect)
+                    print(f"Added rectangle to {mask_path} at {xy}")
 
+    # save all figures to disk
+    # for mask_path, data in file_mapping.items():
+    #     fig = data["fig"]
+    #     fig.savefig(mask_path.replace(".tif", ".png"), dpi=300)
+    #     plt.close(fig)
+
+    # plt.tight_layout()
+    # plt.show()
     plt.show(block=True)
 
 

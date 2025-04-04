@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import functools
+import logging
 import os
 import re
 from pathlib import Path
@@ -14,7 +15,7 @@ from torchgeo.datasets import IntersectionDataset, RasterDataset
 from torchgeo.datasets.utils import BoundingBox
 
 from eotorch.bandindex import BAND_INDEX
-from eotorch.plot import plot_numpy_array
+from eotorch.plot import plot_dataset_index, plot_numpy_array
 from eotorch.utils import _format_filepaths
 
 if TYPE_CHECKING:
@@ -29,7 +30,7 @@ class CustomCacheRasterDataset(RasterDataset):
 
     def __init__(
         self,
-        paths: Path | Iterable[Path] = "data",
+        paths: str | Path | Iterable[str] | Iterable[Path] = "data",
         crs: CRS | None = None,
         res: float | None = None,
         bands: Sequence[str] | None = None,
@@ -41,6 +42,8 @@ class CustomCacheRasterDataset(RasterDataset):
         self._cached_load_warp_file = functools.lru_cache(maxsize=cache_size)(
             self._load_warp_file
         )
+        # In order to avoid spamming "Skipping source" Log Messages in Rasterio Merge
+        logging.getLogger("rasterio").setLevel(logging.WARNING)
 
     def __getitem__(self, query: BoundingBox) -> dict[str, Any]:
         """Retrieve image/mask and metadata indexed by query.
@@ -97,6 +100,10 @@ class CustomCacheRasterDataset(RasterDataset):
             sample = self.transforms(sample)
         return sample
 
+    def _repr_html_(self):
+        print(f"Dataset containing {len(self)} files, crs: {self.crs}, res: {self.res}")
+        return plot_dataset_index(self)._repr_html_()
+
 
 class PlottableImageDataset(CustomCacheRasterDataset):
     def plot(self, sample, ax=None, **kwargs):
@@ -131,7 +138,7 @@ class PlottabeLabelDataset(CustomCacheRasterDataset):
 
     def __init__(
         self,
-        paths: Path | Iterable[Path] = "data",
+        paths: str | Path | Iterable[str] | Iterable[Path] = "data",
         crs: CRS | None = None,
         res: float | None = None,
         bands: Sequence[str] | None = None,
@@ -204,10 +211,14 @@ class LabelledRasterDataset(IntersectionDataset):
 
         return fig
 
+    def _repr_html_(self):
+        print(f"Dataset containing {len(self)} files, crs: {self.crs}, res: {self.res}")
+        return plot_dataset_index(self)._repr_html_()
+
 
 def get_segmentation_dataset(
-    images_dir: str | Path,
-    labels_dir: str | Path = None,
+    images_dir: str | Path | Iterable[str] | Iterable[Path],
+    labels_dir: str | Path | Iterable[str] | Iterable[Path] = None,
     image_glob="*.tif",
     label_glob="*.tif",
     image_filename_regex: str = None,

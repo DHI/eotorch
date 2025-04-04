@@ -99,7 +99,7 @@ def _format_filepaths(filepaths):
     if len(filepaths) == 1:
         path = Path(filepaths[0])
         # Show truncated path with at least two parent directories if path is too long
-        if len(str(path)) > 50:
+        if len(str(path)) > 40:
             # Check if it's in home directory or current working directory
             home_dir = Path.home()
             cwd = Path.cwd()
