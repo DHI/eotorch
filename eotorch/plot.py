@@ -118,8 +118,8 @@ def visualize_samplers(
                                         title=mask_path,
                                         class_mapping=class_mapping,
                                     ),
-                                    "height": src.height,
-                                    "width": src.width,
+                                    "height": vrt.height,
+                                    "width": vrt.width,
                                     "transform": transform,
                                 }
                     bounds = sample["bounds"]
