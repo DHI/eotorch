@@ -18,6 +18,7 @@ from eotorch.data.geodatasets import (
     PlottableImageDataset,
     get_segmentation_dataset,
 )
+from eotorch.data.splits import file_wise_split
 
 
 def get_dataset_args(ds):
@@ -73,7 +74,9 @@ class SegmentationDataModule(GeoDataModule):
 
     def __init__(
         self,
-        dataset: type[GeoDataset] | RasterDataset | IntersectionDataset,
+        train_dataset: type[GeoDataset] | RasterDataset | IntersectionDataset,
+        val_dataset: type[GeoDataset] | RasterDataset | IntersectionDataset = None,
+        test_dataset: type[GeoDataset] | RasterDataset | IntersectionDataset = None,
         batch_size: int = 1,
         patch_size: int | tuple[int, int] = 64,
         length: int | None = None,
@@ -82,16 +85,36 @@ class SegmentationDataModule(GeoDataModule):
         pin_memory: bool = False,
         **kwargs: Any,
     ):
-        if isinstance(dataset, (RasterDataset, IntersectionDataset)):
-            dataset_kwargs = get_dataset_args(dataset)
-            dataset_class = type(dataset)
-
-        else:
-            dataset_kwargs = kwargs
-            dataset_class = dataset
         super().__init__(
-            dataset_class, batch_size, patch_size, length, num_workers, **dataset_kwargs
+            # train_cls,
+            train_dataset.__class__,
+            batch_size,
+            patch_size,
+            length,
+            num_workers,  # **dataset_kwargs
         )
+
+        self.train_dataset = train_dataset
+        self.val_dataset = val_dataset
+        self.test_dataset = test_dataset
+        if not self.val_dataset:
+            print("No val dataset provided. Performing default train / val split.")
+            # TODO: Change this to > 10 once more splits are supported, for fewer files we probably want an ROI based split
+            number_of_files_threshold = 1
+            if len(self.train_dataset) > number_of_files_threshold:
+                self.train_dataset, self.val_dataset = file_wise_split(
+                    dataset=self.train_dataset,
+                    ratios_or_counts=[0.9, 0.1],
+                )
+                print(
+                    f"""
+Since the number of files in the training dataset ({len(self.train_dataset)}) is greater than 
+{number_of_files_threshold}, a  train / val split based on files was performed.
+{len(self.val_dataset)} file(s) were assigned to the validation dataset.
+If this is not desired, please provide a val_dataset to the data module.
+                    """
+                )
+
         self.persistent_workers = persistent_workers
         self.pin_memory = pin_memory
 
@@ -106,7 +129,7 @@ class SegmentationDataModule(GeoDataModule):
 
         self.save_hyperparameters(
             {
-                "dataset_args": _format_dict_for_yaml(dataset_kwargs),
+                "dataset_args": _format_dict_for_yaml(get_dataset_args(train_dataset)),
                 "batch_size": batch_size,
                 "patch_size": patch_size,
                 "length": length,
@@ -123,24 +146,13 @@ class SegmentationDataModule(GeoDataModule):
             stage: Either 'fit', 'validate', 'test', or 'predict'.
         """
 
-        self.dataset = get_segmentation_dataset(**self.kwargs)
-
-        generator = torch.Generator().manual_seed(0)
-        (
-            self.train_dataset,
-            self.val_dataset,
-            self.test_dataset,
-        ) = random_grid_cell_assignment(
-            dataset=self.dataset,
-            fractions=[0.8, 0.1, 0.1],
-            grid_size=6,
-            generator=generator,
-        )
-
         if stage in ["fit"]:
-            self.train_batch_sampler = RandomBatchGeoSampler(
-                self.train_dataset, self.patch_size, self.batch_size, self.length
+            self.train_sampler = GridGeoSampler(
+                self.train_dataset, self.patch_size, self.patch_size / 2
             )
+            # self.train_batch_sampler = RandomBatchGeoSampler(
+            #     self.train_dataset, self.patch_size, self.batch_size, self.length
+            # )
         if stage in ["fit", "validate"]:
             self.val_sampler = GridGeoSampler(
                 self.val_dataset, self.patch_size, self.patch_size
@@ -149,12 +161,6 @@ class SegmentationDataModule(GeoDataModule):
             self.test_sampler = GridGeoSampler(
                 self.test_dataset, self.patch_size, self.patch_size
             )
-
-    # def val_dataloader(self):  # -> DataLoader[dict[str, Tensor]]:
-    #     loader = self._dataloader_factory("val")
-    #     # loader.num_workers = 0
-    #     loader.num_workers = 2
-    #     return loader
 
     def _dataloader_factory(self, split: str) -> DataLoader[dict[str, Tensor]]:
         """

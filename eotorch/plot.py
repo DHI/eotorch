@@ -59,6 +59,8 @@ def plot_dataset_index(dataset, map=None, color="olive"):
             name="Bounds",
         ).add_to(map)
 
+    folium.ClickForMarker().add_to(map)
+
     map.fit_bounds(bounds=convert_bounds(_to_latlon_box(dataset.index.bounds).bounds))
     # map.fit_bounds(bounds=utils.convert_bounds(_tmp.bounds))
     return map
