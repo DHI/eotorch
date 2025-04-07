@@ -2,7 +2,11 @@ import inspect
 from pathlib import Path
 from typing import Sequence, Tuple
 
+import pyproj
+import shapely.geometry
+import shapely.ops
 from rasterio.windows import Window
+from torchgeo.datasets.utils import BoundingBox
 
 
 def window_to_np_idc(window: Window) -> Tuple[slice, slice]:
@@ -153,3 +157,54 @@ def _format_filepaths(filepaths):
         )
 
     return "\n".join([str(p) for p in paths])
+
+
+def torchgeo_bb_to_shapely(
+    bbox: list | BoundingBox,
+    bbox_crs: str | pyproj.CRS,
+    target_crs: str | pyproj.CRS = "EPSG:4326",
+):
+    """
+    Convert a list of bound coordinates or a BoundingBox object to a Shapely Polygon.
+
+    Parameters:
+        bbox (list or BoundingBox):
+            The bounding box to convert. If a list, it should be in the format
+            [minx, maxx, miny, maxy], it may also contain more than 4 values (e.g. mint, maxt).
+        If a BoundingBox object, it should have the attributes minx, maxx, miny, maxy.
+        bbox_crs (str or pyproj.CRS):
+            The coordinate reference system of the input bounding box.
+        target_crs (str or pyproj.CRS, optional):
+            The target coordinate reference system. Defaults to "EPSG:4326".
+
+    Returns:
+        shapely.geometry.Polygon:
+            The converted Shapely Polygon.
+    """
+    if isinstance(target_crs, str):
+        target_crs = pyproj.CRS(target_crs)
+
+    if isinstance(bbox_crs, str):
+        bbox_crs = pyproj.CRS(bbox_crs)
+
+    # Create a shapely polygon from the bbox coordinates
+    if isinstance(bbox, list):
+        polygon = shapely.geometry.box(
+            minx=bbox[0], miny=bbox[2], maxx=bbox[1], maxy=bbox[3]
+        )
+    else:
+        polygon = shapely.geometry.box(
+            minx=bbox.minx, miny=bbox.miny, maxx=bbox.maxx, maxy=bbox.maxy
+        )
+
+    # If the CRS is the same, no need to transform
+    if bbox_crs == target_crs:
+        return polygon
+
+    # Create transformer for the coordinate conversion
+    transformer = pyproj.Transformer.from_crs(bbox_crs, target_crs, always_xy=True)
+
+    # Transform the polygon to the target CRS
+    transformed_polygon = shapely.ops.transform(transformer.transform, polygon)
+
+    return transformed_polygon

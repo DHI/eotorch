@@ -162,6 +162,64 @@ If this is not desired, please provide a val_dataset to the data module.
                 self.test_dataset, self.patch_size, self.patch_size
             )
 
+    def preview_data(self, max_samples: int = 100, map=None):
+        """
+        Visualize the dataset splits and their samplers on an interactive map.
+
+        This method allows users to verify their data splits before training by
+        displaying the datasets and how they are sampled using the configured samplers.
+
+        Args:
+            max_samples: Maximum number of samples to display per dataset.
+                Set to a reasonable value to keep the map responsive.
+            map: Optional existing folium map to add the visualization to.
+                If None, a new map will be created.
+
+        Returns:
+            folium.Map: The interactive map with dataset boundaries and samplers visualized.
+        """
+        from eotorch.plot import plot_samplers_on_map
+
+        # Ensure samplers are set up
+        if self.train_sampler is None:
+            print("Setting up samplers for visualization...")
+            self.setup(stage="fit")
+            if self.test_dataset is not None and self.test_sampler is None:
+                self.setup(stage="test")
+
+        # Collect datasets and samplers
+        datasets, samplers, names = [], [], []
+        if self.train_dataset is not None and self.train_sampler is not None:
+            # if hasattr(self, "train_dataset") and hasattr(self, "train_sampler"):
+            datasets.append(self.train_dataset)
+            samplers.append(self.train_sampler)
+            names.append("Train")
+
+        if self.val_dataset is not None and self.val_sampler is not None:
+            datasets.append(self.val_dataset)
+            samplers.append(self.val_sampler)
+            names.append("Validation")
+
+        if self.test_dataset is not None and self.test_sampler is not None:
+            datasets.append(self.test_dataset)
+            samplers.append(self.test_sampler)
+            names.append("Test")
+
+        if not datasets:
+            raise ValueError(
+                "No datasets with samplers available. "
+                "Make sure to initialize the data module properly."
+            )
+
+        # Visualize the datasets and samplers
+        return plot_samplers_on_map(
+            datasets=datasets,
+            samplers=samplers,
+            map=map,
+            max_samples=max_samples,
+            dataset_names=names,
+        )
+
     def _dataloader_factory(self, split: str) -> DataLoader[dict[str, Tensor]]:
         """
         Same as GeoDataModule._dataloader_factory but allows for customization of dataloader behavior.

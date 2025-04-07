@@ -4,11 +4,8 @@ import folium
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
-import pyproj
 import rasterio as rst
-import shapely
 from matplotlib import cm
-from matplotlib import pyplot as plt
 from rasterio.plot import show
 from rasterio.vrt import WarpedVRT
 from rasterio.windows import from_bounds, get_data_window
@@ -31,38 +28,53 @@ def convert_bounds(bbox, invert_y=False):
     return ((y1, x1), (y2, x2))
 
 
-def plot_dataset_index(dataset, map=None, color="olive"):
+def plot_dataset_index(dataset, map=None, color="olive", name=None):
+    """
+    Plot the boundaries of a geo dataset on a folium map.
+
+    Args:
+        dataset: The geo dataset to visualize
+        map: Optional existing folium map to add to
+        color: Color to use for the dataset boundaries
+        name: Name to use in the layer control legend (defaults to "Dataset Boundaries")
+
+    Returns:
+        folium.Map: The map with dataset boundaries visualized
+    """
     objs = dataset.index.intersection(dataset.index.bounds, objects=True)
 
     map = map or folium.Map()
 
+    # Create a feature group with a name for the legend
+    feature_group_name = name or f"Dataset Boundaries ({color})"
+    feature_group = folium.FeatureGroup(name=feature_group_name)
+
     style_dict = dict(fill=False, weight=5, opacity=0.7, color=color)
-    # style_dict.update(kwargs)
-
-    projection = pyproj.Transformer.from_crs(
-        dataset.crs,  # source crs
-        pyproj.CRS("EPSG:4326"),  # target_crs
-        always_xy=True,
-    )
-
-    def _to_latlon_box(bounds):
-        box = shapely.geometry.box(
-            minx=bounds[0], miny=bounds[2], maxx=bounds[1], maxy=bounds[3]
-        )
-        return shapely.ops.transform(projection.transform, box)
 
     for o in objs:
         folium.GeoJson(
-            # shapely.geometry.box(*_tmp.bounds),
-            _to_latlon_box(o.bounds),
-            style_function=lambda x: style_dict,
-            name="Bounds",
-        ).add_to(map)
+            utils.torchgeo_bb_to_shapely(o.bounds, bbox_crs=dataset.crs),
+            style_function=lambda x, style=style_dict: style,
+        ).add_to(feature_group)
 
+    # Add the feature group to the map
+    feature_group.add_to(map)
+
+    # Add click for marker functionality
     folium.ClickForMarker().add_to(map)
 
-    map.fit_bounds(bounds=convert_bounds(_to_latlon_box(dataset.index.bounds).bounds))
-    # map.fit_bounds(bounds=utils.convert_bounds(_tmp.bounds))
+    # Fit bounds to show all content
+    map.fit_bounds(
+        bounds=convert_bounds(
+            utils.torchgeo_bb_to_shapely(
+                dataset.index.bounds, bbox_crs=dataset.crs
+            ).bounds
+        )
+    )
+
+    # Always add layer control
+    folium.LayerControl().add_to(map)
+
     return map
 
 
@@ -157,6 +169,195 @@ def visualize_samplers(
                     )
                     ax.add_patch(rect)
     plt.show(block=True)
+
+
+def plot_samplers_on_map(
+    datasets: list,
+    samplers: list,
+    map=None,
+    max_samples: int = None,
+    max_files: int = None,
+    colors: list = None,
+    dataset_colors: list = None,
+    dataset_names: list = None,
+):
+    """
+    Visualize samplers on a folium map rather than on matplotlib plots.
+
+    Args:
+        datasets: List of datasets to visualize
+        samplers: List of samplers to visualize (must match datasets length)
+        map: Optional existing folium map to add to
+        max_samples: Maximum number of samples to plot per dataset-sampler pair
+        max_files: Maximum number of files to include in visualization
+        colors: List of colors for the samples from each dataset
+        dataset_colors: List of colors for the dataset boundaries
+        dataset_names: List of names to use for each dataset in the legend
+
+    Returns:
+        folium.Map: The map with samplers visualized
+    """
+    from alive_progress import alive_it
+    from torch.utils.data import DataLoader
+    from torchgeo.datasets import stack_samples, unbind_samples
+    from torchgeo.samplers import BatchGeoSampler
+
+    if colors is None:
+        colors = ["red", "green", "blue", "purple", "orange", "cadetblue", "black"]
+
+    if dataset_colors is None:
+        dataset_colors = [
+            "olive",
+            "darkgreen",
+            "darkblue",
+            "darkred",
+            "darkpurple",
+            "darkorange",
+            "gray",
+        ]
+
+    if dataset_names is None:
+        dataset_names = [f"Dataset {i + 1}" for i in range(len(datasets))]
+
+    # Create a folium map if not provided
+    map = map or folium.Map()
+
+    # Dictionary to track processed files to avoid duplicates
+    processed_files = {}
+
+    # Create separate feature groups for dataset boundaries
+    for i, dataset in enumerate(datasets):
+        color = dataset_colors[i % len(dataset_colors)]
+        name = f"{dataset_names[i]} Boundary"
+
+        # Create a feature group for dataset boundaries
+        boundary_group = folium.FeatureGroup(name=name)
+
+        # Add dataset boundaries to the feature group
+        style_dict = dict(fill=False, weight=5, opacity=0.7, color=color)
+
+        # Add dataset boundaries without progress bar
+        for o in dataset.index.intersection(dataset.index.bounds, objects=True):
+            folium.GeoJson(
+                utils.torchgeo_bb_to_shapely(o.bounds, bbox_crs=dataset.crs),
+                style_function=lambda x, style=style_dict: style,
+            ).add_to(boundary_group)
+
+        # Add the feature group to the map
+        boundary_group.add_to(map)
+
+    # Create dataloaders
+    dataloaders = []
+
+    for dataset, sampler in zip(datasets, samplers):
+        if isinstance(sampler, BatchGeoSampler):
+            batch_sampler = sampler
+            sampler = None
+        else:
+            batch_sampler = None
+
+        dataloader = DataLoader(
+            dataset,
+            batch_sampler=batch_sampler,
+            sampler=sampler,
+            collate_fn=stack_samples,
+        )
+        dataloaders.append(dataloader)
+
+        # Try to estimate total number of samples for progress bar
+        # if hasattr(sampler, "__len__"):
+        #     total_samples_expected += len(sampler)
+        # elif hasattr(batch_sampler, "__len__"):
+        #     total_samples_expected += len(batch_sampler)
+
+    # Set max_samples based on estimate if not provided
+
+    print("Sampling bounding boxes and adding them to map...")
+
+    # Process each dataset and sampler
+    for j, (color, dataloader) in enumerate(zip(colors, dataloaders)):
+        # Create a feature group for this dataset's samples
+        feature_group_name = f"{dataset_names[j]} Samples ({colors[j]})"
+        sample_group = folium.FeatureGroup(name=feature_group_name)
+
+        total = (
+            min(max_samples, len(samplers[j]))
+            if max_samples is not None
+            else len(samplers[j])
+        )
+        sample_count = 0
+
+        # Create an iterator that will display progress
+        dataloader_with_progress = alive_it(
+            dataloader,
+            total=total,
+            title=f"Adding {feature_group_name}",
+            force_tty=True,
+            max_cols=100,
+            finalize=lambda bar: bar.title(f"Added {feature_group_name}"),
+        )
+
+        for batch in dataloader_with_progress:
+            samples = unbind_samples(batch)
+
+            for sample in samples:
+                # Create geometric representation of sample bounds
+                bounds = sample["bounds"]
+                poly = utils.torchgeo_bb_to_shapely(bounds, bbox_crs=datasets[j].crs)
+
+                # Define style for the sample polygon
+                style_function = lambda x, c=color: {
+                    "fillColor": c,
+                    "color": c,
+                    "weight": 2,
+                    "fillOpacity": 0.2,
+                }
+
+                # Add the sample polygon to the sample group
+                folium.GeoJson(
+                    poly,
+                    style_function=style_function,
+                    tooltip=f"Sample from {dataset_names[j]}",
+                ).add_to(sample_group)
+
+                sample_count += 1
+
+                # Process mask files if needed for additional visualization
+                if max_files is not None and "mask_filepaths" in sample:
+                    for mask_path in sample["mask_filepaths"]:
+                        if (
+                            mask_path not in processed_files
+                            and len(processed_files) < max_files
+                        ):
+                            # Mark this file as processed
+                            processed_files[mask_path] = True
+
+                # Check if we've reached the maximum sample count
+                if max_samples is not None and sample_count >= max_samples:
+                    break
+
+            # Break out of batch loop if max_samples reached
+            if max_samples is not None and sample_count > max_samples:
+                break
+
+        # Add the sample feature group to the map
+        sample_group.add_to(map)
+
+    # Fit the map bounds to show all content
+    if datasets:
+        # Use the bounds of the first dataset as a fallback
+        map.fit_bounds(
+            bounds=convert_bounds(
+                utils.torchgeo_bb_to_shapely(
+                    datasets[0].index.bounds, bbox_crs=datasets[0].crs
+                ).bounds
+            )
+        )
+
+    # Always add the layer control
+    folium.LayerControl().add_to(map)
+
+    return map
 
 
 def plot_class_raster(
