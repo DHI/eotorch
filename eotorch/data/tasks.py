@@ -101,11 +101,11 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
         """
 
         x = batch["image"]
-        y = batch["mask"]
+        y = batch["mask"].squeeze()
 
         if ignore_index := self.hparams["ignore_index"]:
             # filter out patches with only ignore_index in the mask
-            valid_patches = ~(y == ignore_index).all(dim=(-2, -1))
+            valid_patches = ~(y == ignore_index).all(dim=(-2, -1)).squeeze()
             # Skip processing if all pixels in the patch are ignore_index
             if not valid_patches.any():
                 return None
@@ -131,10 +131,10 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
             dataloader_idx: Index of the current dataloader.
         """
         x = batch["image"]
-        y = batch["mask"]
+        y = batch["mask"].squeeze()
 
         if ignore_index := self.hparams["ignore_index"]:
-            valid_patches = ~(y == ignore_index).all(dim=(-2, -1))
+            valid_patches = ~(y == ignore_index).all(dim=(-2, -1)).squeeze()
             if not valid_patches.any():
                 return None
             x = x[valid_patches]
@@ -190,9 +190,9 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
             dataloader_idx: Index of the current dataloader.
         """
         x = batch["image"]
-        y = batch["mask"]
+        y = batch["mask"].squeeze()
         if ignore_index := self.hparams["ignore_index"]:
-            valid_patches = ~(y == ignore_index).all(dim=(-2, -1))
+            valid_patches = ~(y == ignore_index).all(dim=(-2, -1)).squeeze()
             if not valid_patches.any():
                 return None
             x = x[valid_patches]
