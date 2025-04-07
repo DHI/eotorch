@@ -356,6 +356,7 @@ def plot_samplers_on_map(
 
     # Always add the layer control
     folium.LayerControl().add_to(map)
+    folium.ClickForMarker().add_to(map)
 
     return map
 
