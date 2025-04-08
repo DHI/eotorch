@@ -156,22 +156,41 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
             and hasattr(self.logger.experiment, "add_figure")
         ):
             datamodule = self.trainer.datamodule
-            batch["prediction"] = y_hat.argmax(dim=1)
-            for key in ["image", "mask", "prediction"]:
-                batch[key] = batch[key].cpu()
 
-            # only sample from valid patches
-            if ignore_index:
-                sample_idx = valid_patches.int().argmax()
+            # Get prediction and ensure it's in the right format
+            # Use dimension 1 for the argmax to operate on the channel dimension
+            # but preserve the batch dimension
+            predictions = y_hat.argmax(dim=1)
+
+            # Create a new batch dictionary with the valid subset
+            valid_batch = {
+                "image": x.cpu(),
+                "mask": y.unsqueeze(1).cpu(),  # Add channel dimension back
+                "prediction": predictions.unsqueeze(1)
+                .detach()
+                .cpu(),  # Add channel dimension to match mask
+            }
+
+            # Only sample from first example for visualization
+            sample_idx = 0
+            sample = unbind_samples(valid_batch)[sample_idx]
+
+            # Verify that sample has a prediction and remove extra dimension for plotting
+            if "prediction" in sample and sample["prediction"] is not None:
+                # Remove the channel dimension for plotting
+                sample["prediction"] = sample["prediction"].squeeze(0)
+
             else:
-                sample_idx = 0
-            sample = unbind_samples(batch)[sample_idx]
-            # sample = unbind_samples(batch)[0]
+                print(f"Warning: Sample {batch_idx} missing prediction key")
 
             fig: Figure | None = None
             try:
                 fig = datamodule.plot(sample)
             except RGBBandsMissingError:
+                print(f"RGB bands missing in batch {batch_idx}, skipping visualization")
+                pass
+            except Exception as e:
+                print(f"Error plotting sample from batch {batch_idx}: {e}")
                 pass
 
             if fig:
