@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 import numpy as np
+import segmentation_models_pytorch as smp
 import torch
 from matplotlib import pyplot as plt
 from torchgeo.datasets import RGBBandsMissingError, unbind_samples
@@ -86,6 +87,41 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
         else:
             super().configure_models()
 
+    def configure_losses(self) -> None:
+        """Initialize the loss criterion."""
+        ignore_index: int | None = self.hparams["ignore_index"]
+        match self.hparams["loss"]:
+            case "ce":
+                ignore_value = -1000 if ignore_index is None else ignore_index
+                self.criterion: nn.Module = nn.CrossEntropyLoss(
+                    ignore_index=ignore_value, weight=self.hparams["class_weights"]
+                )
+            case "bce":
+                self.criterion = nn.BCEWithLogitsLoss()
+            case "jaccard":
+                # JaccardLoss requires a list of classes to use instead of a class
+                # index to ignore.
+                classes = [
+                    i for i in range(self.hparams["num_classes"]) if i != ignore_index
+                ]
+
+                self.criterion = smp.losses.JaccardLoss(
+                    mode=self.hparams["task"], classes=classes
+                )
+            case "focal":
+                self.criterion = smp.losses.FocalLoss(
+                    mode=self.hparams["task"],
+                    ignore_index=ignore_index,
+                    normalized=True,
+                )
+            case "dice":
+                self.criterion = smp.losses.DiceLoss(
+                    mode=self.hparams["task"],
+                    # classes=self.hparams['num_classes'],
+                    ignore_index=ignore_index,
+                    from_logits=True,
+                )
+
     def training_step(
         self, batch: Any, batch_idx: int, dataloader_idx: int = 0
     ) -> Tensor:
@@ -119,7 +155,9 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
         y_hat = self(x)
         loss: Tensor = self.criterion(y_hat, y)
 
-        self.log("train_loss", loss, batch_size=batch_size, prog_bar=True, on_epoch=True)
+        self.log(
+            "train_loss", loss, batch_size=batch_size, prog_bar=True, on_epoch=True
+        )
         self.train_metrics(y_hat, y)
         self.log_dict(self.train_metrics, batch_size=batch_size)
         return loss
