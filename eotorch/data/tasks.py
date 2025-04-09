@@ -111,8 +111,19 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
                 return None
             x = x[valid_patches]
             y = y[valid_patches]
+
+        if x.ndim > 4:
+            x = x.squeeze(0)
+
+        print(np.unique(y.cpu().numpy(), return_counts=True))
         batch_size = x.shape[0]
         y_hat = self(x)
+        print(
+            np.unique(
+                np.argmax(y_hat.detach().cpu().numpy(), axis=-3).astype("uint8"),
+                return_counts=True,
+            )
+        )
         loss: Tensor = self.criterion(y_hat, y)
 
         self.log("train_loss", loss, batch_size=batch_size, prog_bar=True)
@@ -139,6 +150,9 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
                 return None
             x = x[valid_patches]
             y = y[valid_patches]
+
+        if x.ndim > 4:
+            x = x.squeeze(0)
 
         batch_size = x.shape[0]
         y_hat = self(x)
@@ -216,6 +230,10 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
                 return None
             x = x[valid_patches]
             y = y[valid_patches]
+
+        if x.ndim > 4:
+            x = x.squeeze(0)
+
         batch_size = x.shape[0]
         y_hat = self(x)
         loss = self.criterion(y_hat, y)
