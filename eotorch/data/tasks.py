@@ -119,7 +119,7 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
         y_hat = self(x)
         loss: Tensor = self.criterion(y_hat, y)
 
-        self.log("train_loss", loss, batch_size=batch_size, prog_bar=True)
+        self.log("train_loss", loss, batch_size=batch_size, prog_bar=True, on_epoch=True)
         self.train_metrics(y_hat, y)
         self.log_dict(self.train_metrics, batch_size=batch_size)
         return loss
