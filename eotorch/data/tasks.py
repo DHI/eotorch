@@ -11,6 +11,7 @@ from torchgeo.datasets import RGBBandsMissingError, unbind_samples
 from torchgeo.trainers import (
     SemanticSegmentationTask as TorchGeoSemanticSegmentationTask,
 )
+from torchmetrics import Accuracy, JaccardIndex, MetricCollection
 
 from eotorch.models import MODEL_MAPPING
 from eotorch.utils import get_init_args
@@ -113,6 +114,8 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
                     mode=self.hparams["task"],
                     ignore_index=ignore_index,
                     normalized=True,
+                    alpha=0.8,
+                    gamma=3.0,
                 )
             case "dice":
                 self.criterion = smp.losses.DiceLoss(
@@ -121,6 +124,50 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
                     ignore_index=ignore_index,
                     from_logits=True,
                 )
+
+    def configure_metrics(self) -> None:
+        """Initialize the performance metrics.
+
+        * :class:`~torchmetrics.Accuracy`: Overall accuracy (micro average):
+          The number of true positives divided by the dataset size. Higher values are better.
+        * :class:`~torchmetrics.Accuracy`: Per-class accuracy (macro average):
+          Average of the accuracy calculated for each class separately. Higher values are better.
+        * :class:`~torchmetrics.JaccardIndex`: Overall IoU (micro average):
+          Intersection over union averaged across all pixels. Higher values are better.
+        * :class:`~torchmetrics.JaccardIndex`: Per-class IoU (macro average):
+          Average of the IoU calculated for each class separately. Higher values are better.
+
+        .. note::
+           * 'Micro' averaging gives equal weight to each pixel and is suitable for overall performance
+             evaluation but may not reflect minority class accuracy in imbalanced datasets.
+           * 'Macro' averaging gives equal weight to each class (rather than each pixel), which is useful for
+             evaluating model performance across all classes equally, regardless of their support.
+        """
+        kwargs = {
+            "task": self.hparams["task"],
+            "num_classes": self.hparams["num_classes"],
+            "num_labels": self.hparams["num_labels"],
+            "ignore_index": self.hparams["ignore_index"],
+        }
+        metrics = MetricCollection(
+            {
+                # Overall accuracy (micro average) - existing metric
+                "overall_acc": Accuracy(
+                    multidim_average="global", average="micro", **kwargs
+                ),
+                # Per-class accuracy (macro average) - new metric
+                "per_class_acc": Accuracy(
+                    multidim_average="global", average="macro", **kwargs
+                ),
+                # Overall IoU (micro average) - existing metric
+                "overall_iou": JaccardIndex(average="micro", **kwargs),
+                # Per-class IoU (macro average) - new metric
+                "per_class_iou": JaccardIndex(average="macro", **kwargs),
+            }
+        )
+        self.train_metrics = metrics.clone(prefix="train_")
+        self.val_metrics = metrics.clone(prefix="val_")
+        self.test_metrics = metrics.clone(prefix="test_")
 
     def training_step(
         self, batch: Any, batch_idx: int, dataloader_idx: int = 0
