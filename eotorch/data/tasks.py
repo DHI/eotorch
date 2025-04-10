@@ -130,18 +130,16 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
 
         * :class:`~torchmetrics.Accuracy`: Overall accuracy (micro average):
           The number of true positives divided by the dataset size. Higher values are better.
-        * :class:`~torchmetrics.Accuracy`: Per-class accuracy (macro average):
+        * :class:`~torchmetrics.Accuracy`: Per-class accuracy (no average across classes):
           Average of the accuracy calculated for each class separately. Higher values are better.
         * :class:`~torchmetrics.JaccardIndex`: Overall IoU (micro average):
           Intersection over union averaged across all pixels. Higher values are better.
-        * :class:`~torchmetrics.JaccardIndex`: Per-class IoU (macro average):
+        * :class:`~torchmetrics.JaccardIndex`: Per-class IoU (no average across classes):
           Average of the IoU calculated for each class separately. Higher values are better.
 
         .. note::
            * 'Micro' averaging gives equal weight to each pixel and is suitable for overall performance
              evaluation but may not reflect minority class accuracy in imbalanced datasets.
-           * 'Macro' averaging gives equal weight to each class (rather than each pixel), which is useful for
-             evaluating model performance across all classes equally, regardless of their support.
         """
         kwargs = {
             "task": self.hparams["task"],
@@ -157,12 +155,12 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
                 ),
                 # Per-class accuracy (macro average) - new metric
                 "per_class_acc": Accuracy(
-                    multidim_average="global", average="macro", **kwargs
+                    multidim_average="global", average=None, **kwargs
                 ),
                 # Overall IoU (micro average) - existing metric
                 "overall_iou": JaccardIndex(average="micro", **kwargs),
                 # Per-class IoU (macro average) - new metric
-                "per_class_iou": JaccardIndex(average="macro", **kwargs),
+                "per_class_iou": JaccardIndex(average=None, **kwargs),
             }
         )
         self.train_metrics = metrics.clone(prefix="train_")
@@ -206,8 +204,93 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
             "train_loss", loss, batch_size=batch_size, prog_bar=True, on_epoch=True
         )
         self.train_metrics(y_hat, y)
-        self.log_dict(self.train_metrics, batch_size=batch_size)
+
+        # Log regular metrics excluding per-class accuracy and IoU
+        self.log_dict(
+            {
+                k: v
+                for k, v in self.train_metrics.items()
+                if k not in {"train_per_class_acc", "train_per_class_iou"}
+            },
+            batch_size=batch_size,
+        )
         return loss
+
+    def on_train_epoch_end(self) -> None:
+        """Called at the end of the training epoch to log accumulated metrics."""
+        # Compute the per-class accuracies
+        per_class_acc = self.train_metrics["train_per_class_acc"].compute()
+        per_class_iou = self.train_metrics["train_per_class_iou"].compute()
+
+        # Log to tensorboard using a single writer call with a tag per class
+        if self.logger and hasattr(self.logger, "experiment"):
+            writer = self.logger.experiment
+
+            # For accuracies - create separate tags for each class to avoid legend clutter
+            for i, acc in enumerate(per_class_acc):
+                writer.add_scalar(
+                    f"train_class_accuracy/{i + 1}",
+                    acc.item(),
+                    self.current_epoch,
+                )
+
+            # For IoUs - create separate tags for each class
+            for i, iou in enumerate(per_class_iou):
+                writer.add_scalar(
+                    f"train_class_iou/{i + 1}",
+                    iou.item(),
+                    self.current_epoch,
+                )
+
+    def on_validation_epoch_end(self) -> None:
+        """Called at the end of the validation epoch to log accumulated metrics."""
+        # Compute the per-class accuracies
+        per_class_acc = self.val_metrics["val_per_class_acc"].compute()
+        per_class_iou = self.val_metrics["val_per_class_iou"].compute()
+
+        if self.logger and hasattr(self.logger, "experiment"):
+            writer = self.logger.experiment
+
+            # For accuracies - create separate tags for each class to avoid legend clutter
+            for i, acc in enumerate(per_class_acc):
+                writer.add_scalar(
+                    f"val_class_accuracy/{i + 1}",
+                    acc.item(),
+                    self.current_epoch,
+                )
+
+            # For IoUs - create separate tags for each class
+            for i, iou in enumerate(per_class_iou):
+                writer.add_scalar(
+                    f"val_class_iou/{i + 1}",
+                    iou.item(),
+                    self.current_epoch,
+                )
+
+    def on_test_epoch_end(self) -> None:
+        """Called at the end of the test epoch to log accumulated metrics."""
+        # Compute the per-class accuracies
+        per_class_acc = self.test_metrics["test_per_class_acc"].compute()
+        per_class_iou = self.test_metrics["test_per_class_iou"].compute()
+
+        if self.logger and hasattr(self.logger, "experiment"):
+            writer = self.logger.experiment
+
+            # For accuracies - create separate tags for each class to avoid legend clutter
+            for i, acc in enumerate(per_class_acc):
+                writer.add_scalar(
+                    f"test_class_accuracy/{i + 1}",
+                    acc.item(),
+                    self.current_epoch,
+                )
+
+            # For IoUs - create separate tags for each class
+            for i, iou in enumerate(per_class_iou):
+                writer.add_scalar(
+                    f"test_class_iou/{i + 1}",
+                    iou.item(),
+                    self.current_epoch,
+                )
 
     def validation_step(
         self, batch: Any, batch_idx: int, dataloader_idx: int = 0
@@ -237,7 +320,14 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
         loss = self.criterion(y_hat, y)
         self.log("val_loss", loss, batch_size=batch_size)
         self.val_metrics(y_hat, y)
-        self.log_dict(self.val_metrics, batch_size=batch_size)
+        self.log_dict(
+            {
+                k: v
+                for k, v in self.val_metrics.items()
+                if k not in {"val_per_class_acc", "val_per_class_iou"}
+            },
+            batch_size=batch_size,
+        )
 
         if (
             batch_idx < 10
@@ -317,7 +407,14 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
         loss = self.criterion(y_hat, y)
         self.log("test_loss", loss, batch_size=batch_size)
         self.test_metrics(y_hat, y)
-        self.log_dict(self.test_metrics, batch_size=batch_size)
+        self.log_dict(
+            {
+                k: v
+                for k, v in self.test_metrics.items()
+                if k not in {"test_per_class_acc", "test_per_class_iou"}
+            },
+            batch_size=batch_size,
+        )
 
     def get_prediction_func(
         self, device=None, reduce_zero_label: bool = None
