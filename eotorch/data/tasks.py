@@ -93,11 +93,15 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
         ignore_index: int | None = self.hparams["ignore_index"]
         match self.hparams["loss"]:
             case "ce":
+                from torch import nn
+
                 ignore_value = -1000 if ignore_index is None else ignore_index
                 self.criterion: nn.Module = nn.CrossEntropyLoss(
                     ignore_index=ignore_value, weight=self.hparams["class_weights"]
                 )
             case "bce":
+                from torch import nn
+
                 self.criterion = nn.BCEWithLogitsLoss()
             case "jaccard":
                 # JaccardLoss requires a list of classes to use instead of a class
