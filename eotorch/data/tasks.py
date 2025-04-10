@@ -514,6 +514,7 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
             checkpoint_path,
             map_location=device,
         )
+        lightning_module.eval()
         data_module_params = torch.load(
             checkpoint_path, weights_only=False, map_location=device
         ).get("datamodule_hyper_parameters")
