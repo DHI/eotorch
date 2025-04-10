@@ -60,10 +60,10 @@ class ResBlock(nn.Module):
             in_channels, out_channels, kernel_size=kernel_sizes[0], **kwargs
         )
         self.conv2 = Conv2d(
-            in_channels, out_channels, kernel_size=kernel_sizes[1], **kwargs
+            out_channels, out_channels, kernel_size=kernel_sizes[1], **kwargs
         )
         self.conv3 = Conv2d(
-            in_channels, out_channels, kernel_size=kernel_sizes[2], **kwargs
+            out_channels, out_channels, kernel_size=kernel_sizes[2], **kwargs
         )
         self.ReLU = nn.ReLU(inplace=True)
         self.batchnorm = norm_layer(num_features=out_channels)
