@@ -157,6 +157,9 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
                 "overall_acc": Accuracy(
                     multidim_average="global", average="micro", **kwargs
                 ),
+                "macro_acc": Accuracy(
+                    multidim_average="global", average="macro", **kwargs
+                ),
                 # Per-class accuracy (macro average) - new metric
                 "per_class_acc": Accuracy(
                     multidim_average="global", average=None, **kwargs
