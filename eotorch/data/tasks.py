@@ -11,7 +11,7 @@ from torchgeo.datasets import RGBBandsMissingError, unbind_samples
 from torchgeo.trainers import (
     SemanticSegmentationTask as TorchGeoSemanticSegmentationTask,
 )
-from torchmetrics import Accuracy, JaccardIndex, MetricCollection
+from torchmetrics import Accuracy, F1Score, JaccardIndex, MetricCollection
 
 from eotorch.models import MODEL_MAPPING
 from eotorch.utils import get_init_args
@@ -164,6 +164,21 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
                 "per_class_acc": Accuracy(
                     multidim_average="global", average=None, **kwargs
                 ),
+                "overall_f1": F1Score(
+                    num_classes=self.hparams["num_classes"],
+                    average="micro",
+                    **kwargs,
+                ),
+                "macro_f1": F1Score(
+                    num_classes=self.hparams["num_classes"],
+                    average="macro",
+                    **kwargs,
+                ),
+                "per_class_f1": F1Score(
+                    num_classes=self.hparams["num_classes"],
+                    average=None,
+                    **kwargs,
+                ),
                 # Overall IoU (micro average) - existing metric
                 "overall_iou": JaccardIndex(average="micro", **kwargs),
                 # Per-class IoU (macro average) - new metric
@@ -217,7 +232,12 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
             {
                 k: v
                 for k, v in self.train_metrics.items()
-                if k not in {"train_per_class_acc", "train_per_class_iou"}
+                if k
+                not in {
+                    "train_per_class_acc",
+                    "train_per_class_iou",
+                    "train_per_class_f1",
+                }
             },
             batch_size=batch_size,
             on_epoch=True,
@@ -229,6 +249,7 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
         # Compute the per-class accuracies
         per_class_acc = self.train_metrics["train_per_class_acc"].compute()
         per_class_iou = self.train_metrics["train_per_class_iou"].compute()
+        per_class_f1 = self.train_metrics["train_per_class_f1"].compute()
 
         # Log to tensorboard using a single writer call with a tag per class
         if self.logger and hasattr(self.logger, "experiment"):
@@ -250,11 +271,20 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
                     self.current_epoch,
                 )
 
+            # For F1 scores - create separate tags for each class
+            for i, f1 in enumerate(per_class_f1):
+                writer.add_scalar(
+                    f"train_class_f1/{i + 1}",
+                    f1.item(),
+                    self.current_epoch,
+                )
+
     def on_validation_epoch_end(self) -> None:
         """Called at the end of the validation epoch to log accumulated metrics."""
         # Compute the per-class accuracies
         per_class_acc = self.val_metrics["val_per_class_acc"].compute()
         per_class_iou = self.val_metrics["val_per_class_iou"].compute()
+        per_class_f1 = self.val_metrics["val_per_class_f1"].compute()
 
         if self.logger and hasattr(self.logger, "experiment"):
             writer = self.logger.experiment
@@ -275,11 +305,20 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
                     self.current_epoch,
                 )
 
+            # For F1 scores - create separate tags for each class
+            for i, f1 in enumerate(per_class_f1):
+                writer.add_scalar(
+                    f"val_class_f1/{i + 1}",
+                    f1.item(),
+                    self.current_epoch,
+                )
+
     def on_test_epoch_end(self) -> None:
         """Called at the end of the test epoch to log accumulated metrics."""
         # Compute the per-class accuracies
         per_class_acc = self.test_metrics["test_per_class_acc"].compute()
         per_class_iou = self.test_metrics["test_per_class_iou"].compute()
+        per_class_f1 = self.test_metrics["test_per_class_f1"].compute()
 
         if self.logger and hasattr(self.logger, "experiment"):
             writer = self.logger.experiment
@@ -297,6 +336,14 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
                 writer.add_scalar(
                     f"test_class_iou/{i + 1}",
                     iou.item(),
+                    self.current_epoch,
+                )
+
+            # For F1 scores - create separate tags for each class
+            for i, f1 in enumerate(per_class_f1):
+                writer.add_scalar(
+                    f"test_class_f1/{i + 1}",
+                    f1.item(),
                     self.current_epoch,
                 )
 
@@ -332,7 +379,8 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
             {
                 k: v
                 for k, v in self.val_metrics.items()
-                if k not in {"val_per_class_acc", "val_per_class_iou"}
+                if k
+                not in {"val_per_class_acc", "val_per_class_iou", "val_per_class_f1"}
             },
             batch_size=batch_size,
         )
@@ -419,7 +467,8 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
             {
                 k: v
                 for k, v in self.test_metrics.items()
-                if k not in {"test_per_class_acc", "test_per_class_iou"}
+                if k
+                not in {"test_per_class_acc", "test_per_class_iou", "test_per_class_f1"}
             },
             batch_size=batch_size,
         )
