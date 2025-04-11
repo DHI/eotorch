@@ -162,7 +162,13 @@ If this is not desired, please provide a val_dataset to the data module.
                 self.test_dataset, self.patch_size, self.patch_size
             )
 
-    def preview_data(self, max_samples: int = 100, map=None):
+    def preview_data(
+        self,
+        max_samples: int = 100,
+        map=None,
+        count_labels: bool = False,
+        class_mapping: dict = None,
+    ):
         """
         Visualize the dataset splits and their samplers on an interactive map.
 
@@ -174,10 +180,19 @@ If this is not desired, please provide a val_dataset to the data module.
                 Set to a reasonable value to keep the map responsive.
             map: Optional existing folium map to add the visualization to.
                 If None, a new map will be created.
+            count_labels: If True, also count and plot the distribution of label pixels
+                across all datasets as a pie chart.
+            class_mapping: Optional mapping of class values to names for labeling.
+                If None, will attempt to use class_mapping from datasets.
 
         Returns:
-            folium.Map: The interactive map with dataset boundaries and samplers visualized.
+            If count_labels is False:
+                folium.Map: The interactive map with dataset boundaries and samplers visualized.
+            If count_labels is True:
+                tuple: (folium.Map, dict) containing the map and dictionary of pie chart figures per dataset.
         """
+        import matplotlib.pyplot as plt
+
         from eotorch.plot import plot_samplers_on_map
 
         # Ensure samplers are set up
@@ -190,7 +205,6 @@ If this is not desired, please provide a val_dataset to the data module.
         # Collect datasets and samplers
         datasets, samplers, names = [], [], []
         if self.train_dataset is not None and self.train_sampler is not None:
-            # if hasattr(self, "train_dataset") and hasattr(self, "train_sampler"):
             datasets.append(self.train_dataset)
             samplers.append(self.train_sampler)
             names.append("Train")
@@ -211,14 +225,119 @@ If this is not desired, please provide a val_dataset to the data module.
                 "Make sure to initialize the data module properly."
             )
 
-        # Visualize the datasets and samplers
-        return plot_samplers_on_map(
-            datasets=datasets,
-            samplers=samplers,
-            map=map,
-            max_samples=max_samples,
-            dataset_names=names,
-        )
+        # If no class_mapping is provided but count_labels is True,
+        # try to get it from datasets
+        if class_mapping is None and count_labels:
+            for dataset in datasets:
+                if hasattr(dataset, "class_mapping"):
+                    class_mapping = dataset.class_mapping
+                if hasattr(dataset, "datasets"):
+                    # If it's an IntersectionDataset, get the class mapping from the label dataset
+                    for ds in dataset.datasets:
+                        if hasattr(ds, "class_mapping"):
+                            class_mapping = ds.class_mapping
+                            break
+                    break
+
+        # Get the map with samplers (and label counts if requested)
+        if count_labels:
+            map_with_samplers, label_counts_per_dataset = plot_samplers_on_map(
+                datasets=datasets,
+                samplers=samplers,
+                map=map,
+                max_samples=max_samples,
+                dataset_names=names,
+                count_labels=True,
+            )
+
+            # First, collect all unique class values across all datasets to create a consistent color map
+            all_class_values = set()
+            for label_counts in label_counts_per_dataset.values():
+                all_class_values.update(label_counts.keys())
+
+            # Create a consistent color map for all classes
+            import matplotlib.colors as mcolors
+
+            # Get a colormap with distinct colors
+            color_list = list(mcolors.TABLEAU_COLORS.values())
+            # Extend the color list if we have more classes than colors
+            while len(color_list) < len(all_class_values):
+                color_list.extend(mcolors.TABLEAU_COLORS.values())
+
+            # Map each class value to a specific color
+            class_color_map = {
+                val: color_list[i % len(color_list)]
+                for i, val in enumerate(sorted(all_class_values))
+            }
+
+            # Get datasets with valid label counts
+            valid_datasets = [
+                name for name, counts in label_counts_per_dataset.items() if counts
+            ]
+
+            if valid_datasets:
+                # Create a single figure with subfigures for each dataset
+                n_datasets = len(valid_datasets)
+                fig, axes = plt.subplots(1, n_datasets, figsize=(n_datasets * 6, 6))
+
+                # Handle case where there's only one dataset (axes won't be an array)
+                if n_datasets == 1:
+                    axes = [axes]
+
+                # Function for autopct display
+                def make_autopct(values):
+                    def autopct(pct):
+                        total = sum(values)
+                        val = int(round(pct * total / 100.0))
+                        return f"{pct:.1f}%\n({val:,})"
+
+                    return autopct
+
+                # Create pie charts for each dataset
+                for i, dataset_name in enumerate(valid_datasets):
+                    label_counts = label_counts_per_dataset[dataset_name]
+
+                    # Get labels, values and colors
+                    labels = []
+                    values = []
+                    colors = []
+
+                    for label_val, count in label_counts.items():
+                        if class_mapping and label_val in class_mapping:
+                            label_name = class_mapping[label_val]
+                        else:
+                            label_name = f"Class {label_val}"
+
+                        labels.append(label_name)
+                        values.append(count)
+                        colors.append(class_color_map[label_val])
+
+                    # Create pie chart on the appropriate subfigure
+                    if values:
+                        axes[i].pie(
+                            values,
+                            labels=labels,
+                            autopct=make_autopct(values),
+                            shadow=False,
+                            startangle=90,
+                            colors=colors,
+                        )
+                        axes[i].axis("equal")
+                        axes[i].set_title(f"Label Distribution - {dataset_name}")
+
+                plt.tight_layout()
+                plt.show()
+            else:
+                print("No labels found in datasets. Returning only the map.")
+            return map_with_samplers
+        else:
+            return plot_samplers_on_map(
+                datasets=datasets,
+                samplers=samplers,
+                map=map,
+                max_samples=max_samples,
+                dataset_names=names,
+            )
 
     def _dataloader_factory(self, split: str) -> DataLoader[dict[str, Tensor]]:
         """

@@ -11,7 +11,7 @@ from rasterio.plot import show
 from rasterio.vrt import WarpedVRT
 from rasterio.windows import from_bounds, get_data_window
 from torch.utils.data import DataLoader
-from torchgeo.datasets import stack_samples, unbind_samples
+from torchgeo.datasets import IntersectionDataset, stack_samples, unbind_samples
 from torchgeo.samplers import BatchGeoSampler
 
 from eotorch import utils
@@ -191,6 +191,7 @@ def plot_samplers_on_map(
     colors: list = None,
     dataset_colors: list = None,
     dataset_names: list = None,
+    count_labels: bool = False,
 ):
     """
     Visualize samplers on a folium map rather than on matplotlib plots.
@@ -204,10 +205,15 @@ def plot_samplers_on_map(
         colors: List of colors for the samples from each dataset
         dataset_colors: List of colors for the dataset boundaries
         dataset_names: List of names to use for each dataset in the legend
+        count_labels: If True, count the distribution of label pixels across samples
 
     Returns:
-        folium.Map: The map with samplers visualized
+        If count_labels is False:
+            folium.Map: The map with samplers visualized
+        If count_labels is True:
+            tuple: (folium.Map, dict) containing the map and label counts per dataset
     """
+    import torch
     from alive_progress import alive_it
     from torch.utils.data import DataLoader
     from torchgeo.datasets import stack_samples, unbind_samples
@@ -235,6 +241,11 @@ def plot_samplers_on_map(
 
     # Dictionary to track processed files to avoid duplicates
     processed_files = {}
+
+    # Dictionary to track label counts if requested, one dict per dataset
+    label_counts_per_dataset = (
+        {name: {} for name in dataset_names} if count_labels else None
+    )
 
     # Create separate feature groups for dataset boundaries
     for i, dataset in enumerate(datasets):
@@ -275,17 +286,9 @@ def plot_samplers_on_map(
         )
         dataloaders.append(dataloader)
 
-        # Try to estimate total number of samples for progress bar
-        # if hasattr(sampler, "__len__"):
-        #     total_samples_expected += len(sampler)
-        # elif hasattr(batch_sampler, "__len__"):
-        #     total_samples_expected += len(batch_sampler)
-
-    # Set max_samples based on estimate if not provided
-
+    # Process each dataset and sampler
     print("Sampling bounding boxes and adding them to map...")
 
-    # Process each dataset and sampler
     for j, (color, dataloader) in enumerate(zip(colors, dataloaders)):
         # Create a feature group for this dataset's samples
         feature_group_name = f"{dataset_names[j]} Samples ({colors[j]})"
@@ -330,6 +333,34 @@ def plot_samplers_on_map(
                     style_function=style_function,
                     tooltip=f"Sample from {dataset_names[j]}",
                 ).add_to(sample_group)
+
+                # Count label pixels if requested
+                if count_labels and "mask" in sample:
+                    mask = sample["mask"]
+                    # Skip -1 values which are typically ignored or no-data values
+                    valid_mask = mask != -1
+                    if isinstance(datasets[j], IntersectionDataset) and hasattr(
+                        datasets[j].datasets[1], "reduce_zero_label"
+                    ):
+                        mask += 1
+                    if torch.any(valid_mask):
+                        # Only count non-(-1) values
+                        filtered_mask = mask[valid_mask]
+                        unique_values, counts = torch.unique(
+                            filtered_mask, return_counts=True
+                        )
+
+                        # Update counts for this dataset
+                        dataset_label_counts = label_counts_per_dataset[
+                            dataset_names[j]
+                        ]
+                        for val, count in zip(
+                            unique_values.cpu().numpy(), counts.cpu().numpy()
+                        ):
+                            if val in dataset_label_counts:
+                                dataset_label_counts[val] += count
+                            else:
+                                dataset_label_counts[val] = count
 
                 sample_count += 1
 
@@ -380,7 +411,10 @@ def plot_samplers_on_map(
     ).add_to(map)
     MeasureControl(position="bottomleft").add_to(map)
 
-    return map
+    if count_labels:
+        return map, label_counts_per_dataset
+    else:
+        return map
 
 
 def plot_class_raster(

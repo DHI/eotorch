@@ -4,12 +4,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 import numpy as np
+import segmentation_models_pytorch as smp
 import torch
 from matplotlib import pyplot as plt
 from torchgeo.datasets import RGBBandsMissingError, unbind_samples
 from torchgeo.trainers import (
     SemanticSegmentationTask as TorchGeoSemanticSegmentationTask,
 )
+from torchmetrics import Accuracy, JaccardIndex, MetricCollection
 
 from eotorch.models import MODEL_MAPPING
 from eotorch.utils import get_init_args
@@ -86,6 +88,89 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
         else:
             super().configure_models()
 
+    def configure_losses(self) -> None:
+        """Initialize the loss criterion."""
+        ignore_index: int | None = self.hparams["ignore_index"]
+        match self.hparams["loss"]:
+            case "ce":
+                from torch import nn
+
+                ignore_value = -1000 if ignore_index is None else ignore_index
+                self.criterion: nn.Module = nn.CrossEntropyLoss(
+                    ignore_index=ignore_value, weight=self.hparams["class_weights"]
+                )
+            case "bce":
+                from torch import nn
+
+                self.criterion = nn.BCEWithLogitsLoss()
+            case "jaccard":
+                # JaccardLoss requires a list of classes to use instead of a class
+                # index to ignore.
+                classes = [
+                    i for i in range(self.hparams["num_classes"]) if i != ignore_index
+                ]
+
+                self.criterion = smp.losses.JaccardLoss(
+                    mode=self.hparams["task"], classes=classes
+                )
+            case "focal":
+                self.criterion = smp.losses.FocalLoss(
+                    mode=self.hparams["task"],
+                    ignore_index=ignore_index,
+                    normalized=True,
+                    alpha=0.8,
+                    gamma=3.0,
+                )
+            case "dice":
+                self.criterion = smp.losses.DiceLoss(
+                    mode=self.hparams["task"],
+                    # classes=self.hparams['num_classes'],
+                    ignore_index=ignore_index,
+                    from_logits=True,
+                )
+
+    def configure_metrics(self) -> None:
+        """Initialize the performance metrics.
+
+        * :class:`~torchmetrics.Accuracy`: Overall accuracy (micro average):
+          The number of true positives divided by the dataset size. Higher values are better.
+        * :class:`~torchmetrics.Accuracy`: Per-class accuracy (no average across classes):
+          Average of the accuracy calculated for each class separately. Higher values are better.
+        * :class:`~torchmetrics.JaccardIndex`: Overall IoU (micro average):
+          Intersection over union averaged across all pixels. Higher values are better.
+        * :class:`~torchmetrics.JaccardIndex`: Per-class IoU (no average across classes):
+          Average of the IoU calculated for each class separately. Higher values are better.
+
+        .. note::
+           * 'Micro' averaging gives equal weight to each pixel and is suitable for overall performance
+             evaluation but may not reflect minority class accuracy in imbalanced datasets.
+        """
+        kwargs = {
+            "task": self.hparams["task"],
+            "num_classes": self.hparams["num_classes"],
+            "num_labels": self.hparams["num_labels"],
+            "ignore_index": self.hparams["ignore_index"],
+        }
+        metrics = MetricCollection(
+            {
+                # Overall accuracy (micro average) - existing metric
+                "overall_acc": Accuracy(
+                    multidim_average="global", average="micro", **kwargs
+                ),
+                # Per-class accuracy (macro average) - new metric
+                "per_class_acc": Accuracy(
+                    multidim_average="global", average=None, **kwargs
+                ),
+                # Overall IoU (micro average) - existing metric
+                "overall_iou": JaccardIndex(average="micro", **kwargs),
+                # Per-class IoU (macro average) - new metric
+                "per_class_iou": JaccardIndex(average=None, **kwargs),
+            }
+        )
+        self.train_metrics = metrics.clone(prefix="train_")
+        self.val_metrics = metrics.clone(prefix="val_")
+        self.test_metrics = metrics.clone(prefix="test_")
+
     def training_step(
         self, batch: Any, batch_idx: int, dataloader_idx: int = 0
     ) -> Tensor:
@@ -111,14 +196,105 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
                 return None
             x = x[valid_patches]
             y = y[valid_patches]
+
+        if x.ndim > 4:
+            x = x.squeeze(0)
+
         batch_size = x.shape[0]
         y_hat = self(x)
         loss: Tensor = self.criterion(y_hat, y)
 
-        self.log("train_loss", loss, batch_size=batch_size, prog_bar=True)
+        self.log(
+            "train_loss", loss, batch_size=batch_size, prog_bar=True, on_epoch=True
+        )
         self.train_metrics(y_hat, y)
-        self.log_dict(self.train_metrics, batch_size=batch_size)
+
+        # Log regular metrics excluding per-class accuracy and IoU
+        self.log_dict(
+            {
+                k: v
+                for k, v in self.train_metrics.items()
+                if k not in {"train_per_class_acc", "train_per_class_iou"}
+            },
+            batch_size=batch_size,
+        )
         return loss
+
+    def on_train_epoch_end(self) -> None:
+        """Called at the end of the training epoch to log accumulated metrics."""
+        # Compute the per-class accuracies
+        per_class_acc = self.train_metrics["train_per_class_acc"].compute()
+        per_class_iou = self.train_metrics["train_per_class_iou"].compute()
+
+        # Log to tensorboard using a single writer call with a tag per class
+        if self.logger and hasattr(self.logger, "experiment"):
+            writer = self.logger.experiment
+
+            # For accuracies - create separate tags for each class to avoid legend clutter
+            for i, acc in enumerate(per_class_acc):
+                writer.add_scalar(
+                    f"train_class_accuracy/{i + 1}",
+                    acc.item(),
+                    self.current_epoch,
+                )
+
+            # For IoUs - create separate tags for each class
+            for i, iou in enumerate(per_class_iou):
+                writer.add_scalar(
+                    f"train_class_iou/{i + 1}",
+                    iou.item(),
+                    self.current_epoch,
+                )
+
+    def on_validation_epoch_end(self) -> None:
+        """Called at the end of the validation epoch to log accumulated metrics."""
+        # Compute the per-class accuracies
+        per_class_acc = self.val_metrics["val_per_class_acc"].compute()
+        per_class_iou = self.val_metrics["val_per_class_iou"].compute()
+
+        if self.logger and hasattr(self.logger, "experiment"):
+            writer = self.logger.experiment
+
+            # For accuracies - create separate tags for each class to avoid legend clutter
+            for i, acc in enumerate(per_class_acc):
+                writer.add_scalar(
+                    f"val_class_accuracy/{i + 1}",
+                    acc.item(),
+                    self.current_epoch,
+                )
+
+            # For IoUs - create separate tags for each class
+            for i, iou in enumerate(per_class_iou):
+                writer.add_scalar(
+                    f"val_class_iou/{i + 1}",
+                    iou.item(),
+                    self.current_epoch,
+                )
+
+    def on_test_epoch_end(self) -> None:
+        """Called at the end of the test epoch to log accumulated metrics."""
+        # Compute the per-class accuracies
+        per_class_acc = self.test_metrics["test_per_class_acc"].compute()
+        per_class_iou = self.test_metrics["test_per_class_iou"].compute()
+
+        if self.logger and hasattr(self.logger, "experiment"):
+            writer = self.logger.experiment
+
+            # For accuracies - create separate tags for each class to avoid legend clutter
+            for i, acc in enumerate(per_class_acc):
+                writer.add_scalar(
+                    f"test_class_accuracy/{i + 1}",
+                    acc.item(),
+                    self.current_epoch,
+                )
+
+            # For IoUs - create separate tags for each class
+            for i, iou in enumerate(per_class_iou):
+                writer.add_scalar(
+                    f"test_class_iou/{i + 1}",
+                    iou.item(),
+                    self.current_epoch,
+                )
 
     def validation_step(
         self, batch: Any, batch_idx: int, dataloader_idx: int = 0
@@ -140,12 +316,22 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
             x = x[valid_patches]
             y = y[valid_patches]
 
+        if x.ndim > 4:
+            x = x.squeeze(0)
+
         batch_size = x.shape[0]
         y_hat = self(x)
         loss = self.criterion(y_hat, y)
         self.log("val_loss", loss, batch_size=batch_size)
         self.val_metrics(y_hat, y)
-        self.log_dict(self.val_metrics, batch_size=batch_size)
+        self.log_dict(
+            {
+                k: v
+                for k, v in self.val_metrics.items()
+                if k not in {"val_per_class_acc", "val_per_class_iou"}
+            },
+            batch_size=batch_size,
+        )
 
         if (
             batch_idx < 10
@@ -216,12 +402,23 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
                 return None
             x = x[valid_patches]
             y = y[valid_patches]
+
+        if x.ndim > 4:
+            x = x.squeeze(0)
+
         batch_size = x.shape[0]
         y_hat = self(x)
         loss = self.criterion(y_hat, y)
         self.log("test_loss", loss, batch_size=batch_size)
         self.test_metrics(y_hat, y)
-        self.log_dict(self.test_metrics, batch_size=batch_size)
+        self.log_dict(
+            {
+                k: v
+                for k, v in self.test_metrics.items()
+                if k not in {"test_per_class_acc", "test_per_class_iou"}
+            },
+            batch_size=batch_size,
+        )
 
     def get_prediction_func(
         self, device=None, reduce_zero_label: bool = None
@@ -317,6 +514,7 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
             checkpoint_path,
             map_location=device,
         )
+        lightning_module.eval()
         data_module_params = torch.load(
             checkpoint_path, weights_only=False, map_location=device
         ).get("datamodule_hyper_parameters")

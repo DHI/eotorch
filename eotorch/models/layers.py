@@ -60,18 +60,18 @@ class ResBlock(nn.Module):
             in_channels, out_channels, kernel_size=kernel_sizes[0], **kwargs
         )
         self.conv2 = Conv2d(
-            in_channels, out_channels, kernel_size=kernel_sizes[1], **kwargs
+            out_channels, out_channels, kernel_size=kernel_sizes[1], **kwargs
         )
         self.conv3 = Conv2d(
-            in_channels, out_channels, kernel_size=kernel_sizes[2], **kwargs
+            out_channels, out_channels, kernel_size=kernel_sizes[2], **kwargs
         )
         self.ReLU = nn.ReLU(inplace=True)
         self.batchnorm = norm_layer(num_features=out_channels)
 
     def forward(self, inputs: torch.Tensor):
         x = self.conv1(inputs)
-        x = self.conv2(inputs)
-        x = self.conv3(inputs)
+        x = self.conv2(x)
+        x = self.conv3(x)
         x = x + self.batchnorm(inputs)
         x = self.ReLU(x)
         return x
@@ -105,8 +105,8 @@ class SeparableConv2d(nn.Module):
         self.pointwise = nn.Conv2d(
             in_channels, out_channels, kernel_size=(1, 1), stride=1, padding=1
         )
-        self.batchnorm = norm_layer
-        self.ReLU = nn.ReLU(inpace=True)
+        self.batchnorm = norm_layer(num_features=out_channels)
+        self.ReLU = nn.ReLU(inplace=True)
 
     def forward(self, inputs: torch.Tensor):
         x = self.depthwise(inputs)
