@@ -144,3 +144,5 @@ dev_data
 
 notebooks/**
 !notebooks/segmentation.ipynb
+*Zone.Identifier
+*.geojson

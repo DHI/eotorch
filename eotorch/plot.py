@@ -5,6 +5,7 @@ import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
 import rasterio as rst
+from folium.plugins import Draw, MeasureControl
 from matplotlib import cm
 from rasterio.plot import show
 from rasterio.vrt import WarpedVRT
@@ -61,7 +62,7 @@ def plot_dataset_index(dataset, map=None, color="olive", name=None):
     feature_group.add_to(map)
 
     # Add click for marker functionality
-    folium.ClickForMarker().add_to(map)
+    # folium.ClickForMarker().add_to(map)
 
     # Fit bounds to show all content
     map.fit_bounds(
@@ -74,7 +75,17 @@ def plot_dataset_index(dataset, map=None, color="olive", name=None):
 
     # Always add layer control
     folium.LayerControl().add_to(map)
-
+    Draw(
+        export=True,
+        draw_options={
+            "polyline": False,
+            "polygon": False,
+            "circle": False,
+            "marker": False,
+            "circlemarker": False,
+        },
+    ).add_to(map)
+    MeasureControl(position="bottomleft").add_to(map)
     return map
 
 
@@ -356,7 +367,18 @@ def plot_samplers_on_map(
 
     # Always add the layer control
     folium.LayerControl().add_to(map)
-    folium.ClickForMarker().add_to(map)
+
+    Draw(
+        export=True,
+        draw_options={
+            "polyline": False,
+            "polygon": False,
+            "circle": False,
+            "marker": False,
+            "circlemarker": False,
+        },
+    ).add_to(map)
+    MeasureControl(position="bottomleft").add_to(map)
 
     return map
 
