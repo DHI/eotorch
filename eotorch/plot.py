@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import rasterio as rst
 from folium.plugins import Draw, MeasureControl
+from folium.raster_layers import ImageOverlay
 from matplotlib import cm
 from rasterio.plot import show
 from rasterio.vrt import WarpedVRT
@@ -576,3 +577,79 @@ def plot_samples(
         dataset.plot(sample, show_filepaths=show_filepaths)
         plt.suptitle(f"Sample {i + 1}")
         plt.show()
+
+
+def label_map(label_file_paths: str | list, map: folium.Map = None):
+    """
+    Visualize label maps on a folium map.
+
+    Args:
+        label_file_paths: List of paths to label files
+        map: Optional existing folium map to add to
+
+    Returns:
+        folium.Map: The map with label maps visualized
+    """
+    map = map or folium.Map()
+
+    if not isinstance(label_file_paths, list):
+        label_file_paths = [label_file_paths]
+
+    # Keep track of bounds
+    bounds_list = []
+
+    # Pre-compute the colormap once - using tab20 which has good color distinction for categorical data
+    # Create a static dictionary for faster lookup
+    tab20_colors = {}
+    for i in range(20):
+        # Pre-compute and store as RGB float values
+        tab20_colors[i] = [float(c) for c in cm.tab20(i / 20.0)[:3]]
+
+    # Fast lookup colormap function
+    def fast_colormap(x):
+        return tab20_colors[int(x) % 20]
+
+    # Process files in a single loop
+    for label_file_path in label_file_paths:
+        with rst.open(label_file_path) as src:
+            # Read the data and get bounds in a single operation with VRT
+            with WarpedVRT(src, crs="EPSG:4326") as vrt:
+                bounds = convert_bounds(vrt.bounds)  # Convert directly to save a step
+                array = vrt.read(1)
+
+        # Store bounds for map fitting
+        bounds_list.append(bounds)
+
+        # Create overlay and add to map in one step
+        ImageOverlay(
+            image=array,
+            bounds=bounds,
+            colormap=fast_colormap,
+            opacity=0.7,
+            name=Path(label_file_path).name,
+            mercator_project=True,
+        ).add_to(map)
+
+    # Calculate map bounds if we have any overlays
+    if bounds_list:
+        min_lat = min(bounds[0][0] for bounds in bounds_list)
+        max_lat = max(bounds[1][0] for bounds in bounds_list)
+        min_lon = min(bounds[0][1] for bounds in bounds_list)
+        max_lon = max(bounds[1][1] for bounds in bounds_list)
+        map.fit_bounds(bounds=((min_lat, min_lon), (max_lat, max_lon)))
+
+    # Add controls
+    folium.LayerControl().add_to(map)
+    Draw(
+        export=True,
+        draw_options={
+            "polyline": False,
+            "polygon": False,
+            "circle": False,
+            "marker": False,
+            "circlemarker": False,
+        },
+    ).add_to(map)
+    MeasureControl(position="bottomleft").add_to(map)
+
+    return map

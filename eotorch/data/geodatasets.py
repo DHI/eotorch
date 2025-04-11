@@ -15,7 +15,7 @@ from torchgeo.datasets import IntersectionDataset, RasterDataset
 from torchgeo.datasets.utils import BoundingBox
 
 from eotorch.bandindex import BAND_INDEX
-from eotorch.plot import plot_dataset_index, plot_numpy_array
+from eotorch.plot import label_map, plot_dataset_index, plot_numpy_array
 from eotorch.utils import _format_filepaths
 
 if TYPE_CHECKING:
@@ -180,6 +180,17 @@ class PlottabeLabelDataset(CustomCacheRasterDataset):
             **kwargs,
         )
 
+    def preview_labels(self):
+        """
+        Visualize the label rasters on an interactive map. This can be useful
+        for drawing rectangles for validation/test splitting based on where certain
+        raster values are present.
+
+        Can take a long time to load if have many/large label rasters.
+        """
+
+        return label_map(self.files)
+
 
 class LabelledRasterDataset(IntersectionDataset):
     def plot(self, sample: dict[str, Any], **kwargs):
@@ -214,6 +225,23 @@ class LabelledRasterDataset(IntersectionDataset):
     def _repr_html_(self):
         print(f"Dataset containing {len(self)} files, crs: {self.crs}, res: {self.res}")
         return plot_dataset_index(self)._repr_html_()
+
+    def preview_labels(self):
+        """
+        Visualize the label rasters on an interactive map. This can be useful
+        for drawing rectangles for validation/test splitting based on where certain
+        raster values are present.
+
+        Can take a long time to load if have many/large label rasters.
+        """
+
+        if isinstance(self.datasets[-1], PlottabeLabelDataset):
+            label_ds: PlottabeLabelDataset = self.datasets[-1]
+            return label_ds.preview_labels()
+        else:
+            raise NotImplementedError(
+                "Label dataset must be of type PlottabeLabelDataset"
+            )
 
 
 def get_segmentation_dataset(

@@ -11,13 +11,9 @@ from torchgeo.datasets import (
     RasterDataset,
     random_grid_cell_assignment,
 )
-from torchgeo.samplers import BatchGeoSampler, GridGeoSampler, RandomBatchGeoSampler
+from torchgeo.samplers import BatchGeoSampler, GridGeoSampler, RandomGeoSampler
 
-from eotorch.data.geodatasets import (
-    PlottabeLabelDataset,
-    PlottableImageDataset,
-    get_segmentation_dataset,
-)
+from eotorch.data.geodatasets import PlottabeLabelDataset, PlottableImageDataset
 from eotorch.data.splits import file_wise_split
 
 
@@ -150,8 +146,8 @@ If this is not desired, please provide a val_dataset to the data module.
             self.train_sampler = GridGeoSampler(
                 self.train_dataset, self.patch_size, self.patch_size / 2
             )
-            # self.train_batch_sampler = RandomBatchGeoSampler(
-            #     self.train_dataset, self.patch_size, self.batch_size, self.length
+            # self.train_sampler = RandomGeoSampler(
+            # dataset=self.train_dataset, size=self.patch_size, length=self.length
             # )
         if stage in ["fit", "validate"]:
             self.val_sampler = GridGeoSampler(
@@ -162,7 +158,7 @@ If this is not desired, please provide a val_dataset to the data module.
                 self.test_dataset, self.patch_size, self.patch_size
             )
 
-    def preview_data(
+    def preview_data_sampling(
         self,
         max_samples: int = 100,
         map=None,
