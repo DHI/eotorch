@@ -129,6 +129,22 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
                     from_logits=True,
                 )
 
+    def configure_optimizers(self):
+        optimizer = torch.optim.AdamW(
+            self.parameters(),
+            lr=self.hparams["lr"],
+            weight_decay=1e-4,  # Add some regularization
+        )
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=100,  # Adjust based on your total epochs
+            eta_min=self.hparams["lr"] * 0.01,  # Minimum LR at 1% of initial
+        )
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {"scheduler": scheduler, "monitor": self.monitor},
+        }
+
     def configure_metrics(self) -> None:
         """Initialize the performance metrics.
 
