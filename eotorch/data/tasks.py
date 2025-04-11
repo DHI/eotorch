@@ -142,7 +142,10 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
         )
         return {
             "optimizer": optimizer,
-            "lr_scheduler": {"scheduler": scheduler, "monitor": self.monitor},
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                #   "monitor": self.monitor
+            },
         }
 
     def configure_metrics(self) -> None:
@@ -181,17 +184,14 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
                     multidim_average="global", average=None, **kwargs
                 ),
                 "overall_f1": F1Score(
-                    num_classes=self.hparams["num_classes"],
                     average="micro",
                     **kwargs,
                 ),
                 "macro_f1": F1Score(
-                    num_classes=self.hparams["num_classes"],
                     average="macro",
                     **kwargs,
                 ),
                 "per_class_f1": F1Score(
-                    num_classes=self.hparams["num_classes"],
                     average=None,
                     **kwargs,
                 ),
