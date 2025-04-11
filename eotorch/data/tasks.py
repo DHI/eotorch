@@ -220,6 +220,7 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
                 if k not in {"train_per_class_acc", "train_per_class_iou"}
             },
             batch_size=batch_size,
+            on_epoch=True,
         )
         return loss
 
