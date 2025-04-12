@@ -137,8 +137,8 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
         )
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer,
-            T_max=100,  # Adjust based on your total epochs
-            eta_min=self.hparams["lr"] * 0.01,  # Minimum LR at 1% of initial
+            T_max=15,  # Adjust based on your total epochs
+            eta_min=self.hparams["lr"] * 0.05,  # Minimum LR at 5% of initial
         )
         return {
             "optimizer": optimizer,
@@ -496,7 +496,7 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         cuda = device.type == "cuda"
-
+        self.eval()
         in_channels = self.hparams.get("in_channels")
         if hasattr(self, "datamodule_params"):
             reduce_zero_label = self.datamodule_params.get("dataset_args", {}).get(

@@ -464,7 +464,7 @@ def plot_numpy_array(
         **kwargs: Additional arguments for rasterio's show function
     """
 
-    plt.ioff()
+    # plt.ioff()
     if ax is None:
         _, ax = plt.subplots()
 

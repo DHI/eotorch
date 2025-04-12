@@ -19,11 +19,13 @@ class Conv2d(nn.Module):
         norm_layer: nn.Module = nn.BatchNorm2d,
         bn: bool = True,
         relu: bool = True,
+        dropout_rate: float = 0.0,
         **kwargs,
     ):
         super().__init__()
         self.bn = bn
         self.relu = nn.ReLU(inplace=True) if relu else None
+        self.dropout = nn.Dropout(dropout_rate) if dropout_rate > 0.0 else None
 
         self.conv = nn.Conv2d(
             in_channels,
@@ -41,6 +43,8 @@ class Conv2d(nn.Module):
             x = self.batchnorm(x)
         if self.relu:
             x = self.relu(x)
+        if self.dropout:
+            x = self.dropout(x)
         return x
 
 
@@ -73,7 +77,7 @@ class ResBlock(nn.Module):
         x = self.conv2(x)
         x = self.conv3(x)
         x = x + self.batchnorm(inputs)
-        x = self.ReLU(x)
+        # x = self.ReLU(x)
         return x
 
 

@@ -11,8 +11,12 @@ class Encoder(nn.Module):
         out_channels: int,
     ):
         super().__init__()
-        self.resblock1 = ResBlock(in_channels, out_channels, kernel_sizes=[3, 3, 1])
-        self.resblock2 = ResBlock(out_channels, out_channels, kernel_sizes=[3, 3, 1])
+        self.resblock1 = ResBlock(
+            in_channels, out_channels, kernel_sizes=[3, 3, 1], dropout_rate=0.1
+        )
+        self.resblock2 = ResBlock(
+            out_channels, out_channels, kernel_sizes=[3, 3, 1], dropout_rate=0.1
+        )
         self.maxpool = nn.MaxPool2d((2, 2))
 
     def forward(self, inputs: torch.Tensor):
