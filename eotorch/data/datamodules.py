@@ -107,10 +107,10 @@ class SegmentationDataModule(GeoDataModule):
         """
         super().__init__(
             # train_cls,
-            train_dataset.__class__,
-            batch_size,
-            patch_size,
-            num_workers,  # **dataset_kwargs
+            dataset_class=train_dataset.__class__,
+            batch_size=batch_size,
+            patch_size=patch_size,
+            num_workers=num_workers,  # **dataset_kwargs
         )
 
         self.train_dataset = train_dataset
