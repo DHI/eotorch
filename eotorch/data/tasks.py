@@ -23,11 +23,6 @@ if TYPE_CHECKING:
 
 
 class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
-    """
-    Task based on TorchGeo's SemanticSegmentationTask, but with the ability to use custom models.
-    We still have access to all the architectures and backbones from TorchGeo.
-    """
-
     def __init__(
         self,
         num_classes: int,
@@ -40,12 +35,37 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
         class_weights: Tensor | None = None,
         ignore_index: int | None = None,
         lr: float = 1e-3,
-        patience: int = 10,
         freeze_backbone: bool = False,
         freeze_decoder: bool = False,
         model_kwargs: dict[str, Any] = None,
+        lr_scheduler: dict[str, Any] = None,
     ):
+        """
+        Task based on TorchGeo's SemanticSegmentationTask, but with the ability to use custom models.
+        We still have access to all the architectures and backbones from TorchGeo.
+
+        Args:
+            lr_scheduler : dict
+                The learning rate scheduler to use. If None, a default scheduler will be used.
+                The default scheduler is ReduceLROnPlateau with the following parameters:
+                * mode: "min"
+                * factor: 0.2
+                * patience: 10
+                * min_lr: 1e-6
+                * monitor: "val_loss"
+
+                The way to specify the default scheduler would be:
+                lr_scheduler = {"name": "ReduceLROnPlateau", "mode": "min", "factor": 0.2, "patience": 10, "min_lr": 1e-6, "monitor": "val_loss"}
+
+                For available schedulers, see https://pytorch.org/docs/stable/optim.html#how-to-adjust-learning-rate
+
+                Some examples of other schedulers:
+                * CosineAnnealingLR:
+                    lr_scheduler = {"name": "CosineAnnealingLR", "T_max": 100, "eta_min": 1e-6}
+
+        """
         self.model_kwargs = model_kwargs or {}
+        self.lr_scheduler = lr_scheduler or {}
         super().__init__(
             model=model,
             backbone=backbone,
@@ -57,7 +77,6 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
             class_weights=class_weights,
             ignore_index=ignore_index,
             lr=lr,
-            patience=patience,
             freeze_backbone=freeze_backbone,
             freeze_decoder=freeze_decoder,
         )
@@ -135,16 +154,29 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
             lr=self.hparams["lr"],
             weight_decay=1e-4,  # Add some regularization
         )
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer,
-            T_max=15,  # Adjust based on your total epochs
-            eta_min=self.hparams["lr"] * 0.05,  # Minimum LR at 5% of initial
-        )
+        monitor = None
+        if not self.lr_scheduler:
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer, patience=10, min_lr=1e-6, factor=0.2
+            )
+
+        else:
+            scheduler_name = self.lr_scheduler.pop("name")
+            if hasattr(torch.optim.lr_scheduler, scheduler_name):
+                scheduler_cls = getattr(torch.optim.lr_scheduler, scheduler_name)
+                if "monitor" in self.lr_scheduler:
+                    monitor = self.lr_scheduler.pop("monitor")
+                scheduler = scheduler_cls(optimizer, **self.lr_scheduler)
+            else:
+                raise ValueError(
+                    f"Scheduler {scheduler_name} not found in torch.optim.lr_scheduler"
+                )
+
         return {
             "optimizer": optimizer,
             "lr_scheduler": {
                 "scheduler": scheduler,
-                #   "monitor": self.monitor
+                "monitor": monitor or self.monitor,
             },
         }
 
