@@ -4,14 +4,13 @@ from typing import Any
 import torch
 from torch import Tensor
 from torch.utils.data import DataLoader
+from torchgeo import samplers
 from torchgeo.datamodules import GeoDataModule
 from torchgeo.datasets import (
     GeoDataset,
     IntersectionDataset,
     RasterDataset,
-    random_grid_cell_assignment,
 )
-from torchgeo.samplers import BatchGeoSampler, GridGeoSampler, RandomGeoSampler
 
 from eotorch.data.geodatasets import PlottabeLabelDataset, PlottableImageDataset
 from eotorch.data.splits import file_wise_split
@@ -75,24 +74,49 @@ class SegmentationDataModule(GeoDataModule):
         test_dataset: type[GeoDataset] | RasterDataset | IntersectionDataset = None,
         batch_size: int = 1,
         patch_size: int | tuple[int, int] = 64,
-        length: int | None = None,
         num_workers: int = 0,
         persistent_workers: bool = False,
         pin_memory: bool = False,
+        train_sampler_config: dict[str, Any] = None,
         **kwargs: Any,
     ):
+        """
+        Initialize the SegmentationDataModule.
+
+        Args:
+            train_dataset: The training dataset.
+            val_dataset: The validation dataset (optional).
+            test_dataset: The test dataset (optional).
+            batch_size: The batch size for data loading.
+            patch_size: The size of the patches to be extracted from the images.
+            num_workers: The number of worker processes for data loading.
+            persistent_workers: Whether to use persistent workers for data loading.
+            pin_memory: Whether to pin memory for data loading.
+            train_sampler_config: The training sampler configuration (optional).
+                If None, a default sampler will be used. The default is a GridGeoSampler with the following parameters:
+                size=patch_size, stride=patch_size / 2.
+                The way to specify the default sampler would be:
+                train_sampler_config = {"type": "GridGeoSampler", "size": patch_size, "stride": patch_size / 2}
+
+                Patch size does not need to be specified here, as it is already a parameter of the data module.
+                It will be passed to the sampler as the 'size' arg automatically.
+                Any sampler from torchgeo.samplers can be used here. The sampler will be initialized with the following parameters.
+                Example of some other sampler configurations:
+                train_sampler_config = {"type": "RandomGeoSampler", "length": length}
+            **kwargs: Additional keyword arguments.
+        """
         super().__init__(
             # train_cls,
             train_dataset.__class__,
             batch_size,
             patch_size,
-            length,
             num_workers,  # **dataset_kwargs
         )
 
         self.train_dataset = train_dataset
         self.val_dataset = val_dataset
         self.test_dataset = test_dataset
+        self.train_sampler_config = train_sampler_config
         if not self.val_dataset:
             print("No val dataset provided. Performing default train / val split.")
             # TODO: Change this to > 10 once more splits are supported, for fewer files we probably want an ROI based split
@@ -128,10 +152,10 @@ If this is not desired, please provide a val_dataset to the data module.
                 "dataset_args": _format_dict_for_yaml(get_dataset_args(train_dataset)),
                 "batch_size": batch_size,
                 "patch_size": patch_size,
-                "length": length,
                 "num_workers": num_workers,
                 "persistent_workers": persistent_workers,
                 "pin_memory": pin_memory,
+                "train_sampler_config": train_sampler_config,
             }
         )
 
@@ -143,18 +167,30 @@ If this is not desired, please provide a val_dataset to the data module.
         """
 
         if stage in ["fit"]:
-            self.train_sampler = GridGeoSampler(
-                self.train_dataset, self.patch_size, self.patch_size / 2
-            )
-            # self.train_sampler = RandomGeoSampler(
-            # dataset=self.train_dataset, size=self.patch_size, length=self.length
-            # )
+            if self.train_sampler_config is None:
+                self.train_sampler = samplers.GridGeoSampler(
+                    self.train_dataset, self.patch_size, self.patch_size / 2
+                )
+            else:
+                # Initialize the sampler based on the provided configuration
+                sampler_type = self.train_sampler_config.pop("type")
+                if hasattr(samplers, sampler_type):
+                    sampler_class = getattr(samplers, sampler_type)
+                    self.train_sampler = sampler_class(
+                        self.train_dataset,
+                        size=self.patch_size,
+                        **self.train_sampler_config,
+                    )
+                else:
+                    raise ValueError(
+                        f"Sampler type '{sampler_type}' not found in torchgeo.samplers."
+                    )
         if stage in ["fit", "validate"]:
-            self.val_sampler = GridGeoSampler(
+            self.val_sampler = samplers.GridGeoSampler(
                 self.val_dataset, self.patch_size, self.patch_size
             )
         if stage in ["test"]:
-            self.test_sampler = GridGeoSampler(
+            self.test_sampler = samplers.GridGeoSampler(
                 self.test_dataset, self.patch_size, self.patch_size
             )
 
@@ -355,7 +391,7 @@ If this is not desired, please provide a val_dataset to the data module.
         )
         batch_size = self._valid_attribute(f"{split}_batch_size", "batch_size")
 
-        if isinstance(sampler, BatchGeoSampler):
+        if isinstance(sampler, samplers.BatchGeoSampler):
             batch_size = 1
             batch_sampler = sampler
             sampler = None
@@ -371,7 +407,6 @@ If this is not desired, please provide a val_dataset to the data module.
             collate_fn=self.collate_fn,
             persistent_workers=self.persistent_workers,
             pin_memory=self.pin_memory,
-            # prefetch_factor=1,
         )
 
     def transfer_batch_to_device(

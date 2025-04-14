@@ -55,13 +55,13 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
                 * monitor: "val_loss"
 
                 The way to specify the default scheduler would be:
-                lr_scheduler = {"name": "ReduceLROnPlateau", "mode": "min", "factor": 0.2, "patience": 10, "min_lr": 1e-6, "monitor": "val_loss"}
+                lr_scheduler = {"type": "ReduceLROnPlateau", "mode": "min", "factor": 0.2, "patience": 10, "min_lr": 1e-6, "monitor": "val_loss"}
 
                 For available schedulers, see https://pytorch.org/docs/stable/optim.html#how-to-adjust-learning-rate
 
                 Some examples of other schedulers:
                 * CosineAnnealingLR:
-                    lr_scheduler = {"name": "CosineAnnealingLR", "T_max": 100, "eta_min": 1e-6}
+                    lr_scheduler = {"type": "CosineAnnealingLR", "T_max": 100, "eta_min": 1e-6}
 
         """
         self.model_kwargs = model_kwargs or {}
@@ -161,15 +161,15 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
             )
 
         else:
-            scheduler_name = self.lr_scheduler.pop("name")
-            if hasattr(torch.optim.lr_scheduler, scheduler_name):
-                scheduler_cls = getattr(torch.optim.lr_scheduler, scheduler_name)
+            scheduler_type = self.lr_scheduler.pop("type")
+            if hasattr(torch.optim.lr_scheduler, scheduler_type):
+                scheduler_cls = getattr(torch.optim.lr_scheduler, scheduler_type)
                 if "monitor" in self.lr_scheduler:
                     monitor = self.lr_scheduler.pop("monitor")
                 scheduler = scheduler_cls(optimizer, **self.lr_scheduler)
             else:
                 raise ValueError(
-                    f"Scheduler {scheduler_name} not found in torch.optim.lr_scheduler"
+                    f"Scheduler {scheduler_type} not found in torch.optim.lr_scheduler"
                 )
 
         return {
