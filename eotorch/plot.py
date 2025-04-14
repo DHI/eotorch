@@ -90,99 +90,6 @@ def plot_dataset_index(dataset, map=None, color="olive", name=None):
     return map
 
 
-def visualize_samplers(
-    datasets: list,
-    samplers: list,
-    max_samples: int = None,
-    max_files: int = None,
-    class_mapping: dict = None,
-):
-    dataloaders = []
-    for dataset, sampler in zip(datasets, samplers):
-        if isinstance(sampler, BatchGeoSampler):
-            batch_sampler = sampler
-            sampler = None
-        else:
-            batch_sampler = None
-
-        dataloader = DataLoader(
-            dataset,
-            batch_sampler=batch_sampler,
-            sampler=sampler,
-            collate_fn=stack_samples,
-        )
-        dataloaders.append(dataloader)
-
-    file_mapping = {}
-    colors = ["r", "g", "b", "c", "m", "y", "k"]
-    for j, (color, dataloader) in enumerate(zip(colors, dataloaders)):
-        for i, batch in enumerate(dataloader, start=1):
-            if (max_samples is not None) and (i > max_samples):
-                break
-
-            samples = unbind_samples(batch)
-
-            for sample in samples:
-                for mask_path in sample["mask_filepaths"]:
-                    if mask_path not in file_mapping:
-                        if max_files is not None and len(file_mapping) >= max_files:
-                            continue
-                        with rst.open(mask_path) as src:
-                            with WarpedVRT(src, crs=datasets[j].crs) as vrt:
-                                bounds = vrt.bounds
-                                transform = rst.transform.from_bounds(
-                                    west=bounds[0],
-                                    south=bounds[1],
-                                    east=bounds[2],
-                                    north=bounds[3],
-                                    width=vrt.width,
-                                    height=vrt.height,
-                                )
-                                file_mapping[mask_path] = {
-                                    "fig": plot_class_raster(
-                                        tif_file_path=mask_path,
-                                        title=mask_path,
-                                        class_mapping=class_mapping,
-                                    ),
-                                    "height": vrt.height,
-                                    "width": vrt.width,
-                                    "transform": transform,
-                                }
-                    bounds = sample["bounds"]
-                    height, width = (
-                        file_mapping[mask_path]["height"],
-                        file_mapping[mask_path]["width"],
-                    )
-                    pixel_bounds = from_bounds(
-                        left=bounds[0],
-                        bottom=bounds[2],
-                        right=bounds[1],
-                        top=bounds[3],
-                        transform=file_mapping[mask_path]["transform"],
-                    )
-                    fig = file_mapping[mask_path]["fig"]
-                    xy = (
-                        pixel_bounds.col_off / width,
-                        pixel_bounds.row_off / height,
-                    )
-                    ax = fig.gca()
-                    rect = plt.Rectangle(
-                        xy=xy,
-                        width=pixel_bounds.width / width,
-                        height=pixel_bounds.height / height,
-                        fill=False,
-                        color=color,
-                        # alpha=0.5,
-                        # zorder=1000,
-                        transform=fig.transFigure,
-                        # transform=ax.transAxes,
-                        figure=fig,
-                        lw=2,
-                    )
-                    ax.add_patch(rect)
-    plt.show(block=True)
-
-
 def plot_samplers_on_map(
     datasets: list,
     samplers: list,
@@ -290,15 +197,16 @@ def plot_samplers_on_map(
     # Process each dataset and sampler
     print("Sampling bounding boxes and adding them to map...")
 
-    for j, (color, dataloader) in enumerate(zip(colors, dataloaders)):
+    for dataset_idx, (color, dataloader) in enumerate(zip(colors, dataloaders)):
         # Create a feature group for this dataset's samples
-        feature_group_name = f"{dataset_names[j]} Samples ({colors[j]})"
+        current_dataset_name = dataset_names[dataset_idx]
+        feature_group_name = f"{current_dataset_name} Samples ({colors[dataset_idx]})"
         sample_group = folium.FeatureGroup(name=feature_group_name)
 
         total = (
-            min(max_samples, len(samplers[j]))
+            min(max_samples, len(samplers[dataset_idx]))
             if max_samples is not None
-            else len(samplers[j])
+            else len(samplers[dataset_idx])
         )
         sample_count = 0
 
@@ -318,7 +226,9 @@ def plot_samplers_on_map(
             for sample in samples:
                 # Create geometric representation of sample bounds
                 bounds = sample["bounds"]
-                poly = utils.torchgeo_bb_to_shapely(bounds, bbox_crs=datasets[j].crs)
+                poly = utils.torchgeo_bb_to_shapely(
+                    bounds, bbox_crs=datasets[dataset_idx].crs
+                )
 
                 # Define style for the sample polygon
                 style_function = lambda x, c=color: {
@@ -332,7 +242,7 @@ def plot_samplers_on_map(
                 folium.GeoJson(
                     poly,
                     style_function=style_function,
-                    tooltip=f"Sample from {dataset_names[j]}",
+                    tooltip=f"Sample from {current_dataset_name}",
                 ).add_to(sample_group)
 
                 # Count label pixels if requested
@@ -340,12 +250,18 @@ def plot_samplers_on_map(
                     mask = sample["mask"]
                     # Skip -1 values which are typically ignored or no-data values
                     valid_mask = mask != -1
-                    if isinstance(datasets[j], IntersectionDataset) and hasattr(
-                        datasets[j].datasets[1], "reduce_zero_label"
+
+                    # Adjust mask values if IntersectionDataset with reduce_zero_label=True was used
+                    # This ensures label counts match the original class values if 0 was mapped to -1
+                    current_dataset = datasets[dataset_idx]
+                    if isinstance(current_dataset, IntersectionDataset) and hasattr(
+                        current_dataset.datasets[1], "reduce_zero_label"
                     ):
-                        mask += 1
+                        if current_dataset.datasets[1].reduce_zero_label:
+                            mask = mask + 1  # Shift labels back up by 1
+
                     if torch.any(valid_mask):
-                        # Only count non-(-1) values
+                        # Only count valid (non -1) pixels
                         filtered_mask = mask[valid_mask]
                         unique_values, counts = torch.unique(
                             filtered_mask, return_counts=True
@@ -353,34 +269,35 @@ def plot_samplers_on_map(
 
                         # Update counts for this dataset
                         dataset_label_counts = label_counts_per_dataset[
-                            dataset_names[j]
+                            current_dataset_name
                         ]
                         for val, count in zip(
                             unique_values.cpu().numpy(), counts.cpu().numpy()
                         ):
-                            if val in dataset_label_counts:
-                                dataset_label_counts[val] += count
-                            else:
-                                dataset_label_counts[val] = count
+                            # Aggregate counts for each label value
+                            dataset_label_counts[val] = (
+                                dataset_label_counts.get(val, 0) + count
+                            )
 
                 sample_count += 1
 
-                # Process mask files if needed for additional visualization
+                # Process mask files if needed for additional visualization (e.g., debugging)
+                # Limits the number of unique mask files processed across all samples/datasets
                 if max_files is not None and "mask_filepaths" in sample:
                     for mask_path in sample["mask_filepaths"]:
                         if (
                             mask_path not in processed_files
                             and len(processed_files) < max_files
                         ):
-                            # Mark this file as processed
+                            # Mark this file as processed to avoid duplicates
                             processed_files[mask_path] = True
 
-                # Check if we've reached the maximum sample count
+                # Check if we've reached the maximum sample count for this dataset
                 if max_samples is not None and sample_count >= max_samples:
                     break
 
-            # Break out of batch loop if max_samples reached
-            if max_samples is not None and sample_count > max_samples:
+            # Break out of batch loop if max_samples reached for this dataset
+            if max_samples is not None and sample_count >= max_samples:
                 break
 
         # Add the sample feature group to the map
@@ -388,7 +305,7 @@ def plot_samplers_on_map(
 
     # Fit the map bounds to show all content
     if datasets:
-        # Use the bounds of the first dataset as a fallback
+        # Use the bounds of the first dataset as a fallback if multiple datasets have varying extents
         map.fit_bounds(
             bounds=convert_bounds(
                 utils.torchgeo_bb_to_shapely(
@@ -425,113 +342,155 @@ def plot_class_raster(
     colormap=cm.tab20,
     data_window_only: bool = False,
     **kwargs,
-) -> None:
+) -> plt.Axes:  # Return the axes object
     """
-    Plot a raster image with class labels.
+    Plot a raster image with class labels. Manages figure creation and display.
     """
+    show_plot = False
+    if ax is None:
+        fig, ax = plt.subplots()
+        show_plot = True
+
     with rst.open(tif_file_path) as src:
         array = src.read(1)
-        return plot_numpy_array(
+        nodata = src.nodata  # Get nodata value from source
+
+        # Call plot_numpy_array, passing the determined ax and nodata value
+        plot_numpy_array(
             array,
-            ax=ax,
+            ax=ax,  # Always pass an ax
             class_mapping=class_mapping,
-            nodata_value=int(src.nodata),
+            nodata_value=int(nodata)
+            if nodata is not None
+            else None,  # Pass nodata value
             colormap=colormap,
             data_window_only=data_window_only,
             **kwargs,
         )
 
+    if show_plot:
+        plt.show()
+
+    return ax  # Return the axes object used for plotting
+
 
 def plot_numpy_array(
     array: np.ndarray,
-    ax: plt.Axes = None,
+    ax: plt.Axes,  # Changed: ax is now required
     class_mapping: dict[int, str] = None,
-    nodata_value: int = 0,
+    nodata_value: int = None,  # Changed: Allow None
     colormap=cm.tab20,
     data_window_only: bool = False,
+    nodata_color: str = "black",
     **kwargs,
 ):
     """
-    Plot a numpy array with class labels and consistent colors.
+    Plot a numpy array with class labels onto a given Axes object.
 
     Args:
         array: The input array to plot
-        ax: Matplotlib axes to plot on (creates new figure if None)
+        ax: Matplotlib axes to plot on (Required).
         class_mapping: Dictionary mapping class values to their string labels
-        nodata_value: Value to treat as no data
-        colormap: Matplotlib colormap to use
+        nodata_value: Value to treat as no data. If None, treat as no nodata.
+        colormap: Matplotlib colormap to use for data values
         data_window_only: If True, crops to non-nodata region
+        nodata_color: Color to use for the nodata value.
         **kwargs: Additional arguments for rasterio's show function
     """
-
-    # plt.ioff()
-    if ax is None:
-        _, ax = plt.subplots()
-
-    if data_window_only:
+    if data_window_only and nodata_value is not None:
         window = get_data_window(array, nodata=nodata_value)
         plot_array = array[utils.window_to_np_idc(window)]
     else:
         plot_array = array
 
-    values = np.unique(plot_array.ravel()).tolist()
+    # Create a masked array if nodata_value is specified
+    if nodata_value is not None:
+        masked_array = np.ma.masked_equal(plot_array, nodata_value)
+        nodata_present = nodata_value in np.unique(plot_array.ravel())
+        array_to_plot = masked_array  # Plot the masked array
+    else:
+        # If no nodata value, plot the original array and don't use masking features
+        masked_array = plot_array  # Use unmasked array for calculations
+        nodata_present = False
+        array_to_plot = plot_array  # Plot the unmasked array
 
-    # Determine min/max class values based on mapping or array values
+    # Get unique values present in the data (excluding nodata if applicable)
+    data_values = np.unique(
+        masked_array.compressed() if nodata_value is not None else masked_array.ravel()
+    ).tolist()
+
+    # Determine min/max class values based *only* on data values and mapping
+    potential_data_values = set(data_values)
     if class_mapping:
-        class_keys = sorted(list(class_mapping.keys()))
-        min_class = min(class_keys) if class_keys else 0
-        max_class = max(class_keys) if class_keys else 0
+        potential_data_values.update(
+            k for k in class_mapping.keys() if nodata_value is None or k != nodata_value
+        )
+
+    numeric_data_values = {
+        v for v in potential_data_values if isinstance(v, (int, np.integer))
+    }
+
+    cmap = plt.get_cmap(colormap).copy()
+    if nodata_value is not None:
+        cmap.set_bad(color=nodata_color)  # Set nodata color only if nodata exists
+
+    if not numeric_data_values:
+        # Handle case with only nodata or empty array
+        norm = None
+        # Plot showing only nodata color or blank if no nodata
+        show(array_to_plot, ax=ax, cmap=cmap, vmin=-1, vmax=0, **kwargs)
+
     else:
-        min_class = min(values) if values else 0
-        max_class = max(values) if values else 0
+        min_class = min(numeric_data_values)
+        max_class = max(numeric_data_values)
 
-    # Ensure nodata_value is included in the range if negative
-    if nodata_value < min_class:
-        min_class = nodata_value
+        bounds = np.arange(min_class - 0.5, max_class + 1.5)
+        if len(bounds) < 2:
+            bounds = np.array([min_class - 0.5, min_class + 0.5])
+            max_class = min_class
 
-    # Make sure the maximum class index is at least 7 to ensure colormap compatibility
-    max_class = max(max_class, 7)
+        norm = plt.matplotlib.colors.BoundaryNorm(bounds, cmap.N)
 
-    # Create a more stable boundary norm - reliable for categorical data
-    bounds = np.arange(min_class - 0.5, max_class + 1.5)
-    norm = plt.matplotlib.colors.BoundaryNorm(bounds, colormap.N)
+        # Pass the array_to_plot (masked or unmasked)
+        show(array_to_plot, ax=ax, cmap=cmap, norm=norm, **kwargs)
 
-    # Plot using rasterio's show function
-    ax = show(plot_array, ax=ax, cmap=colormap, norm=norm, **kwargs)
+    # --- Legend Handling ---
+    legend_patches = []
+    effective_class_mapping = {}
+    if class_mapping:
+        effective_class_mapping.update(
+            {
+                k: v
+                for k, v in class_mapping.items()
+                if nodata_value is None or k != nodata_value
+            }
+        )
 
-    # Prepare class mapping
-    if class_mapping is None:
-        class_mapping = {v: str(v) for v in values}
-    else:
-        class_mapping = class_mapping.copy()
+    for v in data_values:
+        if v not in effective_class_mapping:
+            effective_class_mapping[v] = str(v)
 
-    # Add nodata to class mapping if needed
-    if (nodata_value in values) and (
-        nodata_value not in class_mapping
-        or class_mapping[nodata_value] == str(nodata_value)
-    ):
-        class_mapping[nodata_value] = "No Data"
-
-    # Create deterministic color mapping based on class values
-    colors = {}
-    for cls_val in range(min_class, max_class + 1):
-        colors[cls_val] = colormap(norm(cls_val))
-
-    # Create legend only for values present in this image
-    legend_patches = [
-        mpatches.Patch(color=colors[i], label=class_mapping.get(i, str(i)))
-        for i in values
-        if i in colors
-    ]
-
-    ax.legend(
-        handles=legend_patches,
-        bbox_to_anchor=(1.05, 1),
-        loc=2,
-        borderaxespad=0.0,
+    present_data_values = sorted(
+        list(set(v for v in data_values if isinstance(v, (int, np.integer))))
     )
 
-    return ax.get_figure()
+    if norm:
+        for i in present_data_values:
+            if i >= bounds[0] and i < bounds[-1]:
+                color = cmap(norm(i))
+                label = effective_class_mapping.get(i, str(i))
+                legend_patches.append(mpatches.Patch(color=color, label=label))
+
+    if nodata_present:  # Add nodata legend only if it was actually present
+        legend_patches.append(mpatches.Patch(color=nodata_color, label="No Data"))
+
+    if legend_patches:
+        ax.legend(
+            handles=legend_patches,
+            bbox_to_anchor=(1.05, 1),
+            loc=2,
+            borderaxespad=0.0,
+        )
 
 
 def plot_samples(
