@@ -376,7 +376,7 @@ def plot_class_raster(
 
 def plot_numpy_array(
     array: np.ndarray,
-    ax: plt.Axes,  # Changed: ax is now required
+    ax: plt.Axes = None,
     class_mapping: dict[int, str] = None,
     nodata_value: int = None,  # Changed: Allow None
     colormap=cm.tab20,
@@ -389,7 +389,7 @@ def plot_numpy_array(
 
     Args:
         array: The input array to plot
-        ax: Matplotlib axes to plot on (Required).
+        ax: Matplotlib axes to plot on.
         class_mapping: Dictionary mapping class values to their string labels
         nodata_value: Value to treat as no data. If None, treat as no nodata.
         colormap: Matplotlib colormap to use for data values
@@ -397,6 +397,9 @@ def plot_numpy_array(
         nodata_color: Color to use for the nodata value.
         **kwargs: Additional arguments for rasterio's show function
     """
+    if ax is None:
+        fig, ax = plt.subplots()
+
     if data_window_only and nodata_value is not None:
         window = get_data_window(array, nodata=nodata_value)
         plot_array = array[utils.window_to_np_idc(window)]

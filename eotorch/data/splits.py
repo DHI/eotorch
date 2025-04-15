@@ -120,8 +120,6 @@ def file_wise_split(
         i for i in dataset_items if i not in val_items and i not in test_items
     ]
 
-    print([t.object for t in train_items])
-
     train_idx = Index(interleaved=False, properties=Property(dimension=3))
     for i in train_items:
         train_idx.insert(len(train_idx), i.bounds, i.object)
