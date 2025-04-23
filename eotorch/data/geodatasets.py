@@ -15,6 +15,7 @@ from torchgeo.datasets import IntersectionDataset, RasterDataset
 from torchgeo.datasets.utils import BoundingBox
 
 from eotorch.bandindex import BAND_INDEX
+from eotorch.inference.inference_utils import prediction_to_numpy
 from eotorch.plot import label_map, plot_dataset_index, plot_numpy_array
 from eotorch.utils import _format_filepaths
 
@@ -107,8 +108,12 @@ class CustomCacheRasterDataset(RasterDataset):
 
 class PlottableImageDataset(CustomCacheRasterDataset):
     def plot(self, sample, ax=None, **kwargs):
+        predictions = sample.get("prediction")
+
         if ax is None:
-            _, ax = plt.subplots()
+            # _, ax = plt.subplots()
+            n_cols = 2 if predictions is not None else 1
+            fig, ax = plt.subplots(1, n_cols, figsize=(n_cols * 4, 4))
 
         rgb_indices = []
         for band in self.rgb_bands:
@@ -121,13 +126,30 @@ class PlottableImageDataset(CustomCacheRasterDataset):
             formatted_paths = _format_filepaths(filepaths)
             ax.set_title(formatted_paths, fontsize=8, wrap=True)
 
-        return show(
+        show(
             image.numpy(),
-            ax=ax,
+            ax=ax if predictions is None else ax[0],
             adjust=True,
             title="Image" if not show_filepaths else None,
             **kwargs,
         )
+        if predictions is not None:
+            # label_ds: PlottabeLabelDataset = self.datasets[-1]
+            # data = predictions.numpy()
+            # if label_ds.reduce_zero_label:
+            #     data += 1
+            plot_numpy_array(
+                array=prediction_to_numpy(predictions),
+                ax=ax[-1],
+                # class_mapping=label_ds.class_mapping,
+                # colormap=label_ds.colormap,
+                # nodata_value=label_ds.nodata_value,
+                title="Prediction",
+                **kwargs,
+            )
+
+        plt.tight_layout()
+        # return fig
 
 
 class PlottabeLabelDataset(CustomCacheRasterDataset):
@@ -194,7 +216,8 @@ class PlottabeLabelDataset(CustomCacheRasterDataset):
 
 class LabelledRasterDataset(IntersectionDataset):
     def plot(self, sample: dict[str, Any], **kwargs):
-        n_cols = 2 if "prediction" not in sample else 3
+        predictions = sample.pop("prediction", None)
+        n_cols = 3 if predictions is not None else 2
         fig, axes = plt.subplots(1, n_cols, figsize=(n_cols * 4, 4))
 
         for i, dataset in enumerate(self.datasets):
@@ -203,9 +226,9 @@ class LabelledRasterDataset(IntersectionDataset):
             else:
                 raise NotImplementedError("Dataset must be plottable")
 
-        if "prediction" in sample:
+        if predictions is not None:
             label_ds: PlottabeLabelDataset = self.datasets[-1]
-            data = sample["prediction"].numpy()
+            data = predictions.numpy()
             if label_ds.reduce_zero_label:
                 data += 1
             plot_numpy_array(
