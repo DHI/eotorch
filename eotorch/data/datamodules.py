@@ -193,7 +193,7 @@ If this is not desired, please provide a val_dataset to the data module.
                     )
 
             self.val_sampler = samplers.GridGeoSampler(
-                self.val_dataset, self.patch_size, self.patch_size / 2
+                self.val_dataset, self.patch_size, self.patch_size
             )
         if stage in ["test"]:
             self.test_sampler = samplers.GridGeoSampler(
