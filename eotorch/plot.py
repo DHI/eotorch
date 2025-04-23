@@ -18,6 +18,32 @@ from torchgeo.samplers import BatchGeoSampler
 from eotorch import utils
 
 
+def plot_raster_histogram(raster_file_path: str | Path, band: int = 1, bins: int = 256):
+    """
+    Plot a histogram of pixel values for a specific band in a raster file.
+    Args:
+        raster_file_path: Path to the raster file
+        band: Band number to plot (default is 1)
+        bins: Number of bins for the histogram (default is 256)
+    """
+    with rst.open(raster_file_path) as src:
+        # Read the specified band
+        data = src.read(band)
+
+        # Flatten the data and remove NaN values
+        data_flat = data.flatten()
+        data_flat = data_flat[~np.isnan(data_flat)]
+
+        # Plot the histogram
+        plt.figure(figsize=(10, 6))
+        plt.hist(data_flat, bins=bins, color="blue", alpha=0.7)
+        plt.title(f"Histogram of Band {band} in {raster_file_path}")
+        plt.xlabel("Pixel Value")
+        plt.ylabel("Frequency")
+        plt.grid()
+        plt.show()
+
+
 def convert_bounds(bbox, invert_y=False):
     """
     Helper method for changing bounding box representation to leaflet notation
