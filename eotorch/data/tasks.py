@@ -666,7 +666,7 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
         gen = eotorch_patch_generator(
             tif_file_path=tif_file_path,
             checkpoint_path=checkpoint_path,
-            batch_size=8,
+            batch_size=batch_size,
         )
         data_module_params = torch.load(
             checkpoint_path, weights_only=False, map_location=device
@@ -684,7 +684,7 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
             )
 
         patch_size = data_module_params.get("patch_size", patch_size)
-
+        print("Using patch size:", patch_size)
         predict_on_tif_generic(
             tif_file_path=tif_file_path,
             prediction_func=lightning_module.predict_class,

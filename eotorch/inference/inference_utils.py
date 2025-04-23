@@ -203,15 +203,15 @@ def eotorch_patch_generator(
         bands_to_return=dataset_args.get("bands_to_return"),
     )
     module = SegmentationDataModule(
-        val_dataset=pred_ds,
-        # predict_dataset=pred_ds,
+        # val_dataset=pred_ds,
+        predict_dataset=pred_ds,
         patch_size=data_module_params.get("patch_size"),
         batch_size=batch_size,
     )
-    module.setup(stage="validate")
-    # module.setup(stage="predict")
-    data_loader = module.val_dataloader()
-    # data_loader = module.predict_dataloader()
+    # module.setup(stage="validate")
+    module.setup(stage="predict")
+    # data_loader = module.val_dataloader()
+    data_loader = module.predict_dataloader()
 
     with rst.open(tif_file_path) as src:
         transform = src.transform
