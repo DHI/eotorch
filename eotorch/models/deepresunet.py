@@ -9,13 +9,22 @@ class Encoder(nn.Module):
         self,
         in_channels: int,
         out_channels: int,
+        norm_momentum: float = 0.1,
     ):
         super().__init__()
         self.resblock1 = ResBlock(
-            in_channels, out_channels, kernel_sizes=[3, 3, 1], dropout_rate=0.1
+            in_channels,
+            out_channels,
+            kernel_sizes=[3, 3, 1],
+            dropout_rate=0.1,
+            norm_momentum=norm_momentum,
         )
         self.resblock2 = ResBlock(
-            out_channels, out_channels, kernel_sizes=[3, 3, 1], dropout_rate=0.1
+            out_channels,
+            out_channels,
+            kernel_sizes=[3, 3, 1],
+            dropout_rate=0.1,
+            norm_momentum=norm_momentum,
         )
         self.maxpool = nn.MaxPool2d((2, 2))
 
@@ -31,14 +40,29 @@ class Decoder(nn.Module):
         self,
         in_channels: int,
         out_channels: int,
+        norm_momentum: float = 0.1,
     ):
         super().__init__()
         self.upsample = nn.UpsamplingNearest2d(scale_factor=2)
         self.conv = Conv2d(
-            2 * in_channels, out_channels, kernel_size=(1, 1), padding="valid"
+            2 * in_channels,
+            out_channels,
+            kernel_size=(1, 1),
+            padding="valid",
+            norm_momentum=norm_momentum,
         )
-        self.resblock1 = ResBlock(in_channels, out_channels, kernel_sizes=[3, 3, 1])
-        self.resblock2 = ResBlock(out_channels, out_channels, kernel_sizes=[3, 3, 1])
+        self.resblock1 = ResBlock(
+            in_channels,
+            out_channels,
+            kernel_sizes=[3, 3, 1],
+            norm_momentum=norm_momentum,
+        )
+        self.resblock2 = ResBlock(
+            out_channels,
+            out_channels,
+            kernel_sizes=[3, 3, 1],
+            norm_momentum=norm_momentum,
+        )
 
     def forward(self, inputs: torch.Tensor, skip: torch.Tensor):
         x = self.upsample(inputs)
@@ -67,6 +91,8 @@ class RegDeepResUNet(nn.Module):
             Keep the number of filters consistent for each layer. If False, the number of filters
             are doubled after each encoder block and halved again after each decoder block.
             Defaults to True.
+        norm_momentum (float, optional):
+            Momentum for normalization layers. Defaults to 0.1.
     """
 
     def __init__(
@@ -74,6 +100,7 @@ class RegDeepResUNet(nn.Module):
         in_channels: int,
         num_filters: int = 128,
         static_filters: bool = True,
+        norm_momentum: float = 0.01,
     ):
         super().__init__()
         self.num_filters = (
@@ -89,25 +116,46 @@ class RegDeepResUNet(nn.Module):
             kernel_size=(5, 5),
             padding="same",
             stride=(1, 1),
+            norm_momentum=norm_momentum,
         )
         self.maxpool = nn.MaxPool2d((2, 2))
-        self.encoder1 = Encoder(self.num_filters[0], self.num_filters[1])
-        self.encoder2 = Encoder(self.num_filters[1], self.num_filters[2])
-        self.encoder3 = Encoder(self.num_filters[2], self.num_filters[3])
+        self.encoder1 = Encoder(
+            self.num_filters[0], self.num_filters[1], norm_momentum=norm_momentum
+        )
+        self.encoder2 = Encoder(
+            self.num_filters[1], self.num_filters[2], norm_momentum=norm_momentum
+        )
+        self.encoder3 = Encoder(
+            self.num_filters[2], self.num_filters[3], norm_momentum=norm_momentum
+        )
 
         # Bridge
         self.resblock1 = ResBlock(
-            self.num_filters[3], self.num_filters[3], kernel_sizes=[3, 3, 1]
+            self.num_filters[3],
+            self.num_filters[3],
+            kernel_sizes=[3, 3, 1],
+            norm_momentum=norm_momentum,
         )
         self.resblock2 = ResBlock(
-            self.num_filters[3], self.num_filters[3], kernel_sizes=[3, 3, 1]
+            self.num_filters[3],
+            self.num_filters[3],
+            kernel_sizes=[3, 3, 1],
+            norm_momentum=norm_momentum,
         )
 
         # Decoder
-        self.decoder1 = Decoder(self.num_filters[3], self.num_filters[3])
-        self.decoder2 = Decoder(self.num_filters[3], self.num_filters[2])
-        self.decoder3 = Decoder(self.num_filters[2], self.num_filters[1])
-        self.decoder4 = Decoder(self.num_filters[1], self.num_filters[0])
+        self.decoder1 = Decoder(
+            self.num_filters[3], self.num_filters[3], norm_momentum=norm_momentum
+        )
+        self.decoder2 = Decoder(
+            self.num_filters[3], self.num_filters[2], norm_momentum=norm_momentum
+        )
+        self.decoder3 = Decoder(
+            self.num_filters[2], self.num_filters[1], norm_momentum=norm_momentum
+        )
+        self.decoder4 = Decoder(
+            self.num_filters[1], self.num_filters[0], norm_momentum=norm_momentum
+        )
 
         self.output = nn.Conv2d(
             self.num_filters[0],
@@ -116,7 +164,9 @@ class RegDeepResUNet(nn.Module):
             stride=(1, 1),
             padding="same",
         )
-        self.activation = nn.Linear()
+
+        # To be added
+        # self.activation = nn.Linear()
 
     def forward(self, inputs):
         skip1 = self.input_conv(inputs)
@@ -134,7 +184,6 @@ class RegDeepResUNet(nn.Module):
         x = self.decoder4(x, skip1)
 
         x = self.output(x)
-        # x = self.activation(x)
         return x
 
 
@@ -156,6 +205,8 @@ class ClfDeepResUNet(nn.Module):
             Keep the number of self.num_filters consistent for each layer. If False, the number of self.num_filters
             are doubled after each encoder block and halved again after each decoder block.
             Defaults to True.
+        norm_momentum (float, optional):
+            Momentum for normalization layers. Defaults to 0.1.
     """
 
     def __init__(
@@ -164,6 +215,7 @@ class ClfDeepResUNet(nn.Module):
         in_channels: int,
         num_filters: int = 128,
         static_filters: bool = True,
+        norm_momentum: float = 0.01,  # equivalent to default Keras value
     ):
         super().__init__()
         self.num_filters = (
@@ -179,25 +231,46 @@ class ClfDeepResUNet(nn.Module):
             kernel_size=(5, 5),
             padding="same",
             stride=(1, 1),
+            norm_momentum=norm_momentum,
         )
         self.maxpool = nn.MaxPool2d((2, 2))
-        self.encoder1 = Encoder(self.num_filters[0], self.num_filters[1])
-        self.encoder2 = Encoder(self.num_filters[1], self.num_filters[2])
-        self.encoder3 = Encoder(self.num_filters[2], self.num_filters[3])
+        self.encoder1 = Encoder(
+            self.num_filters[0], self.num_filters[1], norm_momentum=norm_momentum
+        )
+        self.encoder2 = Encoder(
+            self.num_filters[1], self.num_filters[2], norm_momentum=norm_momentum
+        )
+        self.encoder3 = Encoder(
+            self.num_filters[2], self.num_filters[3], norm_momentum=norm_momentum
+        )
 
         # Bridge
         self.resblock1 = ResBlock(
-            self.num_filters[3], self.num_filters[3], kernel_sizes=[3, 3, 1]
+            self.num_filters[3],
+            self.num_filters[3],
+            kernel_sizes=[3, 3, 1],
+            norm_momentum=norm_momentum,
         )
         self.resblock2 = ResBlock(
-            self.num_filters[3], self.num_filters[3], kernel_sizes=[3, 3, 1]
+            self.num_filters[3],
+            self.num_filters[3],
+            kernel_sizes=[3, 3, 1],
+            norm_momentum=norm_momentum,
         )
 
         # Decoder
-        self.decoder1 = Decoder(self.num_filters[3], self.num_filters[3])
-        self.decoder2 = Decoder(self.num_filters[3], self.num_filters[2])
-        self.decoder3 = Decoder(self.num_filters[2], self.num_filters[1])
-        self.decoder4 = Decoder(self.num_filters[1], self.num_filters[0])
+        self.decoder1 = Decoder(
+            self.num_filters[3], self.num_filters[3], norm_momentum=norm_momentum
+        )
+        self.decoder2 = Decoder(
+            self.num_filters[3], self.num_filters[2], norm_momentum=norm_momentum
+        )
+        self.decoder3 = Decoder(
+            self.num_filters[2], self.num_filters[1], norm_momentum=norm_momentum
+        )
+        self.decoder4 = Decoder(
+            self.num_filters[1], self.num_filters[0], norm_momentum=norm_momentum
+        )
 
         self.output = nn.Conv2d(
             self.num_filters[0],
@@ -206,7 +279,6 @@ class ClfDeepResUNet(nn.Module):
             stride=(1, 1),
             padding="same",
         )
-        self.activation = nn.Softmax()
 
     def forward(self, inputs):
         skip1 = self.input_conv(inputs)
@@ -224,5 +296,4 @@ class ClfDeepResUNet(nn.Module):
         x = self.decoder4(x, skip1)
 
         x = self.output(x)
-        # x = self.activation(x)
         return x
