@@ -143,7 +143,6 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
             case "dice":
                 self.criterion = smp.losses.DiceLoss(
                     mode=self.hparams["task"],
-                    # classes=self.hparams['num_classes'],
                     ignore_index=ignore_index,
                     from_logits=True,
                 )
@@ -254,14 +253,14 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
         x = batch["image"]
         y = batch["mask"].squeeze()
 
-        if ignore_index := self.hparams["ignore_index"]:
-            # filter out patches with only ignore_index in the mask
-            valid_patches = ~(y == ignore_index).all(dim=(-2, -1)).squeeze()
-            # Skip processing if all pixels in the patch are ignore_index
-            if not valid_patches.any():
-                return None
-            x = x[valid_patches]
-            y = y[valid_patches]
+        # if ignore_index := self.hparams["ignore_index"]:
+        #     # filter out patches with only ignore_index in the mask
+        #     valid_patches = ~(y == ignore_index).all(dim=(-2, -1)).squeeze()
+        #     # Skip processing if all pixels in the patch are ignore_index
+        #     if not valid_patches.any():
+        #         return None
+        #     x = x[valid_patches]
+        #     y = y[valid_patches]
 
         if x.ndim > 4:
             x = x.squeeze(0)
@@ -396,15 +395,16 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
                 )
 
     def validation_step(
-        self, batch: Any, batch_idx: int, dataloader_idx: int = 0
+        self, batch: Any, batch_idx: int = None, dataloader_idx: int = 0
     ) -> None:
         """Compute the validation loss and additional metrics.
 
         Args:
             batch: The output of your DataLoader.
-            batch_idx: Integer displaying index of this batch.
+            batch_idx: Integer displaying index of this batch.s
             dataloader_idx: Index of the current dataloader.
         """
+        # x = batch
         x = batch["image"]
         y = batch["mask"].squeeze()
 
@@ -420,6 +420,8 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
 
         batch_size = x.shape[0]
         y_hat = self(x)
+        # return y_hat.argmax(dim=1)
+        # return y_hat
         loss = self.criterion(y_hat, y)
         self.log("val_loss", loss, batch_size=batch_size)
         self.val_metrics(y_hat, y)
@@ -521,6 +523,47 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
             batch_size=batch_size,
         )
 
+    def predict_step(self, batch: Tensor) -> Tensor:
+        """Compute the predicted class probabilities.
+
+        Args:
+            batch: The output of your DataLoader.
+
+        Returns:
+            Output predicted probabilities.
+        """
+        # x = batch["image"]
+
+        with torch.inference_mode():
+            y_hat: Tensor = self(batch)
+
+            match self.hparams["task"]:
+                case "binary" | "multilabel":
+                    y_hat = y_hat.sigmoid()
+                case "multiclass":
+                    y_hat = y_hat.softmax(dim=1)
+
+            return y_hat
+            # return y_hat.cpu().numpy()
+
+    def predict_class(self, batch: Tensor) -> np.ndarray:
+        probs = self.predict_step(batch)
+        preds = probs.argmax(dim=1).cpu().numpy().astype("uint8")
+        if hasattr(self, "datamodule_params"):
+            reduce_zero_label = self.datamodule_params.get("dataset_args", {}).get(
+                "reduce_zero_label", False
+            )
+            if reduce_zero_label:
+                if not self.info_logged:
+                    print(
+                        "Found reduce_zero_label = True in datamodule_params. Adding 1 to class predictions."
+                    )
+                    self.info_logged = True
+                preds += 1
+
+        return preds
+        # return np.argmax(probs, axis=1).astype("uint8")
+
     def get_prediction_func(
         self, device=None, reduce_zero_label: bool = None
     ) -> Callable:
@@ -532,7 +575,7 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
         in_channels = self.hparams.get("in_channels")
         if hasattr(self, "datamodule_params"):
             reduce_zero_label = self.datamodule_params.get("dataset_args", {}).get(
-                "reduce_zero_label"
+                "reduce_zero_label", False
             )
             print(
                 "Found reduce_zero_label = True in datamodule_params. Adding 1 to class predictions."
@@ -566,6 +609,98 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
 
     @staticmethod
     def predict_on_tif_file(
+        tif_file_path: str | Path,
+        checkpoint_path: str | Path,
+        func_supports_batching: bool = True,
+        batch_size: int = 8,
+        out_file_path: str | Path = None,
+        show_results: bool = False,
+        ax: plt.Axes = None,
+        progress_bar: bool = True,
+        patch_size: int = None,
+        class_mapping: dict[int, str] = None,
+    ):
+        """
+        Use a trained model to predict segmentation classes on a TIF file
+
+        Parameters
+        ----------
+        tif_file_path : str | Path
+            Path to the input TIF file.
+        weights_path : str | Path
+            Path to the model weights used for prediction.
+        overlap : int
+            Overlap factor between patches (larger values increase overlap).
+        func_supports_batching : bool
+            Whether the prediction_func supports batched processing.
+        batch_size : int
+            The batch size used for prediction (ignored if func_supports_batching is False).
+        out_file_path : str | Path, optional
+            Output path for saving the results. Writes to a "predictions" subfolder if None.
+        show_results : bool
+            If True, display the prediction output in a notebook environment.
+        ax : plt.Axes, optional
+            Matplotlib Axes object for plotting if show_results is True.
+        patch_size : int
+            Integer size of the patch to use for prediction. Will be read from the checkpoint by default. Should only
+            be set if the checkpoint does not contain the patch size.
+        class_mapping : dict[int, str], optional
+            Mapping from predicted class indices to class names for visualization. Used for plotting only.
+            Will be read from the checkpoint if by default. Should only be set if the checkpoint does not contain the class mapping.
+
+        Returns
+        -------
+        Path
+            The path to the produced TIF file or plot visualization (when show_results=True).
+        """
+        from eotorch.inference.inference import predict_on_tif_generic
+        from eotorch.inference.inference_utils import eotorch_patch_generator
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        lightning_module = SemanticSegmentationTask.load_from_checkpoint(
+            checkpoint_path
+        )
+        lightning_module.to(device)
+        lightning_module.eval()
+        gen = eotorch_patch_generator(
+            tif_file_path=tif_file_path,
+            checkpoint_path=checkpoint_path,
+            batch_size=8,
+        )
+        data_module_params = torch.load(
+            checkpoint_path, weights_only=False, map_location=device
+        ).get("datamodule_hyper_parameters")
+        if data_module_params:
+            dataset_args = data_module_params.get("dataset_args", {})
+            class_mapping = class_mapping or dataset_args.get("class_mapping")
+            lightning_module.datamodule_params = data_module_params
+            lightning_module.info_logged = False
+
+        if (not data_module_params) and patch_size:
+            raise ValueError(
+                "No datamodule_hyper_parameters found in checkpoint and patch_size is not set. "
+                "Please provide a valid checkpoint with datamodule_hyper_parameters or set patch_size."
+            )
+
+        patch_size = data_module_params.get("patch_size", patch_size)
+
+        predict_on_tif_generic(
+            tif_file_path=tif_file_path,
+            prediction_func=lightning_module.predict_class,
+            data_and_window_generator=gen,
+            show_results=show_results,
+            patch_size=patch_size,
+            batch_size=batch_size,
+            progress_bar=progress_bar,
+            out_file_path=out_file_path,
+            ax=ax,
+            class_mapping=class_mapping,
+            func_supports_batching=func_supports_batching,
+        )
+
+    @staticmethod
+    def predict_on_tif_file_old(
         tif_file_path: str | Path,
         checkpoint_path: str | Path,
         patch_size: int = 64,
@@ -629,7 +764,6 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
             tif_file_path=tif_file_path,
             prediction_func=lightning_module.get_prediction_func(
                 device=device,
-                reduce_zero_label=True,
             ),
             patch_size=patch_size,
             overlap=overlap,
