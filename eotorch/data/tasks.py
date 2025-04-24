@@ -253,14 +253,14 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
         x = batch["image"]
         y = batch["mask"].squeeze()
 
-        # if ignore_index := self.hparams["ignore_index"]:
-        #     # filter out patches with only ignore_index in the mask
-        #     valid_patches = ~(y == ignore_index).all(dim=(-2, -1)).squeeze()
-        #     # Skip processing if all pixels in the patch are ignore_index
-        #     if not valid_patches.any():
-        #         return None
-        #     x = x[valid_patches]
-        #     y = y[valid_patches]
+        if ignore_index := self.hparams["ignore_index"]:
+            # filter out patches with only ignore_index in the mask
+            valid_patches = ~(y == ignore_index).all(dim=(-2, -1)).squeeze()
+            # Skip processing if all pixels in the patch are ignore_index
+            if not valid_patches.any():
+                return None
+            x = x[valid_patches]
+            y = y[valid_patches]
 
         if x.ndim > 4:
             x = x.squeeze(0)
@@ -662,7 +662,7 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
             checkpoint_path
         )
         lightning_module.to(device)
-        lightning_module.eval()
+        #lightning_module.eval()
         gen = eotorch_patch_generator(
             tif_file_path=tif_file_path,
             checkpoint_path=checkpoint_path,
