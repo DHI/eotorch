@@ -662,7 +662,7 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
             checkpoint_path
         )
         lightning_module.to(device)
-        #lightning_module.eval()
+        lightning_module.eval()
         gen = eotorch_patch_generator(
             tif_file_path=tif_file_path,
             checkpoint_path=checkpoint_path,
