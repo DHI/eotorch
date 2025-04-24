@@ -16,14 +16,14 @@ class Encoder(nn.Module):
             in_channels,
             out_channels,
             kernel_sizes=[3, 3, 1],
-            dropout_rate=0.1,
+            # dropout_rate=0.1,
             norm_momentum=norm_momentum,
         )
         self.resblock2 = ResBlock(
             out_channels,
             out_channels,
             kernel_sizes=[3, 3, 1],
-            dropout_rate=0.1,
+            # dropout_rate=0.1,
             norm_momentum=norm_momentum,
         )
         self.maxpool = nn.MaxPool2d((2, 2))
