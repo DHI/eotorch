@@ -161,13 +161,14 @@ class SegmentationDataModule(GeoDataModule):
                 )
             else:
                 # Initialize the sampler based on the provided configuration
-                sampler_type = self.train_sampler_config.pop("type")
+                local_config = self.train_sampler_config.copy()
+                sampler_type = local_config.pop("type")
                 if hasattr(samplers, sampler_type):
                     sampler_class = getattr(samplers, sampler_type)
                     self.train_sampler = sampler_class(
                         self.train_dataset,
                         size=self.patch_size,
-                        **self.train_sampler_config,
+                        **local_config,
                     )
                 else:
                     raise ValueError(

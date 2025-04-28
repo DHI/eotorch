@@ -52,7 +52,7 @@ class Decoder(nn.Module):
             norm_momentum=norm_momentum,
         )
         self.resblock1 = ResBlock(
-            in_channels,
+            out_channels,
             out_channels,
             kernel_sizes=[3, 3, 1],
             norm_momentum=norm_momentum,
