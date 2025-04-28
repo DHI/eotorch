@@ -10,6 +10,7 @@ from torchgeo.datasets import (
     GeoDataset,
     IntersectionDataset,
     RasterDataset,
+    stack_samples,
 )
 
 from eotorch.data.geodatasets import PlottabeLabelDataset, PlottableImageDataset
@@ -122,6 +123,7 @@ class SegmentationDataModule(GeoDataModule):
 
         self.persistent_workers = persistent_workers
         self.pin_memory = pin_memory
+        self.aug = None
 
         def _format_dict_for_yaml(d: dict):
             out_dict = {}
@@ -442,4 +444,31 @@ If this is not desired, please provide a val_dataset to the data module.
                 del batch[key]
 
         batch = super().transfer_batch_to_device(batch, device, dataloader_idx)
+        return batch
+
+    def on_after_batch_transfer(
+        self, batch: dict[str, Tensor], dataloader_idx: int
+    ) -> dict[str, Tensor]:
+        """Apply batch augmentations to the batch after it is transferred to the device.
+
+        Args:
+            batch: A batch of data that needs to be altered or augmented.
+            dataloader_idx: The index of the dataloader to which the batch belongs.
+
+        Returns:
+            A batch of data.
+        """
+        # if self.trainer:
+        #     if self.trainer.training:
+        #         split = "train"
+        #     elif self.trainer.validating or self.trainer.sanity_checking:
+        #         split = "val"
+        #     elif self.trainer.testing:
+        #         split = "test"
+        #     elif self.trainer.predicting:
+        #         split = "predict"
+
+        #     aug = self._valid_attribute(f"{split}_aug", "aug")
+        #     batch = aug(batch)
+
         return batch
