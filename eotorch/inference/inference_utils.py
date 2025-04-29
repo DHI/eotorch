@@ -259,6 +259,7 @@ def patch_generator(
 
         batch, windows = [], []
         last_row = False
+        nan_inputs_logged = False
         for top in range(0, height, patch_size // overlap):
             row_finished = False
             bottom = top + patch_size
@@ -276,6 +277,13 @@ def patch_generator(
                 window = Window(left, top, patch_size, patch_size)
                 windows.append(window)
                 img_data = src.read(window=window)
+                if np.isnan(img_data).any():
+                    if not nan_inputs_logged:
+                        print(
+                            f"NaN values found in the input image which are not equal to the nodata value. They will be replaced with the nodata value of the file {src.nodata}."
+                        )
+                        nan_inputs_logged = True
+                    img_data = np.nan_to_num(img_data, nan=src.nodata)
                 batch.append(img_data)
                 if len(batch) == batch_size:
                     yield np.array(batch), windows
@@ -285,6 +293,5 @@ def patch_generator(
             if last_row:
                 if len(batch) > 0:
                     yield np.array(batch), windows
-                    break
                 else:
                     break

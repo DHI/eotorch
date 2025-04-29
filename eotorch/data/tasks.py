@@ -8,6 +8,7 @@ import segmentation_models_pytorch as smp
 import torch
 from matplotlib import pyplot as plt
 from torchgeo.datasets import RGBBandsMissingError, unbind_samples
+from torchgeo.datasets.utils import array_to_tensor
 from torchgeo.trainers import (
     SemanticSegmentationTask as TorchGeoSemanticSegmentationTask,
 )
@@ -264,6 +265,8 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
 
         if x.ndim > 4:
             x = x.squeeze(0)
+
+        self.log("input_std", x.std(), on_step=True, on_epoch=False, prog_bar=False)
 
         batch_size = x.shape[0]
         y_hat = self(x)
@@ -546,66 +549,15 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
             return y_hat
             # return y_hat.cpu().numpy()
 
-    def predict_class(self, batch: Tensor) -> np.ndarray:
+    def predict_class(self, batch: Tensor | np.ndarray) -> np.ndarray:
+        if isinstance(batch, np.ndarray):
+            batch = array_to_tensor(batch)
         probs = self.predict_step(batch)
         preds = probs.argmax(dim=1).cpu().numpy().astype("uint8")
-        if hasattr(self, "datamodule_params"):
-            reduce_zero_label = self.datamodule_params.get("dataset_args", {}).get(
-                "reduce_zero_label", False
-            )
-            if reduce_zero_label:
-                if not self.info_logged:
-                    print(
-                        "Found reduce_zero_label = True in datamodule_params. Adding 1 to class predictions."
-                    )
-                    self.info_logged = True
-                preds += 1
+        if hasattr(self, "reduce_zero_label") and self.reduce_zero_label:
+            preds += 1
 
         return preds
-        # return np.argmax(probs, axis=1).astype("uint8")
-
-    def get_prediction_func(
-        self, device=None, reduce_zero_label: bool = None
-    ) -> Callable:
-        if not device:
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        cuda = device.type == "cuda"
-        self.eval()
-        in_channels = self.hparams.get("in_channels")
-        if hasattr(self, "datamodule_params"):
-            reduce_zero_label = self.datamodule_params.get("dataset_args", {}).get(
-                "reduce_zero_label", False
-            )
-            print(
-                "Found reduce_zero_label = True in datamodule_params. Adding 1 to class predictions."
-            )
-        else:
-            reduce_zero_label = reduce_zero_label or False
-
-        def predict(image: np.ndarray) -> np.ndarray:
-            in_channels_checked = False
-            image = torch.from_numpy(image)
-            if image.ndim == 3:
-                image = image.unsqueeze(0)
-
-            if in_channels and not in_channels_checked:
-                if image.shape[1] != in_channels:
-                    raise ValueError(
-                        f"Input image has {image.shape[1]} channels, but model expects {in_channels}."
-                    )
-                in_channels_checked = True
-            if cuda:
-                image = image.cuda()
-            with torch.inference_mode():
-                batch_logits = self(image.float()).cpu().numpy()
-                class_pred = np.argmax(batch_logits, axis=-3).astype("uint8")
-                if reduce_zero_label:
-                    class_pred += 1
-
-                return class_pred
-
-        return predict
 
     @staticmethod
     def predict_on_tif_file(
@@ -654,7 +606,6 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
             The path to the produced TIF file or plot visualization (when show_results=True).
         """
         from eotorch.inference.inference import predict_on_tif_generic
-        from eotorch.inference.inference_utils import eotorch_patch_generator
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -663,11 +614,6 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
         )
         lightning_module.to(device)
         lightning_module.eval()
-        gen = eotorch_patch_generator(
-            tif_file_path=tif_file_path,
-            checkpoint_path=checkpoint_path,
-            batch_size=batch_size,
-        )
         data_module_params = torch.load(
             checkpoint_path, weights_only=False, map_location=device
         ).get("datamodule_hyper_parameters")
@@ -676,101 +622,36 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
             class_mapping = class_mapping or dataset_args.get("class_mapping")
             lightning_module.datamodule_params = data_module_params
             lightning_module.info_logged = False
+            reduce_zero_label = dataset_args.get("reduce_zero_label", False)
 
-        if (not data_module_params) and patch_size:
+        if (not data_module_params) and (not patch_size):
             raise ValueError(
                 "No datamodule_hyper_parameters found in checkpoint and patch_size is not set. "
                 "Please provide a valid checkpoint with datamodule_hyper_parameters or set patch_size."
             )
+        if not (_ps := data_module_params.get("patch_size")):
+            patch_size_info = " (not found in checkpoint)"
+        else:
+            patch_size = _ps
+            patch_size_info = " (found in model checkpoint)"
 
-        patch_size = data_module_params.get("patch_size", patch_size)
-        print("Using patch size:", patch_size)
+        patch_size_info = f"Using patch size: {_ps}" + patch_size_info
+        print(patch_size_info)
+        if reduce_zero_label:
+            print(
+                "Found reduce_zero_label = True in datamodule_params. Adding 1 to class predictions."
+            )
+            lightning_module.reduce_zero_label = True
+
         predict_on_tif_generic(
             tif_file_path=tif_file_path,
             prediction_func=lightning_module.predict_class,
-            data_and_window_generator=gen,
             show_results=show_results,
-            patch_size=patch_size,
+            patch_size=_ps,
             batch_size=batch_size,
             progress_bar=progress_bar,
             out_file_path=out_file_path,
             ax=ax,
             class_mapping=class_mapping,
             func_supports_batching=func_supports_batching,
-        )
-
-    @staticmethod
-    def predict_on_tif_file_old(
-        tif_file_path: str | Path,
-        checkpoint_path: str | Path,
-        patch_size: int = 64,
-        overlap: int = 2,
-        class_mapping: dict[int, str] = None,
-        func_supports_batching: bool = True,
-        batch_size: int = 8,
-        out_file_path: str | Path = None,
-        show_results: bool = False,
-        ax: plt.Axes = None,
-    ):
-        """
-        Use a trained model to predict segmentation classes on a TIF file
-
-        Parameters
-        ----------
-        tif_file_path : str | Path
-            Path to the input TIF file.
-        weights_path : str | Path
-            Path to the model weights used for prediction.
-        patch_size : int
-            Integer size of the patch to use for prediction.
-        overlap : int
-            Overlap factor between patches (larger values increase overlap).
-        class_mapping : dict[int, str], optional
-            Mapping from predicted class indices to class names for visualization. Used for plotting only.
-        func_supports_batching : bool
-            Whether the prediction_func supports batched processing.
-        batch_size : int
-            The batch size used for prediction (ignored if func_supports_batching is False).
-        out_file_path : str | Path, optional
-            Output path for saving the results. Writes to a "predictions" subfolder if None.
-        show_results : bool
-            If True, display the prediction output in a notebook environment.
-        ax : plt.Axes, optional
-            Matplotlib Axes object for plotting if show_results is True.
-
-        Returns
-        -------
-        Path
-            The path to the produced TIF file or plot visualization (when show_results=True).
-        """
-        from eotorch.inference import predict_on_tif
-
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        lightning_module = SemanticSegmentationTask.load_from_checkpoint(
-            checkpoint_path,
-            map_location=device,
-        )
-        lightning_module.eval()
-        data_module_params = torch.load(
-            checkpoint_path, weights_only=False, map_location=device
-        ).get("datamodule_hyper_parameters")
-        if data_module_params:
-            lightning_module.datamodule_params = data_module_params
-            dataset_args = data_module_params.get("dataset_args", {})
-            class_mapping = class_mapping or dataset_args.get("class_mapping")
-            patch_size = data_module_params.get("patch_size") or patch_size
-
-        return predict_on_tif(
-            tif_file_path=tif_file_path,
-            prediction_func=lightning_module.get_prediction_func(
-                device=device,
-            ),
-            patch_size=patch_size,
-            overlap=overlap,
-            class_mapping=class_mapping,
-            func_supports_batching=func_supports_batching,
-            batch_size=batch_size,
-            out_file_path=out_file_path,
-            show_results=show_results,
-            ax=ax,
         )
