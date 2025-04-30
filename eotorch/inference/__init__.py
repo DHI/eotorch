@@ -1,1 +1,1 @@
-from .inference import predict_on_tif
+from .inference import predict_on_tif_generic
