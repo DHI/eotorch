@@ -71,48 +71,114 @@ def plot_dataset_index(dataset, map=None, color="olive", name=None):
     """
     objs = dataset.index.intersection(dataset.index.bounds, objects=True)
 
-    map = map or folium.Map()
+    if map is None:
+        map = folium.Map()
+        # Assume a new map needs controls
+        has_draw_control, has_measure_control = False, False
+    else:
+        # Check if controls already exist on the provided map
+        # We will handle LayerControl separately later
+        has_draw_control = any(
+            isinstance(child, Draw) for child in map._children.values()
+        )
+        has_measure_control = any(
+            isinstance(child, MeasureControl) for child in map._children.values()
+        )
 
-    # Create a feature group with a name for the legend
-    feature_group_name = name or f"Dataset Boundaries ({color})"
-    feature_group = folium.FeatureGroup(name=feature_group_name)
+    # Create a feature group with a name for the legend including the color
+    base_name = f"{name} ({color})" if name else f"Dataset Boundaries ({color})"
+    feature_group_name = base_name
+
+    existing_feature_group_names = [
+        getattr(child, "layer_name", None)  # Use getattr for safety
+        for child in map._children.values()
+        if isinstance(child, folium.FeatureGroup)
+    ]
+
+    # Refined renaming logic if name conflicts
+    count = 1
+    while feature_group_name in existing_feature_group_names:
+        feature_group_name = f"{base_name} ({count})"
+        count += 1
+
+    feature_group = folium.FeatureGroup(
+        name=feature_group_name, show=True
+    )  # Ensure show=True
 
     style_dict = dict(fill=False, weight=5, opacity=0.7, color=color)
 
-    for o in objs:
-        folium.GeoJson(
-            utils.torchgeo_bb_to_shapely(o.bounds, bbox_crs=dataset.crs),
-            style_function=lambda x, style=style_dict: style,
-        ).add_to(feature_group)
-
-    # Add the feature group to the map
-    feature_group.add_to(map)
-
-    # Add click for marker functionality
-    # folium.ClickForMarker().add_to(map)
-
-    # Fit bounds to show all content
-    map.fit_bounds(
-        bounds=convert_bounds(
-            utils.torchgeo_bb_to_shapely(
+    # Track bounds of the current dataset being added
+    current_bounds = None
+    try:
+        # Use list() to force evaluation of the generator if needed, or handle empty case
+        objs_list = list(objs)
+        if not objs_list:
+            print(
+                f"Warning: No objects found in dataset '{name}'. Skipping bounds fitting and GeoJson addition."
+            )
+        else:
+            current_bounds = utils.torchgeo_bb_to_shapely(
                 dataset.index.bounds, bbox_crs=dataset.crs
             ).bounds
+    except Exception as e:  # Handle cases where dataset might be empty or index invalid
+        print(
+            f"Warning: Could not get bounds for dataset '{name}'. Error: {e}. Skipping bounds fitting for this dataset."
         )
-    )
+        objs_list = []  # Ensure objs_list is empty if bounds failed
 
-    # Always add layer control
-    folium.LayerControl().add_to(map)
-    Draw(
-        export=True,
-        draw_options={
-            "polyline": False,
-            "polygon": False,
-            "circle": False,
-            "marker": False,
-            "circlemarker": False,
-        },
-    ).add_to(map)
-    MeasureControl(position="bottomleft").add_to(map)
+    if current_bounds:  # Only add GeoJson if bounds were determined and objects exist
+        for o in objs_list:  # Iterate over the list
+            try:  # Add try-except for individual object processing
+                shapely_geom = utils.torchgeo_bb_to_shapely(
+                    o.bounds, bbox_crs=dataset.crs
+                )
+                folium.GeoJson(
+                    shapely_geom,
+                    style_function=lambda x, style=style_dict: style,
+                ).add_to(feature_group)
+            except Exception as e:
+                print(
+                    f"Warning: Could not process object {o.id} in dataset '{name}'. Error: {e}"
+                )
+
+    # Add the feature group to the map (even if empty, so it appears in LayerControl)
+    feature_group.add_to(map)
+
+    # Fit bounds only if we successfully added geometries
+    if current_bounds:
+        map_bounds = map.get_bounds()
+        if map_bounds:
+            map.fit_bounds(map_bounds)
+        else:  # Fallback if map has no bounds yet (first dataset)
+            map.fit_bounds(convert_bounds(current_bounds))
+
+    # Add Draw and Measure controls only if they are needed
+    if not has_draw_control:
+        Draw(
+            export=True,
+            draw_options={
+                "polyline": False,
+                "polygon": False,
+                "circle": False,
+                "marker": False,
+                "circlemarker": False,
+            },
+        ).add_to(map)
+    if not has_measure_control:
+        MeasureControl(position="bottomleft").add_to(map)
+
+    # Remove existing LayerControl if present, then add a new one
+    # This ensures the control reflects all added layers
+    existing_lc = None
+    for key, child in list(map._children.items()):  # Iterate over a copy of items
+        if isinstance(child, folium.LayerControl):
+            existing_lc = key
+            break
+    if existing_lc:
+        del map._children[existing_lc]
+
+    folium.LayerControl().add_to(map)  # Always add/re-add LayerControl
+
     return map
 
 

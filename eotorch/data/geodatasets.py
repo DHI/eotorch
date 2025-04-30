@@ -16,7 +16,7 @@ from torchgeo.datasets.utils import BoundingBox
 
 from eotorch.bandindex import BAND_INDEX
 from eotorch.inference.inference_utils import prediction_to_numpy
-from eotorch.plot import label_map, plot_dataset_index, plot_numpy_array
+from eotorch.plot import label_map, plot_dataset_index, plot_numpy_array, plot_samples
 from eotorch.utils import _format_filepaths
 
 if TYPE_CHECKING:
@@ -102,7 +102,7 @@ class CustomCacheRasterDataset(RasterDataset):
         return sample
 
     def _repr_html_(self):
-        print(f"Dataset containing {len(self)} files, crs: {self.crs}, res: {self.res}")
+        print(f"Dataset containing {len(self)} items, crs: {self.crs}, res: {self.res}")
         return plot_dataset_index(self)._repr_html_()
 
 
@@ -245,9 +245,28 @@ class LabelledRasterDataset(IntersectionDataset):
 
         return fig
 
+    def plot_samples(
+        self,
+        n: int = 3,
+        patch_size: int = 256,
+        show_filepaths: bool = False,
+    ):
+        return plot_samples(
+            self,
+            n=n,
+            patch_size=patch_size,
+            nodata_val=self.datasets[1].nodata_value,
+            show_filepaths=show_filepaths,
+        )
+
     def _repr_html_(self):
-        print(f"Dataset containing {len(self)} files, crs: {self.crs}, res: {self.res}")
-        return plot_dataset_index(self)._repr_html_()
+        print(f"Dataset containing {len(self)} items, crs: {self.crs}, res: {self.res}")
+        m = plot_dataset_index(self.datasets[0], name="Images", color="blue")
+        m = plot_dataset_index(self.datasets[1], m, name="Labels", color="green")
+        return plot_dataset_index(
+            self, m, name="Intersection", color="pink"
+        )._repr_html_()
+        # return plot_dataset_index(self)._repr_html_()
 
     def preview_labels(self):
         """

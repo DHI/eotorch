@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union, cast
 import geopandas as gpd
 import torch
 from pyproj import CRS, Transformer
-from rtree.index import Index, Property
+from rtree.index import Index, Item, Property
 from torch import Generator, default_generator, randperm
 from torchgeo.datasets import GeoDataset, IntersectionDataset, RasterDataset
 from torchgeo.datasets.splits import _fractions_to_lengths
@@ -15,145 +15,206 @@ from torchgeo.datasets.utils import BoundingBox
 from eotorch.data.geodatasets import LabelledRasterDataset
 
 
+def _format_paths(files: Union[str, Path, List[str], List[Path], None]) -> List[Path]:
+    """Formats various file input types into a list of resolved Path objects."""
+    if files is None:
+        return []
+    if isinstance(files, (str, Path)):
+        files = [files]
+    if isinstance(files, list):
+        files = [Path(i) for i in files]
+    return [i.resolve() for i in files]
+
+
+def _get_split_items(
+    dataset_items: List[Item],
+    dataset_files: List[Path],
+    val_files: List[Path],
+    test_files: List[Path],
+) -> Tuple[List[Item], List[Item], List[Item]]:
+    """Validates split files and returns items partitioned into train, val, test."""
+
+    def _validate_and_collect_items(files_param: List[Path]) -> List[Item]:
+        """Checks if files exist in the dataset and collects corresponding items."""
+        out_list = []
+        file_found = False
+        for f in files_param:
+            try:
+                idx = dataset_files.index(f)
+                out_list.append(dataset_items[idx])
+                file_found = True
+            except ValueError:
+                print(f"Warning: File {str(f)} not found in dataset. Skipping.")
+
+        if files_param and not file_found:
+            raise ValueError(
+                "None of the provided files were found in the dataset. Please check the files."
+            )
+        return out_list
+
+    val_items = _validate_and_collect_items(val_files)
+    test_items = _validate_and_collect_items(test_files)
+
+    val_test_items = set(val_items + test_items)
+    train_items = [item for item in dataset_items if item not in val_test_items]
+
+    return train_items, val_items, test_items
+
+
+def _build_split_indexes(
+    train_items: List[Item], val_items: List[Item], test_items: List[Item]
+) -> List[Index]:
+    """Builds R-tree indexes for train, validation, and test splits."""
+    new_indexes = []
+
+    def _create_index(items: List[Item]) -> Index:
+        """Helper to create and populate an R-tree index."""
+        idx = Index(interleaved=False, properties=Property(dimension=3))
+        for i, item in enumerate(items):
+            idx.insert(i, item.bounds, item.object)
+        return idx
+
+    if train_items:
+        new_indexes.append(_create_index(train_items))
+    if val_items:
+        new_indexes.append(_create_index(val_items))
+    if test_items:
+        new_indexes.append(_create_index(test_items))
+
+    return new_indexes
+
+
+def _build_split_datasets(
+    original_dataset: RasterDataset, new_indexes: List[Index]
+) -> List[RasterDataset]:
+    """Builds the final list of split datasets using the provided indexes."""
+    new_datasets = []
+    for index in new_indexes:
+        if isinstance(original_dataset, IntersectionDataset):
+            # Handle IntersectionDataset (e.g., LabelledRasterDataset)
+            img_ds_orig = original_dataset.datasets[0]
+            label_ds_orig = original_dataset.datasets[1]
+
+            # Create new image dataset for the split
+            img_ds_new = deepcopy(img_ds_orig)
+            img_ds_new.index = index
+            img_ds_new.paths = [
+                i.object for i in index.intersection(index.bounds, objects=True)
+            ]
+
+            # Create new label dataset index based on intersection with new image dataset bounds
+            img_bounds = img_ds_new.bounds
+            label_hits = label_ds_orig.index.intersection(
+                tuple(img_bounds), objects=True
+            )
+            label_idx_new = Index(interleaved=False, properties=Property(dimension=3))
+            for hit in label_hits:
+                hit_bbox = BoundingBox(*hit.bounds)
+                intersection_bbox = hit_bbox & img_bounds
+                if intersection_bbox.area > 0:
+                    label_idx_new.insert(len(label_idx_new), hit.bounds, hit.object)
+
+            # Create new label dataset for the split
+            label_ds_new = deepcopy(label_ds_orig)
+            label_ds_new.index = label_idx_new
+            label_ds_new.paths = [
+                i.object
+                for i in label_idx_new.intersection(label_idx_new.bounds, objects=True)
+            ]
+
+            # Create the final IntersectionDataset for the split
+            ds = original_dataset.__class__(
+                img_ds_new,
+                label_ds_new,
+                collate_fn=original_dataset.collate_fn,
+                transforms=original_dataset.transforms,
+            )
+        else:
+            # Handle single RasterDataset
+            ds = deepcopy(original_dataset)
+            ds.index = index
+            ds.paths = [
+                i.object for i in index.intersection(index.bounds, objects=True)
+            ]
+
+        new_datasets.append(ds)
+    return new_datasets
+
+
 def file_wise_split(
     dataset: RasterDataset,
-    val_img_files=None,
-    test_img_files=None,
-    ratios_or_counts=None,
-):
+    val_img_files: Union[str, Path, List[str], List[Path], None] = None,
+    test_img_files: Union[str, Path, List[str], List[Path], None] = None,
+    ratios_or_counts: Optional[Sequence[float]] = None,
+) -> List[RasterDataset]:
     """
-    File based splitting of a dataset.
-    This means that the existing dataset will be split into 2 or 3 new datasets, with the new
-    datasets having no overlap in terms of input imagery.
-    Since the split is based on files, it is still possible to have spatial overlap when dealing
-    with multiple timestamps of the same region.
-    The user can either specify the exact (image) files to be used for validation and test datasets, or
-    specify the ratios or counts of the splits.
-    If ratios_or_counts are provided, the function will randomly assign the images to the splits.
-    If val_img_files and test_img_files are provided, the function will use these files to create
-    the validation and test datasets.
-    The train dataset will be created from the remaining images.
-    The function will return a list of datasets, with the first dataset being the train dataset.
+    Splits a dataset based on image files, ensuring no file overlap between splits.
 
     Args:
-        dataset: The dataset to be split.
-        val_img_files: A list of image files to be used for validation.
-        test_img_files: A list of image files to be used for testing.
-        ratios_or_counts: A list of ratios or counts to be used for splitting the dataset.
-        If ratios_or_counts are provided, val_img_files and test_img_files will be ignored.
+        dataset: The dataset to be split (RasterDataset or IntersectionDataset).
+        val_img_files: Files for the validation set.
+        test_img_files: Files for the test set.
+        ratios_or_counts: Ratios or counts for random splitting (overrides file lists).
+
     Returns:
-        A list of datasets, with the first dataset being the train dataset.
+        A list of datasets [train, validation (optional), test (optional)].
+
+    Raises:
+        ValueError: If input parameters are invalid or files are not found.
     """
+    use_ratios = ratios_or_counts is not None
+    use_files = (val_img_files is not None) or (test_img_files is not None)
 
-    ratio_based_split, file_based_split = False, False
-    if ratios_or_counts is not None:
-        ratio_based_split = True
-    if (val_img_files is not None) or (test_img_files is not None):
-        file_based_split = True
-    assert ratio_based_split or file_based_split, (
-        "Either ratios_or_counts or train_files, val_files, test_files should be provided."
-    )
-    if ratio_based_split and file_based_split:
-        print(
-            "Both ratios_or_counts and train_files, val_files or test_files were provided. "
-            "Only ratios_or_counts will be used for splitting."
+    if not use_ratios and not use_files:
+        raise ValueError(
+            "Either ratios_or_counts or val_img_files/test_img_files must be provided."
         )
-        file_based_split = False
 
-    if ratio_based_split:
+    if use_ratios and use_files:
+        print(
+            "Warning: Both ratios_or_counts and file lists provided. "
+            "Using ratios_or_counts for splitting."
+        )
+        use_files = False
+
+    if use_ratios:
+        # Perform ratio-based random split
         return random_bbox_assignment(
             dataset=dataset,
             lengths=ratios_or_counts,
             generator=torch.Generator().manual_seed(0),
         )
 
-    def _file_param_format(files) -> list[Path]:
-        if files is None:
-            return []
-        if isinstance(files, str):
-            files = [files]
-        if isinstance(files, list):
-            files = [Path(i) for i in files]
-        if isinstance(files, Path):
-            files = [files]
-        return [i.resolve() for i in files]
+    # Perform file-based split
+    val_files = _format_paths(val_img_files)
+    test_files = _format_paths(test_img_files)
 
-    val_img_files, test_img_files = (
-        _file_param_format(val_img_files),
-        _file_param_format(test_img_files),
-    )
-    if isinstance(dataset, (IntersectionDataset)):
+    # Determine the base image dataset
+    if isinstance(dataset, IntersectionDataset):
         img_dataset = dataset.datasets[0]
     elif isinstance(dataset, RasterDataset):
         img_dataset = dataset
     else:
-        raise ValueError(
-            "Dataset should be either a RasterDataset or IntersectionDataset."
+        raise TypeError(
+            "Dataset must be a RasterDataset or IntersectionDataset subclass."
         )
+
+    # Get all items and corresponding file paths from the image dataset index
     dataset_items = list(
         img_dataset.index.intersection(img_dataset.index.bounds, objects=True)
     )
-    dataset_files = [Path(i.object).resolve() for i in dataset_items]
+    dataset_files = [Path(item.object).resolve() for item in dataset_items]
 
-    def _check_files(files_param: list[Path], out_list: list):
-        if not files_param:
-            return out_list
-        file_found = False
-        for f in files_param:
-            if f not in dataset_files:
-                print(f"File {str(f)} not found in dataset. Skipping")
-            else:
-                file_found = True
-                out_list.append(dataset_items[dataset_files.index(f)])
-
-        if not file_found:
-            raise ValueError(
-                "None of the provided files found in the dataset. Please check the files."
-            )
-        return out_list
-
-    val_items, test_items = (
-        _check_files(val_img_files, []),
-        _check_files(test_img_files, []),
+    # Partition items into train, validation, and test sets
+    train_items, val_items, test_items = _get_split_items(
+        dataset_items, dataset_files, val_files, test_files
     )
-    train_items = [
-        i for i in dataset_items if i not in val_items and i not in test_items
-    ]
 
-    train_idx = Index(interleaved=False, properties=Property(dimension=3))
-    for i in train_items:
-        train_idx.insert(len(train_idx), i.bounds, i.object)
-    new_indexes = [train_idx]
-    if val_items:
-        val_idx = Index(interleaved=False, properties=Property(dimension=3))
-        for i in val_items:
-            val_idx.insert(len(val_idx), i.bounds, i.object)
-        new_indexes.append(val_idx)
-    if test_items:
-        test_idx = Index(interleaved=False, properties=Property(dimension=3))
-        for i in test_items:
-            test_idx.insert(len(test_idx), i.bounds, i.object)
-        new_indexes.append(test_idx)
+    # Build R-tree indexes for each split
+    new_indexes = _build_split_indexes(train_items, val_items, test_items)
 
-    new_datasets = []
-    for index in new_indexes:
-        if isinstance(dataset, (IntersectionDataset)):
-            img_ds = dataset.datasets[0]
-        else:
-            img_ds = dataset
-        ds = deepcopy(img_ds)
-        ds.index = index
-        ds.paths = [i.object for i in index.intersection(index.bounds, objects=True)]
-
-        if isinstance(dataset, (LabelledRasterDataset, IntersectionDataset)):
-            ds = dataset.__class__(
-                ds,
-                dataset.datasets[1],
-                collate_fn=dataset.collate_fn,
-                transforms=dataset.transforms,
-            )
-
-        new_datasets.append(ds)
+    # Build the final datasets using the original dataset structure and new indexes
+    new_datasets = _build_split_datasets(dataset, new_indexes)
 
     return new_datasets
 
