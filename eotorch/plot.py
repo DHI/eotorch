@@ -613,8 +613,8 @@ def plot_samples(
             sample = unbind_samples(batch)[0]
             if (
                 (sample["image"] == 0).all()
-                or (sample["mask"] == nodata_val).all()
-                or (sample["mask"] == -1).all()
+                or ("mask" in sample and (sample["mask"] == nodata_val).all())
+                or ("mask" in sample and (sample["mask"] == -1).all())
             ):
                 continue
             samples.append(sample)
@@ -629,7 +629,11 @@ def plot_samples(
 
     for i, sample in enumerate(samples):
         dataset.plot(sample, show_filepaths=show_filepaths)
-        plt.suptitle(f"Sample {i + 1}")
+        if isinstance(dataset, IntersectionDataset):
+            plt.suptitle(f"Sample {i + 1}")
+        else:
+            if not show_filepaths:
+                plt.title(f"Sample {i + 1}")
         plt.show()
 
 

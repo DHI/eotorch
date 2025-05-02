@@ -105,6 +105,20 @@ class CustomCacheRasterDataset(RasterDataset):
         print(f"Dataset containing {len(self)} items, crs: {self.crs}, res: {self.res}")
         return plot_dataset_index(self)._repr_html_()
 
+    def plot_samples(
+        self,
+        n: int = 3,
+        patch_size: int = 256,
+        show_filepaths: bool = False,
+    ):
+        return plot_samples(
+            self,
+            n=n,
+            patch_size=patch_size,
+            # nodata_val=self.datasets[1].nodata_value,
+            show_filepaths=show_filepaths,
+        )
+
 
 class PlottableImageDataset(CustomCacheRasterDataset):
     def plot(self, sample, ax=None, **kwargs):
