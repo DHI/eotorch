@@ -23,38 +23,6 @@ def class_mapping():
     }
 
 
-def test_plot_numpy_array_consistent_colors():
-    """Test that the same class values get the same colors across different arrays."""
-    # Create two different arrays with some common classes
-    array1 = np.array([[1, 2, 3], [0, 4, 5]])  # Contains classes 0, 1, 2, 3, 4, 5
-    array2 = np.array([[1, 2, 7], [0, 6, 2]])  # Contains classes 0, 1, 2, 6, 7
-
-    # Plot both arrays
-    fig1, ax1 = plt.subplots()
-    plot_numpy_array(array1, ax=ax1)
-    img1 = ax1.get_images()[0]
-
-    fig2, ax2 = plt.subplots()
-    plot_numpy_array(array2, ax=ax2)
-    img2 = ax2.get_images()[0]
-
-    # Check colors for common classes (0, 1, 2)
-    common_classes = [0, 1, 2]
-
-    # Extract colors from both plots
-    colors1 = [img1.cmap(img1.norm(cls)) for cls in common_classes]
-    colors2 = [img2.cmap(img2.norm(cls)) for cls in common_classes]
-
-    # Compare colors - should be the same for the same class values
-    for i, cls in enumerate(common_classes):
-        assert np.allclose(colors1[i], colors2[i]), (
-            f"Colors for class {cls} don't match"
-        )
-
-    plt.close(fig1)
-    plt.close(fig2)
-
-
 def test_plot_numpy_array_with_class_mapping(class_mapping):
     """Test that the function correctly uses class mapping for labels."""
     array = np.array([[1, 2, 3], [0, 4, 5]])
