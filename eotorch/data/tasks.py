@@ -9,8 +9,9 @@ import torch
 from matplotlib import pyplot as plt
 from torchgeo.datasets import RGBBandsMissingError, unbind_samples
 from torchgeo.datasets.utils import array_to_tensor
-from torchgeo.trainers import \
-    SemanticSegmentationTask as TorchGeoSemanticSegmentationTask
+from torchgeo.trainers import (
+    SemanticSegmentationTask as TorchGeoSemanticSegmentationTask,
+)
 from torchmetrics import Accuracy, F1Score, JaccardIndex, MetricCollection
 
 from eotorch.models import MODEL_MAPPING
@@ -610,7 +611,7 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         lightning_module = SemanticSegmentationTask.load_from_checkpoint(
-            checkpoint_path, 
+            checkpoint_path,
             map_location=device,
         )
         lightning_module.to(device)
@@ -644,7 +645,7 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
             )
             lightning_module.reduce_zero_label = True
 
-        predict_on_tif_generic(
+        return predict_on_tif_generic(
             tif_file_path=tif_file_path,
             prediction_func=lightning_module.predict_class,
             show_results=show_results,
