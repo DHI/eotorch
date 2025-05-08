@@ -10,10 +10,8 @@ from folium.raster_layers import ImageOverlay
 from matplotlib import cm
 from rasterio.plot import show
 from rasterio.vrt import WarpedVRT
-from rasterio.windows import from_bounds, get_data_window
-from torch.utils.data import DataLoader
-from torchgeo.datasets import IntersectionDataset, stack_samples, unbind_samples
-from torchgeo.samplers import BatchGeoSampler
+from rasterio.windows import get_data_window
+from torchgeo.datasets import IntersectionDataset
 
 from eotorch import utils
 
@@ -600,8 +598,10 @@ def plot_samples(
     from torchgeo.samplers import RandomGeoSampler
 
     assert hasattr(dataset, "plot"), "Dataset must have a plot method"
-    # sampler = GridGeoSampler(dataset, size=patch_size, stride=100)
-    sampler = RandomGeoSampler(dataset, size=patch_size)
+    sampler = RandomGeoSampler(
+        dataset,
+        size=patch_size,
+    )
     dataloader = DataLoader(
         dataset, sampler=sampler, collate_fn=stack_samples, batch_size=1
     )

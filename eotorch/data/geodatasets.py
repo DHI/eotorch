@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import functools
 import logging
 import os
@@ -11,20 +12,46 @@ import matplotlib.pyplot as plt
 import torch
 from matplotlib import cm
 from rasterio.plot import show
+from rtree.index import Index, Property
 from torchgeo.datasets import IntersectionDataset, RasterDataset
 from torchgeo.datasets.utils import BoundingBox
 
 from eotorch.bandindex import BAND_INDEX
 from eotorch.inference.inference_utils import prediction_to_numpy
 from eotorch.plot import label_map, plot_dataset_index, plot_numpy_array, plot_samples
-from eotorch.utils import _format_filepaths
+from eotorch.utils import _format_filepaths, tranform_index
 
 if TYPE_CHECKING:
     from rasterio.crs import CRS
     from torch import Tensor
 
 
-class CustomCacheRasterDataset(RasterDataset):
+class SamplePlotMixin:
+    """Mixin class for datasets that can plot samples."""
+
+    def plot_samples(
+        self,
+        n: int = 3,
+        patch_size: int = 256,
+        show_filepaths: bool = False,
+        nodata_val: int | float = 0,
+    ):
+        # if the dataset is an IntersectionDataset, get the nodata value from the label dataset
+        if isinstance(self, IntersectionDataset) and hasattr(
+            self.datasets[1], "nodata_value"
+        ):
+            nodata_val = self.datasets[1].nodata_value
+
+        return plot_samples(
+            self,
+            n=n,
+            patch_size=patch_size,
+            nodata_val=nodata_val,
+            show_filepaths=show_filepaths,
+        )
+
+
+class CustomCacheRasterDataset(RasterDataset, SamplePlotMixin):
     """
     Implementing RasterDatset with customisable cache size, as it is hardcoded to 128 in torchgeo's RasterDataset.
     """
@@ -105,19 +132,129 @@ class CustomCacheRasterDataset(RasterDataset):
         print(f"Dataset containing {len(self)} items, crs: {self.crs}, res: {self.res}")
         return plot_dataset_index(self)._repr_html_()
 
-    def plot_samples(
-        self,
-        n: int = 3,
-        patch_size: int = 256,
-        show_filepaths: bool = False,
-    ):
-        return plot_samples(
-            self,
-            n=n,
-            patch_size=patch_size,
-            # nodata_val=self.datasets[1].nodata_value,
-            show_filepaths=show_filepaths,
+    def __or__(self, other: CustomCacheRasterDataset) -> CustomCacheRasterDataset:
+        """
+        Create a new CustomCacheRasterDataset that is the union of this dataset and another.
+
+        The two datasets must have compatible configurations for resolution, selected bands,
+        definition of all bands, is_image status, and separate_files status.
+        The CRS can differ; the new dataset will adopt the CRS of the left operand ('self').
+        The 'other' dataset's index will be transformed to 'self.crs' using GeoDataset's
+        built-in CRS transformation logic if their CRSs differ.
+
+        The new dataset inherits transforms and cache_size from 'self'.
+        The index of the new dataset is a combination of the indices from 'self' and
+        the (potentially transformed) index from 'other'.
+
+        Args:
+            other: Another CustomCacheRasterDataset instance to union with.
+
+        Returns:
+            A new CustomCacheRasterDataset instance representing the union.
+
+        Raises:
+            TypeError: If 'other' is not a CustomCacheRasterDataset instance.
+            ValueError: If the datasets have incompatible data-defining configurations
+                        or if the union results in an empty dataset.
+        """
+        if not isinstance(other, CustomCacheRasterDataset):
+            raise TypeError(
+                f"Can only union with another CustomCacheRasterDataset, not {type(other).__name__}"
+            )
+
+        # --- Compatibility checks (excluding CRS) ---
+        # Attributes to check for equality, with user-friendly names for error messages
+        compatibility_attrs = {
+            "bands": "Selected bands (bands attribute)",
+            "all_bands": "'all_bands' attribute",
+            "is_image": "'is_image' attribute",
+            "separate_files": "'separate_files' attribute",
+        }
+
+        for attr_name, display_name in compatibility_attrs.items():
+            self_attr = getattr(self, attr_name)
+            other_attr = getattr(other, attr_name)
+            if self_attr != other_attr:
+                raise ValueError(
+                    f"{display_name} must be the same for union. "
+                    f"Self: {self_attr}, Other: {other_attr}"
+                )
+
+        # Deepcopy 'other' and transform its CRS if necessary using GeoDataset's setter
+        other_transformed = copy.deepcopy(other)
+        if other_transformed.crs != self.crs:
+            other_transformed.crs = self.crs  # This invokes GeoDataset.crs.
+        if other_transformed.res != self.res:
+            other_transformed.res = self.res
+
+        # --- Construct the items for the new_dataset.index ---
+        index_items_for_new_dataset = []
+        current_id = 0
+
+        # Add items from self.index (bounds are already in new_crs)
+        for item_s in self.index.intersection(self.index.bounds, objects=True):
+            index_items_for_new_dataset.append(
+                (current_id, item_s.bounds, item_s.object)
+            )
+            current_id += 1
+
+        # Add items from other_transformed.index (bounds are now in new_crs)
+        for item_o in other_transformed.index.intersection(
+            other_transformed.index.bounds, objects=True
+        ):
+            index_items_for_new_dataset.append(
+                (current_id, item_o.bounds, item_o.object)
+            )
+            current_id += 1
+
+        if not index_items_for_new_dataset:
+            raise ValueError(
+                "Union results in an empty dataset based on merged index items."
+            )
+
+        # --- Paths for the new dataset's constructor ---
+        # This ensures new_dataset.files can be correctly computed by RasterDataset parent.
+        def _ensure_list_of_paths(
+            paths_attr: str | os.PathLike | Iterable[str] | Iterable[os.PathLike],
+        ):
+            if isinstance(paths_attr, (str, os.PathLike)):
+                return [paths_attr]
+            if isinstance(paths_attr, Iterable) and not isinstance(
+                paths_attr, (str, bytes)
+            ):
+                return list(paths_attr)
+            raise TypeError(f"Unsupported type for paths attribute: {type(paths_attr)}")
+
+        self_paths_list = _ensure_list_of_paths(self.paths)
+        other_paths_list = _ensure_list_of_paths(other.paths)
+        # Ensure paths in constructor_paths are strings, as expected by some internal logic.
+        combined_constructor_paths = sorted(
+            list(set(map(str, self_paths_list + other_paths_list)))
         )
+
+        # Create the new CustomCacheRasterDataset instance.
+        # It will initially build an index based on combined_constructor_paths and new_crs.
+
+        new_ds_class = self.__class__
+        new_ds_class.all_bands = self.all_bands
+        new_ds_class.rgb_bands = self.rgb_bands
+        new_ds_class.separate_files = self.separate_files
+        new_ds_class.is_image = self.is_image
+        new_dataset = new_ds_class(
+            paths=combined_constructor_paths,  # type: ignore[arg-type]
+            crs=self.crs,
+            res=self.res,
+            bands=self.bands,  # Bands (checked for equality)
+            transforms=self.transforms,  # Inherit from self
+            cache_size=self.cache_size,  # Inherit from self
+        )
+
+        # Replace the automatically generated index with our carefully constructed one.
+        new_dataset.index = Index(interleaved=False, properties=Property(dimension=3))
+        for id_val, bounds_val, object_val in index_items_for_new_dataset:
+            new_dataset.index.insert(id_val, bounds_val, object_val)
+
+        return new_dataset
 
 
 class PlottableImageDataset(CustomCacheRasterDataset):
@@ -148,22 +285,14 @@ class PlottableImageDataset(CustomCacheRasterDataset):
             **kwargs,
         )
         if predictions is not None:
-            # label_ds: PlottabeLabelDataset = self.datasets[-1]
-            # data = predictions.numpy()
-            # if label_ds.reduce_zero_label:
-            #     data += 1
             plot_numpy_array(
                 array=prediction_to_numpy(predictions),
                 ax=ax[-1],
-                # class_mapping=label_ds.class_mapping,
-                # colormap=label_ds.colormap,
-                # nodata_value=label_ds.nodata_value,
                 title="Prediction",
                 **kwargs,
             )
 
         plt.tight_layout()
-        # return fig
 
 
 class PlottabeLabelDataset(CustomCacheRasterDataset):
@@ -228,14 +357,17 @@ class PlottabeLabelDataset(CustomCacheRasterDataset):
         return label_map(self.files)
 
 
-class LabelledRasterDataset(IntersectionDataset):
+class LabelledRasterDataset(
+    IntersectionDataset,
+    SamplePlotMixin,
+):
     def plot(self, sample: dict[str, Any], **kwargs):
         predictions = sample.pop("prediction", None)
         n_cols = 3 if predictions is not None else 2
         fig, axes = plt.subplots(1, n_cols, figsize=(n_cols * 4, 4))
 
         for i, dataset in enumerate(self.datasets):
-            if isinstance(dataset, (PlottableImageDataset, PlottabeLabelDataset)):
+            if hasattr(dataset, "plot"):
                 dataset.plot(sample, ax=axes[i], **kwargs)
             else:
                 raise NotImplementedError("Dataset must be plottable")
@@ -259,20 +391,6 @@ class LabelledRasterDataset(IntersectionDataset):
 
         return fig
 
-    def plot_samples(
-        self,
-        n: int = 3,
-        patch_size: int = 256,
-        show_filepaths: bool = False,
-    ):
-        return plot_samples(
-            self,
-            n=n,
-            patch_size=patch_size,
-            nodata_val=self.datasets[1].nodata_value,
-            show_filepaths=show_filepaths,
-        )
-
     def _repr_html_(self):
         print(f"Dataset containing {len(self)} items, crs: {self.crs}, res: {self.res}")
         m = plot_dataset_index(self.datasets[0], name="Images", color="blue")
@@ -280,7 +398,6 @@ class LabelledRasterDataset(IntersectionDataset):
         return plot_dataset_index(
             self, m, name="Intersection", color="pink"
         )._repr_html_()
-        # return plot_dataset_index(self)._repr_html_()
 
     def preview_labels(self):
         """
@@ -297,6 +414,53 @@ class LabelledRasterDataset(IntersectionDataset):
         else:
             raise NotImplementedError(
                 "Label dataset must be of type PlottabeLabelDataset"
+            )
+
+    def __or__(self, other: LabelledRasterDataset) -> LabelledRasterDataset:
+        """
+        Overload the | operator to create a new LabelledRasterDataset from two LabelledRasterDatasets.
+        """
+        if not isinstance(other, LabelledRasterDataset):
+            raise TypeError(
+                f"Cannot union {type(self).__name__} with {type(other).__name__}"
+            )
+
+        return LabelledRasterDataset(
+            self.datasets[0] | other.datasets[0],
+            self.datasets[1] | other.datasets[1],
+            collate_fn=self.collate_fn,
+            transforms=self.transforms,
+        )
+
+    def __and__(self, other: LabelledRasterDataset) -> LabelledRasterDataset:
+        return LabelledRasterDataset(
+            IntersectionDataset(self.datasets[0], other.datasets[0]),
+            IntersectionDataset(self.datasets[1], other.datasets[1]),
+            collate_fn=self.collate_fn,
+            transforms=self.transforms,
+        )
+
+    @property
+    def crs(self) -> CRS:
+        """:term:`coordinate reference system (CRS)` of both datasets.
+
+        Returns:
+            The :term:`coordinate reference system (CRS)`.
+        """
+        return self._crs
+
+    @crs.setter
+    def crs(self, new_crs: CRS) -> None:
+        # super().__setattr__("crs", new_crs)
+        old_crs = self.crs
+        index_needs_update = new_crs != old_crs
+        self._crs = new_crs
+        self.datasets[0].crs = new_crs
+        self.datasets[1].crs = new_crs
+
+        if index_needs_update and len(self.index) > 0:
+            self.index = tranform_index(
+                index=self.index, current_crs=old_crs, new_crs=new_crs
             )
 
 
@@ -368,15 +532,18 @@ def get_segmentation_dataset(
             print("Warning: param res will be ignored as sensor_name is provided")
         res = BAND_INDEX[sensor_name]["res"]
 
+    image_filename_regex = image_filename_regex or r".*"
+    label_filename_regex = label_filename_regex or r".*"
+    image_date_format = image_date_format or "%Y%m%d"
+    label_date_format = label_date_format or "%Y%m%d"
+
     image_ds_class = PlottableImageDataset
     image_ds_class.filename_glob = image_glob
     image_ds_class.all_bands = all_image_bands
     image_ds_class.rgb_bands = rgb_bands
     image_ds_class.separate_files = image_separate_files
-    if image_filename_regex:
-        image_ds_class.filename_regex = image_filename_regex
-    if image_date_format:
-        image_ds_class.date_format = image_date_format
+    image_ds_class.filename_regex = image_filename_regex
+    image_ds_class.date_format = image_date_format
 
     image_ds = image_ds_class(
         paths=images_dir,
@@ -391,10 +558,8 @@ def get_segmentation_dataset(
         label_ds_class = PlottabeLabelDataset
         label_ds_class.filename_glob = label_glob
         label_ds_class.class_mapping = class_mapping
-        if label_filename_regex:
-            label_ds_class.filename_regex = label_filename_regex
-        if label_date_format:
-            label_ds_class.date_format = label_date_format
+        label_ds_class.filename_regex = label_filename_regex
+        label_ds_class.date_format = label_date_format
 
         label_ds = label_ds_class(
             paths=labels_dir,

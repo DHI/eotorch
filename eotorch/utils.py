@@ -6,7 +6,46 @@ import pyproj
 import shapely.geometry
 import shapely.ops
 from rasterio.windows import Window
+from rtree.index import Index, Property
 from torchgeo.datasets.utils import BoundingBox
+
+
+def tranform_index(
+    index: Index, current_crs: str | pyproj.CRS, new_crs: str | pyproj.CRS
+) -> Index:
+    """
+    Transform an R-tree index to a new coordinate reference system (CRS).
+
+    Parameters:
+        index (Index):
+            The R-tree index to transform.
+        new_crs (str or pyproj.CRS):
+            The new coordinate reference system.
+
+    Returns:
+        Index:
+            A new R-tree index with transformed coordinates.
+    """
+    if isinstance(current_crs, str):
+        current_crs = pyproj.CRS(current_crs)
+
+    if isinstance(new_crs, str):
+        new_crs = pyproj.CRS(new_crs)
+
+    new_index = Index(interleaved=False, properties=Property(dimension=3))
+
+    project = pyproj.Transformer.from_crs(
+        pyproj.CRS(str(current_crs)), pyproj.CRS(str(new_crs)), always_xy=True
+    ).transform
+    for hit in index.intersection(index.bounds, objects=True):
+        old_minx, old_maxx, old_miny, old_maxy, mint, maxt = hit.bounds
+        old_box = shapely.geometry.box(old_minx, old_miny, old_maxx, old_maxy)
+        new_box = shapely.ops.transform(project, old_box)
+        new_minx, new_miny, new_maxx, new_maxy = new_box.bounds
+        new_bounds = (new_minx, new_maxx, new_miny, new_maxy, mint, maxt)
+        new_index.insert(hit.id, new_bounds, hit.object)
+
+    return new_index
 
 
 def window_to_np_idc(window: Window) -> Tuple[slice, slice]:

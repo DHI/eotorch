@@ -361,6 +361,42 @@ def aoi_split(
         ImportError: If coordinate transformation is requested but pyproj is not available
         ValueError: If a GeoJSON file is invalid or doesn't contain Polygon features
     """
+
+    if isinstance(dataset, LabelledRasterDataset):
+        # If the dataset is a LabelledRasterDataset, we need to split the image and label datasets
+
+        img_datasets = aoi_split(
+            dataset.datasets[0],
+            val_aois=val_aois,
+            test_aois=test_aois,
+            time_bounds=time_bounds,
+            as_lists=as_lists,
+            crs=crs,
+            buffer_size=buffer_size,
+        )
+        label_datasets = aoi_split(
+            dataset.datasets[1],
+            val_aois=val_aois,
+            test_aois=test_aois,
+            time_bounds=time_bounds,
+            as_lists=as_lists,
+            crs=crs,
+            buffer_size=buffer_size,
+        )
+
+        datasets_to_return = []
+        for img_ds, label_ds in zip(img_datasets, label_datasets):
+            datasets_to_return.append(
+                LabelledRasterDataset(
+                    img_ds,
+                    label_ds,
+                    collate_fn=dataset.collate_fn,
+                    transforms=dataset.transforms,
+                )
+            )
+
+        return datasets_to_return
+
     # Process AOIs
     roi_boxes = []  # Will hold all BoundingBox objects
     buffered_roi_boxes = []  # Will hold buffered versions of all ROIs

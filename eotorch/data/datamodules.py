@@ -135,11 +135,16 @@ class SegmentationDataModule(GeoDataModule):
             return out_dict
 
         if self.train_dataset is not None:
+            try:
+                dataset_args = get_dataset_args(self.train_dataset)
+            except Exception as e:
+                print(
+                    "Could not get dataset args from train_dataset, not saving to disk."
+                )
+                dataset_args = {}
             self.save_hyperparameters(
                 {
-                    "dataset_args": _format_dict_for_yaml(
-                        get_dataset_args(train_dataset)
-                    ),
+                    "dataset_args": _format_dict_for_yaml(dataset_args),
                     "batch_size": batch_size,
                     "patch_size": patch_size,
                     "num_workers": num_workers,
