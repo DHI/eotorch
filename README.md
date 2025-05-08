@@ -3,7 +3,7 @@
 
 ## Installation
 
-### Basic Installation (CPU-only)
+### Basic Installation
 To install the base package (with core functionality, excluding extras):
 
 ```bash
@@ -12,7 +12,7 @@ pip install git+https://github.com/DHI/eotorch.git
 
 ## Optional Dependencies
 
-EOTorch supports several optional features. You can install them via [PEP 508](https://peps.python.org/pep-0508/) extras.
+EOTorch supports several optional features. You can install them optional extras.
 
 ### Available extras
 
@@ -23,7 +23,7 @@ EOTorch supports several optional features. You can install them via [PEP 508](h
 | `notebooks` | Jupyter notebook support                    |
 | `cuda126`   | GPU support for Windows with CUDA 12.6      |
 
-### Example: Install with optional dependencies for Jupyter notebook and Windows GPU Support
+#### Example: Install with optional extras for Jupyter notebook and Windows GPU Support
 ```bash
 pip install "git+https://github.com/DHI/eotorch.git[cuda126,notebooks]"
 ```
@@ -38,7 +38,7 @@ If you're using **Windows with an NVIDIA GPU**, follow these guidelines:
   nvidia-smi
   ```
 
-  Look for the `Driver Version` and `CUDA Version`. As long as the driver supports CUDA **12.6 or newer**, the `cuda126` optional dependency will work.
+  Look for the `Driver Version` and `CUDA Version`. As long as the driver supports CUDA **12.6 or newer**, the `cuda126` optional dependency *should* work.
 
 - The `cuda126` optional dependency installs:
   - `torch>=2.7.0`
@@ -60,6 +60,6 @@ uv add "git+https://github.com/DHI/eotorch.git[<add_extras_here>]"
 
 You can find usage examples in the [notebooks](notebooks/) directory.
 
-Example: [Segmentation with TorchGeo](notebooks/segmentation.ipynb)
+* For segmentation use cases, check [notebooks/segmentation.ipynb](notebooks/segmentation.ipynb)
 
 ---

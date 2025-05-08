@@ -66,7 +66,7 @@ cuda126 = [
 
 [tool.uv.sources]
 torch = [
-  { index = "pytorch-cu126",extra = "cuda126" },
+  { index = "pytorch-cu126", extra = "cuda126" },
 ]
 torchvision = [
   { index = "pytorch-cu126", extra = "cuda126" },
