@@ -11,7 +11,7 @@ import numpy as np
 import rasterio as rst
 from pyogrio import read_dataframe
 from rasterio.features import rasterize
-from rasterio.windows import get_data_window
+from rasterio.windows import Window, get_data_window
 from rasterio.windows import transform as window_transform
 
 from eotorch import utils
@@ -63,6 +63,7 @@ class VectorSource(ABC):
         self,
         out_path: Path | str,
         exclude_nodata_bounds: bool = True,
+        min_size: int = 300,
         class_order: List[int] = None,
         **kwargs,
     ):
@@ -99,6 +100,16 @@ class VectorSource(ABC):
 
         if exclude_nodata_bounds:
             window = get_data_window(labels, nodata=0)
+            # make sure the window is at least of size min_size
+            window_height = max(window.height, min_size)
+            window_width = max(window.width, min_size)
+            window = Window(
+                col_off=window.col_off,
+                row_off=window.row_off,
+                height=window_height,
+                width=window_width,
+            )
+
             labels = labels[utils.window_to_np_idc(window)]
             # Update the transform to reflect the new origin after cropping
             updated_transform = window_transform(window, self.transform)
