@@ -101,8 +101,8 @@ class VectorSource(ABC):
         if exclude_nodata_bounds:
             window = get_data_window(labels, nodata=0)
             # make sure the window is at least of size min_size
-            window_height = max(window.height, min_size)
-            window_width = max(window.width, min_size)
+            window_height = max(window.height + 50, min_size)
+            window_width = max(window.width + 50, min_size)
             col_off = max(0, window.col_off - 50)
             row_off = max(0, window.row_off - 50)
             window = Window(
