@@ -103,9 +103,11 @@ class VectorSource(ABC):
             # make sure the window is at least of size min_size
             window_height = max(window.height, min_size)
             window_width = max(window.width, min_size)
+            col_off = max(0, window.col_off - 50)
+            row_off = max(0, window.row_off - 50)
             window = Window(
-                col_off=window.col_off,
-                row_off=window.row_off,
+                col_off=col_off,
+                row_off=row_off,
                 height=window_height,
                 width=window_width,
             )
