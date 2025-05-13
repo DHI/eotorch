@@ -42,16 +42,6 @@ def plot_raster_histogram(raster_file_path: str | Path, band: int = 1, bins: int
         plt.show()
 
 
-def convert_bounds(bbox, invert_y=False):
-    """
-    Helper method for changing bounding box representation to leaflet notation
-
-    ``(lon1, lat1, lon2, lat2) -> ((lat1, lon1), (lat2, lon2))``
-    """
-    x1, y1, x2, y2 = bbox
-    if invert_y:
-        y1, y2 = y2, y1
-    return ((y1, x1), (y2, x2))
 
 
 def plot_dataset_index(dataset, map=None, color="olive", name=None):
@@ -148,7 +138,7 @@ def plot_dataset_index(dataset, map=None, color="olive", name=None):
         if map_bounds:
             map.fit_bounds(map_bounds)
         else:  # Fallback if map has no bounds yet (first dataset)
-            map.fit_bounds(convert_bounds(current_bounds))
+            map.fit_bounds(utils.convert_bounds(current_bounds))
 
     # Add Draw and Measure controls only if they are needed
     if not has_draw_control:
@@ -397,7 +387,7 @@ def plot_samplers_on_map(
     if datasets:
         # Use the bounds of the first dataset as a fallback if multiple datasets have varying extents
         map.fit_bounds(
-            bounds=convert_bounds(
+            bounds=utils.convert_bounds(
                 utils.torchgeo_bb_to_shapely(
                     datasets[0].index.bounds, bbox_crs=datasets[0].crs
                 ).bounds
@@ -672,7 +662,7 @@ def label_map(label_file_paths: str | list, map: folium.Map = None):
         with rst.open(label_file_path) as src:
             # Read the data and get bounds in a single operation with VRT
             with WarpedVRT(src, crs="EPSG:4326") as vrt:
-                bounds = convert_bounds(vrt.bounds)  # Convert directly to save a step
+                bounds = utils.convert_bounds(vrt.bounds)  # Convert directly to save a step
                 array = vrt.read(1)
 
         # Store bounds for map fitting

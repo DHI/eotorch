@@ -363,38 +363,43 @@ class PlottabeLabelDataset(CustomCacheRasterDataset):
     def get_pixel_counts(self):
         """
         Get the pixel counts for each class in the dataset.
+        This reads all the files in the dataset. To get the counts for only 
+        the areas with an intersection with the images, use LabelledRasterDataset.get_label_pixel_counts()
 
         Returns:
             A dictionary mapping class indices or class names to pixel counts.
         """
-        from collections import defaultdict
-
-        import numpy as np
-
         pixel_counts = defaultdict(int)
-        # Iterate over all items in the index (each item is a spatial region)
         for item in self.index.intersection(self.index.bounds, objects=True):
             bounds = item.bounds
-            sample = self.__getitem__(BoundingBox(*bounds))
-            mask = sample["mask"]
-            # Convert to numpy if it's a tensor
-            if hasattr(mask, 'numpy'):
-                mask = mask.numpy()
-            # Flatten and count
-            if self.reduce_zero_label:
-                mask = mask + 1
-            if self.nodata_value is not None:
-                mask = mask[mask != self.nodata_value]
-            unique, counts = np.unique(mask, return_counts=True)
-            for cls, cnt in zip(unique, counts):
-                if self.class_mapping is not None:
-                    # Map class index to class name if mapping exists
-                    key = self.class_mapping.get(cls, cls)
-                else:
-                    key = cls
-                pixel_counts[key] += int(cnt)
+            counts = self._get_pixel_counts(BoundingBox(*bounds))
+            for key, cnt in counts.items():
+                pixel_counts[key] += cnt
         return dict(pixel_counts)
 
+    def _get_pixel_counts(self, bbox: BoundingBox) -> dict[int, int]:
+        import numpy as np
+
+        out_dict = {}
+        sample = self.__getitem__(bbox)
+        mask = sample["mask"]
+        if hasattr(mask, 'numpy'):
+            mask = mask.numpy()
+        if self.reduce_zero_label:
+            mask = mask + 1
+        if self.nodata_value is not None:
+            mask = mask[mask != self.nodata_value]
+        unique, counts = np.unique(mask, return_counts=True)
+        counts =  dict(zip(unique, counts))
+
+        for cls, cnt in counts.items():
+            if self.class_mapping is not None:
+                key = self.class_mapping.get(int(cls), int(cls))
+            else:
+                key = cls
+            out_dict[key] = int(cnt)
+
+        return out_dict
 
 class LabelledRasterDataset(
     IntersectionDataset,
@@ -464,7 +469,14 @@ class LabelledRasterDataset(
         """
         if isinstance(self.datasets[-1], PlottabeLabelDataset):
             label_ds: PlottabeLabelDataset = self.datasets[-1]
-            return label_ds.get_pixel_counts()
+            pixel_counts = defaultdict(int)
+            for item in self.index.intersection(self.index.bounds, objects=True):
+                bounds = item.bounds
+                counts = label_ds._get_pixel_counts(BoundingBox(*bounds))
+                for key, cnt in counts.items():
+                    pixel_counts[key] += cnt
+            return dict(pixel_counts)
+
         else:
             raise NotImplementedError(
                 "Label dataset must be of type PlottabeLabelDataset"
