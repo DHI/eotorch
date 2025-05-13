@@ -5,10 +5,13 @@ import functools
 import logging
 import os
 import re
+from collections import defaultdict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Sequence, cast
 
 import matplotlib.pyplot as plt
+import numpy as np
+import rasterio as rst
 import torch
 from matplotlib import cm
 from rasterio.plot import show
@@ -18,7 +21,8 @@ from torchgeo.datasets.utils import BoundingBox
 
 from eotorch.bandindex import BAND_INDEX
 from eotorch.inference.inference_utils import prediction_to_numpy
-from eotorch.plot import label_map, plot_dataset_index, plot_numpy_array, plot_samples
+from eotorch.plot import (label_map, plot_dataset_index, plot_numpy_array,
+                          plot_samples)
 from eotorch.utils import _format_filepaths, tranform_index
 
 if TYPE_CHECKING:
@@ -356,6 +360,41 @@ class PlottabeLabelDataset(CustomCacheRasterDataset):
 
         return label_map(self.files)
 
+    def get_pixel_counts(self):
+        """
+        Get the pixel counts for each class in the dataset.
+
+        Returns:
+            A dictionary mapping class indices or class names to pixel counts.
+        """
+        from collections import defaultdict
+
+        import numpy as np
+
+        pixel_counts = defaultdict(int)
+        # Iterate over all items in the index (each item is a spatial region)
+        for item in self.index.intersection(self.index.bounds, objects=True):
+            bounds = item.bounds
+            sample = self.__getitem__(BoundingBox(*bounds))
+            mask = sample["mask"]
+            # Convert to numpy if it's a tensor
+            if hasattr(mask, 'numpy'):
+                mask = mask.numpy()
+            # Flatten and count
+            if self.reduce_zero_label:
+                mask = mask + 1
+            if self.nodata_value is not None:
+                mask = mask[mask != self.nodata_value]
+            unique, counts = np.unique(mask, return_counts=True)
+            for cls, cnt in zip(unique, counts):
+                if self.class_mapping is not None:
+                    # Map class index to class name if mapping exists
+                    key = self.class_mapping.get(cls, cls)
+                else:
+                    key = cls
+                pixel_counts[key] += int(cnt)
+        return dict(pixel_counts)
+
 
 class LabelledRasterDataset(
     IntersectionDataset,
@@ -411,6 +450,21 @@ class LabelledRasterDataset(
         if isinstance(self.datasets[-1], PlottabeLabelDataset):
             label_ds: PlottabeLabelDataset = self.datasets[-1]
             return label_ds.preview_labels()
+        else:
+            raise NotImplementedError(
+                "Label dataset must be of type PlottabeLabelDataset"
+            )
+        
+    def get_label_pixel_counts(self):
+        """
+        Get the pixel counts for each class in the label dataset.
+
+        Returns:
+            A dictionary mapping class indices or class names to pixel counts.
+        """
+        if isinstance(self.datasets[-1], PlottabeLabelDataset):
+            label_ds: PlottabeLabelDataset = self.datasets[-1]
+            return label_ds.get_pixel_counts()
         else:
             raise NotImplementedError(
                 "Label dataset must be of type PlottabeLabelDataset"
