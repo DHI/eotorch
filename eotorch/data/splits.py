@@ -98,9 +98,12 @@ def _build_split_datasets(
             # Create new image dataset for the split
             img_ds_new = deepcopy(img_ds_orig)
             img_ds_new.index = index
-            img_ds_new.paths = [
-                i.object for i in index.intersection(index.bounds, objects=True)
-            ]
+            if len(index) > 0:
+                img_ds_new.paths = [
+                    i.object for i in index.intersection(index.bounds, objects=True)
+                ]
+            else:
+                img_ds_new.paths = []
 
             # Create new label dataset index based on intersection with new image dataset bounds
             img_bounds = img_ds_new.bounds
@@ -117,10 +120,15 @@ def _build_split_datasets(
             # Create new label dataset for the split
             label_ds_new = deepcopy(label_ds_orig)
             label_ds_new.index = label_idx_new
-            label_ds_new.paths = [
-                i.object
-                for i in label_idx_new.intersection(label_idx_new.bounds, objects=True)
-            ]
+            if len(label_idx_new) > 0:
+                label_ds_new.paths = [
+                    i.object
+                    for i in label_idx_new.intersection(
+                        label_idx_new.bounds, objects=True
+                    )
+                ]
+            else:
+                label_ds_new.paths = []
 
             # Create the final IntersectionDataset for the split
             ds = original_dataset.__class__(
@@ -133,9 +141,12 @@ def _build_split_datasets(
             # Handle single RasterDataset
             ds = deepcopy(original_dataset)
             ds.index = index
-            ds.paths = [
-                i.object for i in index.intersection(index.bounds, objects=True)
-            ]
+            if len(index) > 0:
+                ds.paths = [
+                    i.object for i in index.intersection(index.bounds, objects=True)
+                ]
+            else:
+                ds.paths = []
 
         new_datasets.append(ds)
     return new_datasets
@@ -468,7 +479,16 @@ def aoi_split(
             zip(roi_boxes, buffered_roi_boxes)
         ):
             category = aoi_categories[aoi_idx]
-            category_idx = category if val_aois is None else category
+            # Map category to the correct index in category_indexes
+            # If we only have val_aois, validation (category 0) maps to index 0
+            # If we only have test_aois, test (category 1) maps to index 0
+            # If we have both, validation (category 0) maps to index 0, test (category 1) maps to index 1
+            if val_aois is not None and test_aois is not None:
+                category_idx = category  # Both validation (0) and test (1) are present
+            elif val_aois is not None:
+                category_idx = 0  # Only validation, so it's at index 0
+            else:  # test_aois is not None
+                category_idx = 0  # Only test, so it's at index 0
 
             # Check intersection with original ROI for AOI datasets
             if box.intersects(roi):
@@ -581,13 +601,22 @@ def aoi_split(
             category_indexes[cat_idx].insert(j, tuple(new_box), hit.object)
 
     if as_lists:
-        train_list = [
-            hit for hit in train_idx.intersection(train_idx.bounds, objects=True)
-        ]
-        cat_lists = [
-            [hit for hit in idx.intersection(idx.bounds, objects=True)]
-            for idx in category_indexes
-        ]
+        # Check if train_idx has any items before accessing bounds
+        if len(train_idx) > 0:
+            train_list = [
+                hit for hit in train_idx.intersection(train_idx.bounds, objects=True)
+            ]
+        else:
+            train_list = []
+
+        cat_lists = []
+        for idx in category_indexes:
+            if len(idx) > 0:
+                cat_lists.append(
+                    [hit for hit in idx.intersection(idx.bounds, objects=True)]
+                )
+            else:
+                cat_lists.append([])
         return [train_list] + cat_lists
 
     # Create datasets from indexes
@@ -597,9 +626,13 @@ def aoi_split(
     train_ds = deepcopy(dataset)
     train_ds.index = train_idx
     if hasattr(train_ds, "paths"):
-        train_ds.paths = [
-            i.object for i in train_idx.intersection(train_idx.bounds, objects=True)
-        ]
+        # Check if train_idx has any items before accessing bounds
+        if len(train_idx) > 0:
+            train_ds.paths = [
+                i.object for i in train_idx.intersection(train_idx.bounds, objects=True)
+            ]
+        else:
+            train_ds.paths = []
     new_datasets.append(train_ds)
 
     # Create category datasets (validation and/or test)
@@ -607,9 +640,13 @@ def aoi_split(
         ds = deepcopy(dataset)
         ds.index = index
         if hasattr(ds, "paths"):
-            ds.paths = [
-                i.object for i in index.intersection(index.bounds, objects=True)
-            ]
+            # Check if index has any items before accessing bounds
+            if len(index) > 0:
+                ds.paths = [
+                    i.object for i in index.intersection(index.bounds, objects=True)
+                ]
+            else:
+                ds.paths = []
         new_datasets.append(ds)
 
     return new_datasets
