@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import folium
+import geopandas as gpd
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
@@ -42,8 +43,6 @@ def plot_raster_histogram(raster_file_path: str | Path, band: int = 1, bins: int
         plt.show()
 
 
-
-
 def plot_dataset_index(dataset, map=None, color="olive", name=None):
     """
     Plot the boundaries of a geo dataset on a folium map.
@@ -57,7 +56,9 @@ def plot_dataset_index(dataset, map=None, color="olive", name=None):
     Returns:
         folium.Map: The map with dataset boundaries visualized
     """
-    objs = dataset.index.intersection(dataset.index.bounds, objects=True)
+    # Get all geometries from the geopandas index
+    # The new index is a GeoDataFrame, not an R-tree
+    index_gdf = dataset.index
 
     if map is None:
         map = folium.Map()
@@ -98,35 +99,50 @@ def plot_dataset_index(dataset, map=None, color="olive", name=None):
     # Track bounds of the current dataset being added
     current_bounds = None
     try:
-        # Use list() to force evaluation of the generator if needed, or handle empty case
-        objs_list = list(objs)
-        if not objs_list:
+        # Get all geometries from the geopandas index
+        # The new index is a GeoDataFrame, not an R-tree
+        index_gdf = dataset.index
+
+        if index_gdf.empty:
             print(
                 f"Warning: No objects found in dataset '{name}'. Skipping bounds fitting and GeoJson addition."
             )
+            geoms_list = []
         else:
-            current_bounds = utils.torchgeo_bb_to_shapely(
-                dataset.index.bounds, bbox_crs=dataset.crs
-            ).bounds
+            geoms_list = index_gdf.geometry.tolist()
+            # Get bounds from the GeoDataFrame
+            bounds = index_gdf.total_bounds  # returns [minx, miny, maxx, maxy]
+            current_bounds = tuple(bounds)
     except Exception as e:  # Handle cases where dataset might be empty or index invalid
         print(
             f"Warning: Could not get bounds for dataset '{name}'. Error: {e}. Skipping bounds fitting for this dataset."
         )
-        objs_list = []  # Ensure objs_list is empty if bounds failed
+        geoms_list = []  # Ensure geoms_list is empty if bounds failed
 
-    if current_bounds:  # Only add GeoJson if bounds were determined and objects exist
-        for o in objs_list:  # Iterate over the list
-            try:  # Add try-except for individual object processing
-                shapely_geom = utils.torchgeo_bb_to_shapely(
-                    o.bounds, bbox_crs=dataset.crs
-                )
+    if (
+        current_bounds and geoms_list
+    ):  # Only add GeoJson if bounds were determined and objects exist
+        for geom in geoms_list:  # Iterate over the geometries
+            try:  # Add try-except for individual geometry processing
+                # Convert to lat/lon if needed
+                if dataset.crs != 4326:  # Assuming CRS 4326 is WGS84
+                    # Transform geometry to WGS84 for folium
+                    gdf_temp = gpd.GeoDataFrame([1], geometry=[geom], crs=dataset.crs)
+                    gdf_temp = gdf_temp.to_crs(4326)
+                    geom_transformed = gdf_temp.geometry.iloc[0]
+                else:
+                    geom_transformed = geom
+
+                def create_style_function(style):
+                    return lambda x: style
+
                 folium.GeoJson(
-                    shapely_geom,
-                    style_function=lambda x, style=style_dict: style,
+                    geom_transformed,
+                    style_function=create_style_function(style_dict),
                 ).add_to(feature_group)
             except Exception as e:
                 print(
-                    f"Warning: Could not process object {o.id} in dataset '{name}'. Error: {e}"
+                    f"Warning: Could not process geometry in dataset '{name}'. Error: {e}"
                 )
 
     # Add the feature group to the map (even if empty, so it appears in LayerControl)
@@ -247,9 +263,10 @@ def plot_samplers_on_map(
         style_dict = dict(fill=False, weight=5, opacity=0.7, color=color)
 
         # Add dataset boundaries without progress bar
-        for o in dataset.index.intersection(dataset.index.bounds, objects=True):
+        for _, row in dataset.index.iterrows():
+            geom_bounds = row.geometry.bounds
             folium.GeoJson(
-                utils.torchgeo_bb_to_shapely(o.bounds, bbox_crs=dataset.crs),
+                utils.torchgeo_bb_to_shapely(geom_bounds, bbox_crs=dataset.crs),
                 style_function=lambda x, style=style_dict: style,
             ).add_to(boundary_group)
 
@@ -662,7 +679,9 @@ def label_map(label_file_paths: str | list, map: folium.Map = None):
         with rst.open(label_file_path) as src:
             # Read the data and get bounds in a single operation with VRT
             with WarpedVRT(src, crs="EPSG:4326") as vrt:
-                bounds = utils.convert_bounds(vrt.bounds)  # Convert directly to save a step
+                bounds = utils.convert_bounds(
+                    vrt.bounds
+                )  # Convert directly to save a step
                 array = vrt.read(1)
 
         # Store bounds for map fitting

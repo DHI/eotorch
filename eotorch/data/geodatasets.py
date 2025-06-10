@@ -9,24 +9,25 @@ from collections import defaultdict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Sequence, cast
 
+import geopandas as gpd
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import rasterio as rst
 import torch
 from matplotlib import cm
+from pyproj import CRS
 from rasterio.plot import show
-from rtree.index import Index, Property
+from shapely.geometry import box as shapely_box
 from torchgeo.datasets import IntersectionDataset, RasterDataset
 from torchgeo.datasets.utils import BoundingBox
 
 from eotorch.bandindex import BAND_INDEX
 from eotorch.inference.inference_utils import prediction_to_numpy
-from eotorch.plot import (label_map, plot_dataset_index, plot_numpy_array,
-                          plot_samples)
+from eotorch.plot import label_map, plot_dataset_index, plot_numpy_array, plot_samples
 from eotorch.utils import _format_filepaths, tranform_index
 
 if TYPE_CHECKING:
-    from rasterio.crs import CRS
     from torch import Tensor
 
 
@@ -89,8 +90,16 @@ class CustomCacheRasterDataset(RasterDataset, SamplePlotMixin):
         Raises:
             IndexError: if query is not found in the index
         """
-        hits = self.index.intersection(tuple(query), objects=True)
-        filepaths = cast(list[str], [hit.object for hit in hits])
+        # Use GeoPandas spatial indexing instead of R-tree
+        if hasattr(self.index, "cx"):
+            # New GeoPandas approach
+            query_geom = shapely_box(query.minx, query.miny, query.maxx, query.maxy)
+            intersecting_items = self.index[self.index.geometry.intersects(query_geom)]
+            filepaths = cast(list[str], intersecting_items["filepath"].tolist())
+        else:
+            # Legacy R-tree approach for backwards compatibility
+            hits = self.index.intersection(tuple(query), objects=True)
+            filepaths = cast(list[str], [hit.object for hit in hits])
 
         if not filepaths:
             raise IndexError(
@@ -133,7 +142,9 @@ class CustomCacheRasterDataset(RasterDataset, SamplePlotMixin):
         return sample
 
     def _repr_html_(self):
-        print(f"Dataset containing {len(self)} items, crs: {self.crs}, res: {self.res}")
+        print(
+            f"Dataset containing {len(self)} items, crs: {self.crs.name}, res: {self.res}"
+        )
         return plot_dataset_index(self)._repr_html_()
 
     def __or__(self, other: CustomCacheRasterDataset) -> CustomCacheRasterDataset:
@@ -192,26 +203,12 @@ class CustomCacheRasterDataset(RasterDataset, SamplePlotMixin):
             other_transformed.res = self.res
 
         # --- Construct the items for the new_dataset.index ---
-        index_items_for_new_dataset = []
-        current_id = 0
+        # Combine indexes from both datasets
+        combined_index = pd.concat(
+            [self.index, other_transformed.index], ignore_index=True
+        )
 
-        # Add items from self.index (bounds are already in new_crs)
-        for item_s in self.index.intersection(self.index.bounds, objects=True):
-            index_items_for_new_dataset.append(
-                (current_id, item_s.bounds, item_s.object)
-            )
-            current_id += 1
-
-        # Add items from other_transformed.index (bounds are now in new_crs)
-        for item_o in other_transformed.index.intersection(
-            other_transformed.index.bounds, objects=True
-        ):
-            index_items_for_new_dataset.append(
-                (current_id, item_o.bounds, item_o.object)
-            )
-            current_id += 1
-
-        if not index_items_for_new_dataset:
+        if combined_index.empty:
             raise ValueError(
                 "Union results in an empty dataset based on merged index items."
             )
@@ -254,9 +251,7 @@ class CustomCacheRasterDataset(RasterDataset, SamplePlotMixin):
         )
 
         # Replace the automatically generated index with our carefully constructed one.
-        new_dataset.index = Index(interleaved=False, properties=Property(dimension=3))
-        for id_val, bounds_val, object_val in index_items_for_new_dataset:
-            new_dataset.index.insert(id_val, bounds_val, object_val)
+        new_dataset.index = combined_index
 
         return new_dataset
 
@@ -363,16 +358,22 @@ class PlottabeLabelDataset(CustomCacheRasterDataset):
     def get_pixel_counts(self):
         """
         Get the pixel counts for each class in the dataset.
-        This reads all the files in the dataset. To get the counts for only 
+        This reads all the files in the dataset. To get the counts for only
         the areas with an intersection with the images, use LabelledRasterDataset.get_label_pixel_counts()
 
         Returns:
             A dictionary mapping class indices or class names to pixel counts.
         """
         pixel_counts = defaultdict(int)
-        for item in self.index.intersection(self.index.bounds, objects=True):
-            bounds = item.bounds
-            counts = self._get_pixel_counts(BoundingBox(*bounds))
+
+        # Use GeoPandas iteration instead of R-tree intersection
+        for _, row in self.index.iterrows():
+            # Create bounding box from geometry bounds
+            bounds = row.geometry.bounds  # (minx, miny, maxx, maxy)
+            bbox = BoundingBox(
+                bounds[0], bounds[2], bounds[1], bounds[3], 0, 1
+            )  # Add time dimension
+            counts = self._get_pixel_counts(bbox)
             for key, cnt in counts.items():
                 pixel_counts[key] += cnt
         return dict(pixel_counts)
@@ -383,14 +384,14 @@ class PlottabeLabelDataset(CustomCacheRasterDataset):
         out_dict = {}
         sample = self.__getitem__(bbox)
         mask = sample["mask"]
-        if hasattr(mask, 'numpy'):
+        if hasattr(mask, "numpy"):
             mask = mask.numpy()
         if self.reduce_zero_label:
             mask = mask + 1
         if self.nodata_value is not None:
             mask = mask[mask != self.nodata_value]
         unique, counts = np.unique(mask, return_counts=True)
-        counts =  dict(zip(unique, counts))
+        counts = dict(zip(unique, counts))
 
         for cls, cnt in counts.items():
             if self.class_mapping is not None:
@@ -400,6 +401,7 @@ class PlottabeLabelDataset(CustomCacheRasterDataset):
             out_dict[key] = int(cnt)
 
         return out_dict
+
 
 class LabelledRasterDataset(
     IntersectionDataset,
@@ -436,7 +438,9 @@ class LabelledRasterDataset(
         return fig
 
     def _repr_html_(self):
-        print(f"Dataset containing {len(self)} items, crs: {self.crs}, res: {self.res}")
+        print(
+            f"Dataset containing {len(self)} items, crs: {self.crs.name}, res: {self.res}"
+        )
         m = plot_dataset_index(self.datasets[0], name="Images", color="blue")
         m = plot_dataset_index(self.datasets[1], m, name="Labels", color="green")
         return plot_dataset_index(
@@ -459,7 +463,7 @@ class LabelledRasterDataset(
             raise NotImplementedError(
                 "Label dataset must be of type PlottabeLabelDataset"
             )
-        
+
     def get_label_pixel_counts(self):
         """
         Get the pixel counts for each class in the label dataset.
@@ -470,9 +474,13 @@ class LabelledRasterDataset(
         if isinstance(self.datasets[-1], PlottabeLabelDataset):
             label_ds: PlottabeLabelDataset = self.datasets[-1]
             pixel_counts = defaultdict(int)
-            for item in self.index.intersection(self.index.bounds, objects=True):
-                bounds = item.bounds
-                counts = label_ds._get_pixel_counts(BoundingBox(*bounds))
+            # Use GeoPandas iteration instead of R-tree intersection
+            for _, row in self.index.iterrows():
+                bounds = row.geometry.bounds  # (minx, miny, maxx, maxy)
+                bbox = BoundingBox(
+                    bounds[0], bounds[2], bounds[1], bounds[3], 0, 1
+                )  # Add time dimension
+                counts = label_ds._get_pixel_counts(bbox)
                 for key, cnt in counts.items():
                     pixel_counts[key] += cnt
             return dict(pixel_counts)
@@ -513,14 +521,15 @@ class LabelledRasterDataset(
         Returns:
             The :term:`coordinate reference system (CRS)`.
         """
-        return self._crs
+        return self.index.crs
+        # return self._crs
 
     @crs.setter
     def crs(self, new_crs: CRS) -> None:
         # super().__setattr__("crs", new_crs)
         old_crs = self.crs
         index_needs_update = new_crs != old_crs
-        self._crs = new_crs
+        # self._crs = new_crs
         self.datasets[0].crs = new_crs
         self.datasets[1].crs = new_crs
 

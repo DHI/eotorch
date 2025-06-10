@@ -6,6 +6,7 @@ from typing import Sequence, Tuple, Union
 
 import geopandas as gpd
 import numpy as np
+import pandas as pd
 import pyproj
 import rasterio as rst
 import shapely
@@ -13,7 +14,6 @@ import shapely.geometry
 import shapely.ops
 from pyproj import Geod
 from rasterio.windows import Window
-from rtree.index import Index, Property
 from shapely import MultiPolygon, Polygon
 from shapely.ops import transform
 from torchgeo.datasets.utils import BoundingBox
@@ -205,9 +205,11 @@ class Region:
                 json_data = json.load(f)
 
         return cls.from_dict(json_data)
-    
+
     @classmethod
-    def from_geojson(cls, geojson_path: str | Path, crs: str = None, name: str = None, **kwargs):
+    def from_geojson(
+        cls, geojson_path: str | Path, crs: str = None, name: str = None, **kwargs
+    ):
         """
         Create a region from a GeoJSON file.
 
@@ -225,7 +227,9 @@ class Region:
         if crs is None:
             crs = geojson_data.get("crs", {}).get("properties", {}).get("name")
             if crs is None:
-                raise ValueError("CRS not provided in GeoJSON file, please specify a CRS.")
+                raise ValueError(
+                    "CRS not provided in GeoJSON file, please specify a CRS."
+                )
 
         polygon = shapely.geometry.shape(geojson_data["features"][0]["geometry"])
         return cls.from_polygon(polygon=polygon, crs=crs, name=name, **kwargs)
@@ -563,21 +567,24 @@ class Region:
 
         return map
 
+
 def tranform_index(
-    index: Index, current_crs: str | pyproj.CRS, new_crs: str | pyproj.CRS
-) -> Index:
+    index: gpd.GeoDataFrame, current_crs: str | pyproj.CRS, new_crs: str | pyproj.CRS
+) -> gpd.GeoDataFrame:
     """
-    Transform an R-tree index to a new coordinate reference system (CRS).
+    Transform a Geopandas GeoDataFrame index to a new coordinate reference system (CRS).
 
     Parameters:
-        index (Index):
-            The R-tree index to transform.
+        index (gpd.GeoDataFrame):
+            The Geopandas GeoDataFrame index to transform.
+        current_crs (str or pyproj.CRS):
+            The current coordinate reference system.
         new_crs (str or pyproj.CRS):
             The new coordinate reference system.
 
     Returns:
-        Index:
-            A new R-tree index with transformed coordinates.
+        gpd.GeoDataFrame:
+            A new Geopandas GeoDataFrame with transformed coordinates.
     """
     if isinstance(current_crs, str):
         current_crs = pyproj.CRS(current_crs)
@@ -585,18 +592,9 @@ def tranform_index(
     if isinstance(new_crs, str):
         new_crs = pyproj.CRS(new_crs)
 
-    new_index = Index(interleaved=False, properties=Property(dimension=3))
-
-    project = pyproj.Transformer.from_crs(
-        pyproj.CRS(str(current_crs)), pyproj.CRS(str(new_crs)), always_xy=True
-    ).transform
-    for hit in index.intersection(index.bounds, objects=True):
-        old_minx, old_maxx, old_miny, old_maxy, mint, maxt = hit.bounds
-        old_box = shapely.geometry.box(old_minx, old_miny, old_maxx, old_maxy)
-        new_box = shapely.ops.transform(project, old_box)
-        new_minx, new_miny, new_maxx, new_maxy = new_box.bounds
-        new_bounds = (new_minx, new_maxx, new_miny, new_maxy, mint, maxt)
-        new_index.insert(hit.id, new_bounds, hit.object)
+    # Create a copy of the index and transform to new CRS
+    new_index = index.copy()
+    new_index = new_index.to_crs(new_crs)
 
     return new_index
 
@@ -800,7 +798,8 @@ def torchgeo_bb_to_shapely(
     transformed_polygon = shapely.ops.transform(transformer.transform, polygon)
 
     return transformed_polygon
-    
+
+
 def convert_bounds(bbox, invert_y=False):
     """
     Helper method for changing bounding box representation to leaflet notation

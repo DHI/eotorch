@@ -4,13 +4,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union, cast
 
 import geopandas as gpd
+import pandas as pd
 import torch
 from pyproj import CRS, Transformer
-from rtree.index import Index, Item, Property
+from shapely.geometry import box as shapely_box
 from torch import Generator, default_generator, randperm
 from torchgeo.datasets import GeoDataset, IntersectionDataset, RasterDataset
 from torchgeo.datasets.splits import _fractions_to_lengths
-from torchgeo.datasets.utils import BoundingBox
 
 from eotorch.data.geodatasets import LabelledRasterDataset
 
@@ -27,14 +27,14 @@ def _format_paths(files: Union[str, Path, List[str], List[Path], None]) -> List[
 
 
 def _get_split_items(
-    dataset_items: List[Item],
+    dataset_items: List[Tuple[Any, Any]],  # (geometry, filepath) tuples
     dataset_files: List[Path],
     val_files: List[Path],
     test_files: List[Path],
-) -> Tuple[List[Item], List[Item], List[Item]]:
+) -> Tuple[List[Tuple[Any, Any]], List[Tuple[Any, Any]], List[Tuple[Any, Any]]]:
     """Validates split files and returns items partitioned into train, val, test."""
 
-    def _validate_and_collect_items(files_param: List[Path]) -> List[Item]:
+    def _validate_and_collect_items(files_param: List[Path]) -> List[Tuple[Any, Any]]:
         """Checks if files exist in the dataset and collects corresponding items."""
         out_list = []
         file_found = False
@@ -62,17 +62,36 @@ def _get_split_items(
 
 
 def _build_split_indexes(
-    train_items: List[Item], val_items: List[Item], test_items: List[Item]
-) -> List[Index]:
-    """Builds R-tree indexes for train, validation, and test splits."""
+    train_items: List[Tuple[Any, Any]],
+    val_items: List[Tuple[Any, Any]],
+    test_items: List[Tuple[Any, Any]],
+    original_index: gpd.GeoDataFrame,
+) -> List[gpd.GeoDataFrame]:
+    """Builds GeoPandas GeoDataFrame indexes for train, validation, and test splits."""
     new_indexes = []
 
-    def _create_index(items: List[Item]) -> Index:
-        """Helper to create and populate an R-tree index."""
-        idx = Index(interleaved=False, properties=Property(dimension=3))
-        for i, item in enumerate(items):
-            idx.insert(i, item.bounds, item.object)
-        return idx
+    def _create_index(items: List[Tuple[Any, Any]]) -> gpd.GeoDataFrame:
+        """Helper to create and populate a GeoPandas index."""
+        if not items:
+            # Return empty GeoDataFrame with correct structure and temporal index
+            empty_gdf = gpd.GeoDataFrame(
+                {"filepath": []}, geometry=[], crs=original_index.crs
+            )
+            # Create empty IntervalIndex to match original structure
+            empty_temporal_index = pd.IntervalIndex.from_tuples(
+                [], closed="both", name="datetime"
+            )
+            empty_gdf.index = empty_temporal_index
+            return empty_gdf
+
+        # Extract filepaths from items to find corresponding rows in original index
+        item_filepaths = {filepath for _, filepath in items}
+
+        # Find matching rows in original index
+        mask = original_index["filepath"].isin(item_filepaths)
+        filtered_index = original_index[mask].copy()
+
+        return filtered_index
 
     if train_items:
         new_indexes.append(_create_index(train_items))
@@ -85,7 +104,7 @@ def _build_split_indexes(
 
 
 def _build_split_datasets(
-    original_dataset: RasterDataset, new_indexes: List[Index]
+    original_dataset: RasterDataset, new_indexes: List[gpd.GeoDataFrame]
 ) -> List[RasterDataset]:
     """Builds the final list of split datasets using the provided indexes."""
     new_datasets = []
@@ -98,29 +117,46 @@ def _build_split_datasets(
             # Create new image dataset for the split
             img_ds_new = deepcopy(img_ds_orig)
             img_ds_new.index = index
-            img_ds_new.paths = [
-                i.object for i in index.intersection(index.bounds, objects=True)
-            ]
+            if len(index) > 0:
+                img_ds_new.paths = index["filepath"].tolist()
+            else:
+                img_ds_new.paths = []
 
             # Create new label dataset index based on intersection with new image dataset bounds
             img_bounds = img_ds_new.bounds
-            label_hits = label_ds_orig.index.intersection(
-                tuple(img_bounds), objects=True
-            )
-            label_idx_new = Index(interleaved=False, properties=Property(dimension=3))
-            for hit in label_hits:
-                hit_bbox = BoundingBox(*hit.bounds)
-                intersection_bbox = hit_bbox & img_bounds
-                if intersection_bbox.area > 0:
-                    label_idx_new.insert(len(label_idx_new), hit.bounds, hit.object)
 
-            # Create new label dataset for the split
-            label_ds_new = deepcopy(label_ds_orig)
-            label_ds_new.index = label_idx_new
-            label_ds_new.paths = [
-                i.object
-                for i in label_idx_new.intersection(label_idx_new.bounds, objects=True)
-            ]
+            # For GeoPandas, we need to intersect with the image bounds
+            if not label_ds_orig.index.empty:
+                # Create bounding box geometry for intersection
+                img_bbox_geom = shapely_box(
+                    img_bounds.minx, img_bounds.miny, img_bounds.maxx, img_bounds.maxy
+                )
+
+                # Find labels that intersect with the image bounds
+                label_intersections = label_ds_orig.index[
+                    label_ds_orig.index.geometry.intersects(img_bbox_geom)
+                ]
+
+                # Create new label dataset for the split
+                label_ds_new = deepcopy(label_ds_orig)
+                label_ds_new.index = label_intersections.copy()
+                if len(label_intersections) > 0:
+                    label_ds_new.paths = label_intersections["filepath"].tolist()
+                else:
+                    label_ds_new.paths = []
+            else:
+                # Empty label dataset
+                label_ds_new = deepcopy(label_ds_orig)
+                empty_gdf = gpd.GeoDataFrame(
+                    {"filepath": []}, geometry=[], crs=label_ds_orig.index.crs
+                )
+                # Create empty IntervalIndex to match original structure
+                empty_temporal_index = pd.IntervalIndex.from_tuples(
+                    [], closed="both", name="datetime"
+                )
+                empty_gdf.index = empty_temporal_index
+                label_ds_new.index = empty_gdf
+                label_ds_new.paths = []
 
             # Create the final IntersectionDataset for the split
             ds = original_dataset.__class__(
@@ -133,9 +169,10 @@ def _build_split_datasets(
             # Handle single RasterDataset
             ds = deepcopy(original_dataset)
             ds.index = index
-            ds.paths = [
-                i.object for i in index.intersection(index.bounds, objects=True)
-            ]
+            if len(index) > 0:
+                ds.paths = index["filepath"].tolist()
+            else:
+                ds.paths = []
 
         new_datasets.append(ds)
     return new_datasets
@@ -200,18 +237,20 @@ def file_wise_split(
         )
 
     # Get all items and corresponding file paths from the image dataset index
-    dataset_items = list(
-        img_dataset.index.intersection(img_dataset.index.bounds, objects=True)
-    )
-    dataset_files = [Path(item.object).resolve() for item in dataset_items]
+    dataset_items = [
+        (row.geometry, row.filepath) for _, row in img_dataset.index.iterrows()
+    ]
+    dataset_files = [Path(filepath).resolve() for _, filepath in dataset_items]
 
     # Partition items into train, validation, and test sets
     train_items, val_items, test_items = _get_split_items(
         dataset_items, dataset_files, val_files, test_files
     )
 
-    # Build R-tree indexes for each split
-    new_indexes = _build_split_indexes(train_items, val_items, test_items)
+    # Build GeoPandas indexes for each split
+    new_indexes = _build_split_indexes(
+        train_items, val_items, test_items, img_dataset.index
+    )
 
     # Build the final datasets using the original dataset structure and new indexes
     new_datasets = _build_split_datasets(dataset, new_indexes)
@@ -228,7 +267,6 @@ def random_bbox_assignment(
     Reimplementation of the random_bbox_assignment function from torchgeo, but with assurance that
     if a split percentage is provided, at least one bbox is assigned to each split.
 
-
     Split a GeoDataset randomly assigning its index's BoundingBoxes.
 
     This function will go through each BoundingBox in the GeoDataset's index and
@@ -241,7 +279,6 @@ def random_bbox_assignment(
 
     Returns:
         A list of the subset datasets.
-
     """
 
     if not (isclose(sum(lengths), 1) or isclose(sum(lengths), len(dataset))):
@@ -266,23 +303,51 @@ def random_bbox_assignment(
                     "Not enough bboxes to assign to all splits. "
                     "Please provide a larger dataset or reduce the number of splits."
                 )
-    hits = list(dataset.index.intersection(dataset.index.bounds, objects=True))
 
-    hits = [hits[i] for i in randperm(sum(lengths), generator=generator)]
+    # Get all items from the dataset index
+    items_data = [(row.geometry, row.filepath) for _, row in dataset.index.iterrows()]
 
-    new_indexes = [
-        Index(interleaved=False, properties=Property(dimension=3)) for _ in lengths
-    ]
+    # Randomly permute the items
+    indices = randperm(len(items_data), generator=generator)
+    shuffled_items = [items_data[i] for i in indices]
 
-    for i, length in enumerate(lengths):
-        for j in range(length):
-            hit = hits.pop()
-            new_indexes[i].insert(j, hit.bounds, hit.object)
+    # Create new indexes by filtering the original index
+    new_indexes = []
+    start_idx = 0
 
+    for length in lengths:
+        end_idx = start_idx + length
+        split_items = shuffled_items[start_idx:end_idx]
+
+        if split_items:
+            # Extract filepaths to filter original index
+            split_filepaths = {filepath for _, filepath in split_items}
+            mask = dataset.index["filepath"].isin(split_filepaths)
+            filtered_index = dataset.index[mask].copy()
+        else:
+            # Create empty GeoDataFrame with correct structure
+            empty_gdf = gpd.GeoDataFrame(
+                {"filepath": []}, geometry=[], crs=dataset.index.crs
+            )
+            # Create empty IntervalIndex to match original structure
+            empty_temporal_index = pd.IntervalIndex.from_tuples(
+                [], closed="both", name="datetime"
+            )
+            empty_gdf.index = empty_temporal_index
+            filtered_index = empty_gdf
+
+        new_indexes.append(filtered_index)
+        start_idx = end_idx
+
+    # Create new datasets
     new_datasets = []
     for index in new_indexes:
         ds = deepcopy(dataset)
         ds.index = index
+        if len(index) > 0:
+            ds.paths = index["filepath"].tolist()
+        else:
+            ds.paths = []
         new_datasets.append(ds)
 
     return new_datasets
@@ -291,27 +356,25 @@ def random_bbox_assignment(
 def aoi_split(
     dataset: GeoDataset,
     val_aois: Union[
-        Sequence[BoundingBox],
         Sequence[Tuple[float, float, float, float]],
-        Sequence[Tuple[float, float, float, float, float, float]],
         str,
         Path,
         None,
     ] = None,
     test_aois: Union[
-        Sequence[BoundingBox],
         Sequence[Tuple[float, float, float, float]],
-        Sequence[Tuple[float, float, float, float, float, float]],
         str,
         Path,
         None,
     ] = None,
-    time_bounds: Optional[Tuple[float, float]] = None,
     as_lists: bool = False,
     crs: Optional[Union[str, Dict[str, Any]]] = "EPSG:4326",
     buffer_size: float = 0.0,
 ) -> List[GeoDataset]:
     """Split a GeoDataset into train, validation, and test datasets based on areas of interest (AOIs).
+
+    This function performs a purely spatial split and preserves the temporal information
+    from the original dataset exactly as it is.
 
     This function divides a dataset into multiple datasets:
     - First dataset: Contains all data outside the provided AOIs (training dataset)
@@ -319,13 +382,8 @@ def aoi_split(
     - Third dataset (optional): Contains data that intersects with test AOIs
 
     The AOIs can be provided in different formats:
-    - List of TorchGeo BoundingBox objects
-    - List of (minx, maxx, miny, maxy) tuples (spatial only), or for lat/lon: (minlon, maxlon, minlat, maxlat)
-    - List of (minx, maxx, miny, maxy, mint, maxt) tuples (spatiotemporal)
+    - List of (minx, maxx, miny, maxy) tuples (spatial only)
     - Path to a GeoJSON file containing Polygon features
-
-    If AOIs are spatial only (4-tuples) and time_bounds is provided, the time dimension
-    will be added to create complete 6D bounding boxes.
 
     The function supports transforming between coordinate reference systems. If your AOIs are
     specified in lat/lon (EPSG:4326) but your dataset is in a different CRS, you can specify
@@ -337,11 +395,10 @@ def aoi_split(
 
     Args:
         dataset: Dataset to be split
-        val_aois: Sequence of validation areas of interest in one of the supported formats,
+        val_aois: Sequence of validation areas of interest as (minx, maxx, miny, maxy) tuples,
                   or a path to a GeoJSON file containing validation regions
-        test_aois: Sequence of test areas of interest in one of the supported formats,
+        test_aois: Sequence of test areas of interest as (minx, maxx, miny, maxy) tuples,
                    or a path to a GeoJSON file containing test regions
-        time_bounds: Optional time bounds to use if aois are spatial only
         as_lists: If True, return a list of train items and lists of val/test items
                  instead of creating new datasets
         crs: The CRS of the input AOIs (e.g., "EPSG:4326" for lat/lon). If None,
@@ -369,7 +426,6 @@ def aoi_split(
             dataset.datasets[0],
             val_aois=val_aois,
             test_aois=test_aois,
-            time_bounds=time_bounds,
             as_lists=as_lists,
             crs=crs,
             buffer_size=buffer_size,
@@ -378,7 +434,6 @@ def aoi_split(
             dataset.datasets[1],
             val_aois=val_aois,
             test_aois=test_aois,
-            time_bounds=time_bounds,
             as_lists=as_lists,
             crs=crs,
             buffer_size=buffer_size,
@@ -398,34 +453,35 @@ def aoi_split(
         return datasets_to_return
 
     # Process AOIs
-    roi_boxes = []  # Will hold all BoundingBox objects
-    buffered_roi_boxes = []  # Will hold buffered versions of all ROIs
+    roi_polygons = []  # Will hold all Polygon objects
+    buffered_roi_polygons = []  # Will hold buffered versions of all ROIs
     aoi_categories = []  # Will track whether each ROI is for validation (0) or test (1)
 
     # Process validation AOIs if provided
     if val_aois is not None:
-        val_roi_boxes, val_buffered_boxes = _process_aois(
-            val_aois, dataset, time_bounds, crs, buffer_size
+        val_roi_polygons, val_buffered_polygons = _process_aois(
+            val_aois, dataset, crs, buffer_size
         )
-        roi_boxes.extend(val_roi_boxes)
-        buffered_roi_boxes.extend(val_buffered_boxes)
-        aoi_categories.extend([0] * len(val_roi_boxes))  # 0 for validation
+        roi_polygons.extend(val_roi_polygons)
+        buffered_roi_polygons.extend(val_buffered_polygons)
+        aoi_categories.extend([0] * len(val_roi_polygons))  # 0 for validation
 
     # Process test AOIs if provided
     if test_aois is not None:
-        test_roi_boxes, test_buffered_boxes = _process_aois(
-            test_aois, dataset, time_bounds, crs, buffer_size
+        test_roi_polygons, test_buffered_polygons = _process_aois(
+            test_aois, dataset, crs, buffer_size
         )
-        roi_boxes.extend(test_roi_boxes)
-        buffered_roi_boxes.extend(test_buffered_boxes)
-        aoi_categories.extend([1] * len(test_roi_boxes))  # 1 for test
+        roi_polygons.extend(test_roi_polygons)
+        buffered_roi_polygons.extend(test_buffered_polygons)
+        aoi_categories.extend([1] * len(test_roi_polygons))  # 1 for test
 
     # If no AOIs were provided, return the original dataset
-    if not roi_boxes:
+    if not roi_polygons:
         if as_lists:
-            all_hits = list(
-                dataset.index.intersection(dataset.index.bounds, objects=True)
-            )
+            # Get all items from the dataset index
+            all_hits = [
+                (row.geometry, row.filepath) for _, row in dataset.index.iterrows()
+            ]
             return [all_hits]
         return [dataset]
 
@@ -433,183 +489,105 @@ def aoi_split(
     if val_aois is not None and test_aois is not None:
         val_count = len([c for c in aoi_categories if c == 0])
         for i in range(val_count):
-            for j in range(val_count, len(roi_boxes)):
+            for j in range(val_count, len(roi_polygons)):
                 if (
-                    roi_boxes[i].intersects(roi_boxes[j])
-                    and (roi_boxes[i] & roi_boxes[j]).area > 0
+                    roi_polygons[i].intersects(roi_polygons[j])
+                    and not roi_polygons[i].intersection(roi_polygons[j]).is_empty
                 ):
                     raise ValueError("Validation and test AOIs cannot overlap.")
 
-    # Create indexes for train and AOI categories
-    train_idx = Index(interleaved=False, properties=Property(dimension=3))
+    # Create indexes for train and AOI categories using GeoPandas
+    train_items = []
+    category_items = [[] for _ in range(len(set(aoi_categories)))]
 
-    # Create category indexes - either just validation, just test, or both
-    category_indexes = []
-    if val_aois is not None:
-        val_idx = Index(interleaved=False, properties=Property(dimension=3))
-        category_indexes.append(val_idx)
-    if test_aois is not None:
-        test_idx = Index(interleaved=False, properties=Property(dimension=3))
-        category_indexes.append(test_idx)
-
-    # Get all hits from dataset
-    all_hits = list(dataset.index.intersection(dataset.index.bounds, objects=True))
-
-    # For each AOI category, prepare to collect items that intersect
-    category_items = [[] for _ in category_indexes]
+    # Get all items from dataset
+    all_items = [(row.geometry, row.filepath) for _, row in dataset.index.iterrows()]
 
     # Process each item in the dataset
-    for item_idx, hit in enumerate(all_hits):
-        box = BoundingBox(*hit.bounds)
-        roi_coverage = []  # List to store parts of box covered by ROIs
-
+    for geom, filepath in all_items:
         # Check if this item is in any AOI
         for aoi_idx, (roi, buffered_roi) in enumerate(
-            zip(roi_boxes, buffered_roi_boxes)
+            zip(roi_polygons, buffered_roi_polygons)
         ):
             category = aoi_categories[aoi_idx]
-            category_idx = category if val_aois is None else category
+            # Map category to the correct index in category_items
+            if val_aois is not None and test_aois is not None:
+                category_idx = category  # Both validation (0) and test (1) are present
+            elif val_aois is not None:
+                category_idx = 0  # Only validation, so it's at index 0
+            else:  # test_aois is not None
+                category_idx = 0  # Only test, so it's at index 0
 
             # Check intersection with original ROI for AOI datasets
-            if box.intersects(roi):
-                new_box = box & roi
-                if new_box.area > 0:
-                    # Get the appropriate category index
-                    category_items[category_idx].append((item_idx, hit, new_box))
+            if geom.intersects(roi):
+                category_items[category_idx].append((geom, filepath))
+                break  # Item assigned to an AOI, don't check others
 
-            # Check intersection with buffered ROI for training exclusion
-            if box.intersects(buffered_roi):
-                new_box = box & buffered_roi
-                if new_box.area > 0:
-                    # Use the buffered ROI for determining what's excluded from training
-                    roi_coverage.append(new_box)
-
-        # If box is not covered by any buffered ROI, add the whole item to training
-        if not roi_coverage:
-            train_idx.insert(len(train_idx), hit.bounds, hit.object)
+        # If item doesn't intersect any AOI, check if it should be added to training
+        # (i.e., it doesn't intersect any buffered ROI)
         else:
-            # Compute the remainder of the box after removing all buffered ROI intersections
-            # Start with the original box
-            remainder = [box]
-
-            # Subtract each ROI intersection from the remainder
-            for roi_box in roi_coverage:
-                new_remainder = []
-                for r in remainder:
-                    # If r and roi_box don't overlap, keep r as is
-                    if not r.intersects(roi_box) or (r & roi_box).area == 0:
-                        new_remainder.append(r)
-                    else:
-                        # Otherwise, compute the difference by breaking down the box
-                        # This creates up to 4 new boxes for each dimension
-
-                        # X-direction boxes (left and right of intersection)
-                        if r.minx < roi_box.minx:
-                            new_remainder.append(
-                                BoundingBox(
-                                    r.minx, roi_box.minx, r.miny, r.maxy, r.mint, r.maxt
-                                )
-                            )
-                        if r.maxx > roi_box.maxx:
-                            new_remainder.append(
-                                BoundingBox(
-                                    roi_box.maxx, r.maxx, r.miny, r.maxy, r.mint, r.maxt
-                                )
-                            )
-
-                        # Y-direction boxes (below and above intersection)
-                        # We need to avoid adding regions already covered by X-direction boxes
-                        if r.miny < roi_box.miny:
-                            new_remainder.append(
-                                BoundingBox(
-                                    max(r.minx, roi_box.minx),
-                                    min(r.maxx, roi_box.maxx),
-                                    r.miny,
-                                    roi_box.miny,
-                                    r.mint,
-                                    r.maxt,
-                                )
-                            )
-                        if r.maxy > roi_box.maxy:
-                            new_remainder.append(
-                                BoundingBox(
-                                    max(r.minx, roi_box.minx),
-                                    min(r.maxx, roi_box.maxx),
-                                    roi_box.maxy,
-                                    r.maxy,
-                                    r.mint,
-                                    r.maxt,
-                                )
-                            )
-
-                        # Time-direction boxes (before and after intersection)
-                        # Add only if we have time dimension and there's an actual difference
-                        if r.mint < roi_box.mint:
-                            new_remainder.append(
-                                BoundingBox(
-                                    max(r.minx, roi_box.minx),
-                                    min(r.maxx, roi_box.maxx),
-                                    max(r.miny, roi_box.miny),
-                                    min(r.maxy, roi_box.maxy),
-                                    r.mint,
-                                    roi_box.mint,
-                                )
-                            )
-                        if r.maxt > roi_box.maxt:
-                            new_remainder.append(
-                                BoundingBox(
-                                    max(r.minx, roi_box.minx),
-                                    min(r.maxx, roi_box.maxx),
-                                    max(r.miny, roi_box.miny),
-                                    min(r.maxy, roi_box.maxy),
-                                    roi_box.maxt,
-                                    r.maxt,
-                                )
-                            )
-
-                remainder = new_remainder
-
-            # Add all remaining parts to the training set
-            for i, r in enumerate(remainder):
-                # Only add boxes with area > 0
-                if r.area > 0:
-                    train_idx.insert(len(train_idx), tuple(r), hit.object)
-
-    # Populate the category indexes
-    for cat_idx, items in enumerate(category_items):
-        for j, (_, hit, new_box) in enumerate(items):
-            category_indexes[cat_idx].insert(j, tuple(new_box), hit.object)
+            in_buffered_roi = any(
+                geom.intersects(buffered_roi) for buffered_roi in buffered_roi_polygons
+            )
+            if not in_buffered_roi:
+                train_items.append((geom, filepath))
 
     if as_lists:
-        train_list = [
-            hit for hit in train_idx.intersection(train_idx.bounds, objects=True)
-        ]
-        cat_lists = [
-            [hit for hit in idx.intersection(idx.bounds, objects=True)]
-            for idx in category_indexes
-        ]
-        return [train_list] + cat_lists
+        result = [train_items]
+        for items in category_items:
+            result.append(items)
+        return result
 
-    # Create datasets from indexes
+    # Create datasets from the items
     new_datasets = []
 
-    # Create train dataset
+    # Create train dataset by filtering original index
+    if train_items:
+        train_filepaths = {filepath for _, filepath in train_items}
+        mask = dataset.index["filepath"].isin(train_filepaths)
+        train_gdf = dataset.index[mask].copy()
+    else:
+        # Create empty GeoDataFrame with correct structure
+        train_gdf = gpd.GeoDataFrame(
+            {"filepath": []}, geometry=[], crs=dataset.index.crs
+        )
+        # Create empty IntervalIndex to match original structure
+        empty_temporal_index = pd.IntervalIndex.from_tuples(
+            [], closed="both", name="datetime"
+        )
+        train_gdf.index = empty_temporal_index
+
     train_ds = deepcopy(dataset)
-    train_ds.index = train_idx
-    if hasattr(train_ds, "paths"):
-        train_ds.paths = [
-            i.object for i in train_idx.intersection(train_idx.bounds, objects=True)
-        ]
+    train_ds.index = train_gdf
+    if len(train_gdf) > 0:
+        train_ds.paths = train_gdf["filepath"].tolist()
+    else:
+        train_ds.paths = []
     new_datasets.append(train_ds)
 
-    # Create category datasets (validation and/or test)
-    for index in category_indexes:
+    # Create category datasets (validation and/or test) by filtering original index
+    for items in category_items:
+        if items:
+            cat_filepaths = {filepath for _, filepath in items}
+            mask = dataset.index["filepath"].isin(cat_filepaths)
+            cat_gdf = dataset.index[mask].copy()
+        else:
+            # Create empty GeoDataFrame with correct structure
+            cat_gdf = gpd.GeoDataFrame(
+                {"filepath": []}, geometry=[], crs=dataset.index.crs
+            )
+            # Create empty IntervalIndex to match original structure
+            empty_temporal_index = pd.IntervalIndex.from_tuples(
+                [], closed="both", name="datetime"
+            )
+            cat_gdf.index = empty_temporal_index
+
         ds = deepcopy(dataset)
-        ds.index = index
-        if hasattr(ds, "paths"):
-            ds.paths = [
-                i.object for i in index.intersection(index.bounds, objects=True)
-            ]
+        ds.index = cat_gdf
+        if len(cat_gdf) > 0:
+            ds.paths = cat_gdf["filepath"].tolist()
+        else:
+            ds.paths = []
         new_datasets.append(ds)
 
     return new_datasets
@@ -617,31 +595,29 @@ def aoi_split(
 
 def _process_aois(
     aois: Union[
-        Sequence[BoundingBox],
         Sequence[Tuple[float, float, float, float]],
-        Sequence[Tuple[float, float, float, float, float, float]],
         str,
         Path,
     ],
     dataset: GeoDataset,
-    time_bounds: Optional[Tuple[float, float]] = None,
     crs: Optional[Union[str, Dict[str, Any]]] = "EPSG:4326",
     buffer_size: float = 0.0,
-) -> Tuple[List[BoundingBox], List[BoundingBox]]:
-    """Helper function to process AOIs into BoundingBox objects.
+) -> Tuple[List, List]:
+    """Helper function to process AOIs into Polygon objects.
 
     Args:
         aois: Areas of interest in one of the supported formats
         dataset: Dataset to be split
-        time_bounds: Optional time bounds to use if aois are spatial only
         crs: The CRS of the input AOIs
         buffer_size: Size of buffer to apply around AOIs
 
     Returns:
-        Tuple of (roi_boxes, buffered_roi_boxes)
+        Tuple of (roi_polygons, buffered_roi_polygons)
     """
-    roi_boxes = []
-    buffered_roi_boxes = []
+    from shapely.geometry import box
+
+    roi_polygons = []
+    buffered_roi_polygons = []
 
     # Handle GeoJSON file input (if aois is a string or Path)
     if isinstance(aois, (str, Path)):
@@ -682,50 +658,8 @@ def _process_aois(
             target_crs = CRS.from_user_input(dataset.crs)
             transformer = Transformer.from_crs(source_crs, target_crs, always_xy=True)
 
-    # Get dataset bounds for time dimension if needed
-    if time_bounds is None and any(
-        len(aoi) == 4 for aoi in aois if not isinstance(aoi, BoundingBox)
-    ):
-        try:
-            _, _, _, _, mint, maxt = dataset.bounds
-            time_bounds = (mint, maxt)
-        except (ValueError, AttributeError):
-            # If no time dimension in dataset bounds
-            time_bounds = (0, 1)  # Default time bounds
-
     for aoi in aois:
-        if isinstance(aoi, BoundingBox):
-            # Transform BoundingBox coordinates if needed
-            if need_transform:
-                minx, miny = transformer.transform(aoi.minx, aoi.miny)
-                maxx, maxy = transformer.transform(aoi.maxx, aoi.maxy)
-                transformed_box = BoundingBox(
-                    minx, maxx, miny, maxy, aoi.mint, aoi.maxt
-                )
-                roi_boxes.append(transformed_box)
-                # Create buffered box for training set determination
-                buffered_box = BoundingBox(
-                    minx - buffer_size,
-                    maxx + buffer_size,
-                    miny - buffer_size,
-                    maxy + buffer_size,
-                    aoi.mint,
-                    aoi.maxt,
-                )
-                buffered_roi_boxes.append(buffered_box)
-            else:
-                roi_boxes.append(aoi)
-                # Create buffered box for training set determination
-                buffered_box = BoundingBox(
-                    aoi.minx - buffer_size,
-                    aoi.maxx + buffer_size,
-                    aoi.miny - buffer_size,
-                    aoi.maxy + buffer_size,
-                    aoi.mint,
-                    aoi.maxt,
-                )
-                buffered_roi_boxes.append(buffered_box)
-        elif len(aoi) == 4:
+        if len(aoi) == 4:
             # Spatial only (minx, maxx, miny, maxy)
             minx, maxx, miny, maxy = aoi
 
@@ -734,53 +668,29 @@ def _process_aois(
                 minx, miny = transformer.transform(minx, miny)
                 maxx, maxy = transformer.transform(maxx, maxy)
 
-            if time_bounds:
-                mint, maxt = time_bounds
-                roi_boxes.append(BoundingBox(minx, maxx, miny, maxy, mint, maxt))
-                # Create buffered box for training set determination
-                buffered_roi_boxes.append(
-                    BoundingBox(
-                        minx - buffer_size,
-                        maxx + buffer_size,
-                        miny - buffer_size,
-                        maxy + buffer_size,
-                        mint,
-                        maxt,
-                    )
-                )
-            else:
-                raise ValueError("time_bounds must be provided for spatial-only AOIs")
-        elif len(aoi) == 6:
-            # Complete spatiotemporal (minx, maxx, miny, maxy, mint, maxt)
-            minx, maxx, miny, maxy, mint, maxt = aoi
+            # Create polygon from bounding box
+            polygon = box(minx, miny, maxx, maxy)
+            roi_polygons.append(polygon)
 
-            # Transform coordinates if needed
-            if need_transform:
-                minx, miny = transformer.transform(minx, miny)
-                maxx, maxy = transformer.transform(maxx, maxy)
-
-            roi_boxes.append(BoundingBox(minx, maxx, miny, maxy, mint, maxt))
-            # Create buffered box for training set determination
-            buffered_roi_boxes.append(
-                BoundingBox(
-                    minx - buffer_size,
-                    maxx + buffer_size,
-                    miny - buffer_size,
-                    maxy + buffer_size,
-                    mint,
-                    maxt,
-                )
+            # Create buffered polygon for training set determination
+            buffered_polygon = box(
+                minx - buffer_size,
+                miny - buffer_size,
+                maxx + buffer_size,
+                maxy + buffer_size,
             )
+            buffered_roi_polygons.append(buffered_polygon)
         else:
-            raise ValueError(
-                "AOIs must be BoundingBox objects or tuples of length 4 (spatial) or 6 (spatiotemporal)"
-            )
+            raise ValueError("AOIs must be tuples of length 4 (minx, maxx, miny, maxy)")
 
     # Check for overlapping AOIs within the same category
-    for i, roi in enumerate(roi_boxes):
-        if any(roi.intersects(x) and (roi & x).area > 0 for x in roi_boxes[i + 1 :]):
+    for i, roi in enumerate(roi_polygons):
+        if any(
+            roi.intersects(x) and not roi.intersection(x).is_empty
+            for x in roi_polygons[i + 1 :]
+        ):
             raise ValueError(
                 "AOIs within the same category (validation or test) cannot overlap."
             )
 
-    return roi_boxes, buffered_roi_boxes
+    return roi_polygons, buffered_roi_polygons
