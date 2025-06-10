@@ -7,12 +7,50 @@ import geopandas as gpd
 import pandas as pd
 import torch
 from pyproj import CRS, Transformer
-from shapely.geometry import box as shapely_box
+from shapely.geometry import Polygon, box
 from torch import Generator, default_generator, randperm
 from torchgeo.datasets import GeoDataset, IntersectionDataset, RasterDataset
 from torchgeo.datasets.splits import _fractions_to_lengths
 
 from eotorch.data.geodatasets import LabelledRasterDataset
+
+
+def _transform_bounds_to_crs(bounds, source_crs, target_crs):
+    """Transform bounding box coordinates from source CRS to target CRS.
+
+    Args:
+        bounds: Tuple of (minx, miny, maxx, maxy) in source CRS
+        source_crs: Source CRS as string (e.g., "EPSG:4326")
+        target_crs: Target CRS as string (e.g., "EPSG:3857")
+
+    Returns:
+        Tuple of (minx, miny, maxx, maxy) in target CRS
+    """
+    if source_crs == target_crs:
+        return bounds
+
+    try:
+        transformer = Transformer.from_crs(source_crs, target_crs, always_xy=True)
+        minx, miny, maxx, maxy = bounds
+
+        # Transform all four corners to handle potential rotation/skew
+        corners = [
+            (minx, miny),  # bottom-left
+            (minx, maxy),  # top-left
+            (maxx, miny),  # bottom-right
+            (maxx, maxy),  # top-right
+        ]
+
+        transformed_corners = [transformer.transform(x, y) for x, y in corners]
+
+        # Get new bounds from transformed corners
+        xs, ys = zip(*transformed_corners)
+        return (min(xs), min(ys), max(xs), max(ys))
+
+    except Exception as e:
+        raise ValueError(
+            f"Error transforming bounds from {source_crs} to {target_crs}: {str(e)}"
+        )
 
 
 def _format_paths(files: Union[str, Path, List[str], List[Path], None]) -> List[Path]:
@@ -128,7 +166,7 @@ def _build_split_datasets(
             # For GeoPandas, we need to intersect with the image bounds
             if not label_ds_orig.index.empty:
                 # Create bounding box geometry for intersection
-                img_bbox_geom = shapely_box(
+                img_bbox_geom = box(
                     img_bounds.minx, img_bounds.miny, img_bounds.maxx, img_bounds.maxy
                 )
 
@@ -355,90 +393,40 @@ def random_bbox_assignment(
 
 def aoi_split(
     dataset: GeoDataset,
-    val_aois: Union[
-        Sequence[Tuple[float, float, float, float]],
-        str,
-        Path,
-        None,
-    ] = None,
-    test_aois: Union[
-        Sequence[Tuple[float, float, float, float]],
-        str,
-        Path,
-        None,
-    ] = None,
-    as_lists: bool = False,
-    crs: Optional[Union[str, Dict[str, Any]]] = "EPSG:4326",
-    buffer_size: float = 0.0,
+    aoi_files: str | Path | Sequence[Union[str, Path]],
+    crs: str | Dict[str, Any] = "EPSG:4326",
+    buffer_size_metres: int = 0,
 ) -> List[GeoDataset]:
-    """Split a GeoDataset into train, validation, and test datasets based on areas of interest (AOIs).
-
-    This function performs a purely spatial split and preserves the temporal information
-    from the original dataset exactly as it is.
-
-    This function divides a dataset into multiple datasets:
-    - First dataset: Contains all data outside the provided AOIs (training dataset)
-    - Second dataset (optional): Contains data that intersects with validation AOIs
-    - Third dataset (optional): Contains data that intersects with test AOIs
-
-    The AOIs can be provided in different formats:
-    - List of (minx, maxx, miny, maxy) tuples (spatial only)
-    - Path to a GeoJSON file containing Polygon features
-
-    The function supports transforming between coordinate reference systems. If your AOIs are
-    specified in lat/lon (EPSG:4326) but your dataset is in a different CRS, you can specify
-    the CRS parameters to handle the transformation automatically.
-
-    A buffer can be applied around the AOIs to ensure that samples from training and validation/test
-    datasets do not overlap. The buffer size is specified in the same units as the dataset's CRS
-    (typically meters).
+    """Split a GeoDataset based on provided AOI files with cleaner implementation.
 
     Args:
         dataset: Dataset to be split
-        val_aois: Sequence of validation areas of interest as (minx, maxx, miny, maxy) tuples,
-                  or a path to a GeoJSON file containing validation regions
-        test_aois: Sequence of test areas of interest as (minx, maxx, miny, maxy) tuples,
-                   or a path to a GeoJSON file containing test regions
-        as_lists: If True, return a list of train items and lists of val/test items
-                 instead of creating new datasets
+        aoi_files: Single filepath or sequence of filepaths to shapefile or .geojson files
         crs: The CRS of the input AOIs (e.g., "EPSG:4326" for lat/lon). If None,
              assumes AOIs are in the same CRS as the dataset. Default is "EPSG:4326".
-        buffer_size: Size of buffer (in the dataset's CRS units, typically meters)
-                    to apply around AOIs. This creates a gap between training and validation/test
-                    regions to prevent patch overlap. Default is 0.0 (no buffer).
+        buffer_size: Size of buffer in meters to apply around AOIs. Default is 0.
 
     Returns:
-        A list of datasets, where the first is the training dataset (outside all AOIs),
-        the second (if val_aois is not None) is the validation dataset, and
-        the third (if test_aois is not None) is the test dataset.
-        If as_lists is True, returns lists of items for each dataset instead.
-
-    Raises:
-        ValueError: If validation and test AOIs overlap with each other
-        ImportError: If coordinate transformation is requested but pyproj is not available
-        ValueError: If a GeoJSON file is invalid or doesn't contain Polygon features
+        A list of datasets where the first is the remainder (training dataset),
+        followed by one dataset for each provided file.
     """
 
     if isinstance(dataset, LabelledRasterDataset):
-        # If the dataset is a LabelledRasterDataset, we need to split the image and label datasets
-
+        # Split image and label datasets separately
         img_datasets = aoi_split(
             dataset.datasets[0],
-            val_aois=val_aois,
-            test_aois=test_aois,
-            as_lists=as_lists,
+            aoi_files=aoi_files,
             crs=crs,
-            buffer_size=buffer_size,
+            buffer_size_metres=buffer_size_metres,
         )
         label_datasets = aoi_split(
             dataset.datasets[1],
-            val_aois=val_aois,
-            test_aois=test_aois,
-            as_lists=as_lists,
+            aoi_files=aoi_files,
             crs=crs,
-            buffer_size=buffer_size,
+            buffer_size_metres=buffer_size_metres,
         )
 
+        # Create new LabelledRasterDatasets
         datasets_to_return = []
         for img_ds, label_ds in zip(img_datasets, label_datasets):
             datasets_to_return.append(
@@ -449,248 +437,304 @@ def aoi_split(
                     transforms=dataset.transforms,
                 )
             )
-
         return datasets_to_return
 
-    # Process AOIs
-    roi_polygons = []  # Will hold all Polygon objects
-    buffered_roi_polygons = []  # Will hold buffered versions of all ROIs
-    aoi_categories = []  # Will track whether each ROI is for validation (0) or test (1)
-
-    # Process validation AOIs if provided
-    if val_aois is not None:
-        val_roi_polygons, val_buffered_polygons = _process_aois(
-            val_aois, dataset, crs, buffer_size
-        )
-        roi_polygons.extend(val_roi_polygons)
-        buffered_roi_polygons.extend(val_buffered_polygons)
-        aoi_categories.extend([0] * len(val_roi_polygons))  # 0 for validation
-
-    # Process test AOIs if provided
-    if test_aois is not None:
-        test_roi_polygons, test_buffered_polygons = _process_aois(
-            test_aois, dataset, crs, buffer_size
-        )
-        roi_polygons.extend(test_roi_polygons)
-        buffered_roi_polygons.extend(test_buffered_polygons)
-        aoi_categories.extend([1] * len(test_roi_polygons))  # 1 for test
-
-    # If no AOIs were provided, return the original dataset
-    if not roi_polygons:
-        if as_lists:
-            # Get all items from the dataset index
-            all_hits = [
-                (row.geometry, row.filepath) for _, row in dataset.index.iterrows()
-            ]
-            return [all_hits]
-        return [dataset]
-
-    # Check for overlapping AOIs between validation and test sets
-    if val_aois is not None and test_aois is not None:
-        val_count = len([c for c in aoi_categories if c == 0])
-        for i in range(val_count):
-            for j in range(val_count, len(roi_polygons)):
-                if (
-                    roi_polygons[i].intersects(roi_polygons[j])
-                    and not roi_polygons[i].intersection(roi_polygons[j]).is_empty
-                ):
-                    raise ValueError("Validation and test AOIs cannot overlap.")
-
-    # Create indexes for train and AOI categories using GeoPandas
-    train_items = []
-    category_items = [[] for _ in range(len(set(aoi_categories)))]
-
-    # Get all items from dataset
-    all_items = [(row.geometry, row.filepath) for _, row in dataset.index.iterrows()]
-
-    # Process each item in the dataset
-    for geom, filepath in all_items:
-        # Check if this item is in any AOI
-        for aoi_idx, (roi, buffered_roi) in enumerate(
-            zip(roi_polygons, buffered_roi_polygons)
-        ):
-            category = aoi_categories[aoi_idx]
-            # Map category to the correct index in category_items
-            if val_aois is not None and test_aois is not None:
-                category_idx = category  # Both validation (0) and test (1) are present
-            elif val_aois is not None:
-                category_idx = 0  # Only validation, so it's at index 0
-            else:  # test_aois is not None
-                category_idx = 0  # Only test, so it's at index 0
-
-            # Check intersection with original ROI for AOI datasets
-            if geom.intersects(roi):
-                category_items[category_idx].append((geom, filepath))
-                break  # Item assigned to an AOI, don't check others
-
-        # If item doesn't intersect any AOI, check if it should be added to training
-        # (i.e., it doesn't intersect any buffered ROI)
-        else:
-            in_buffered_roi = any(
-                geom.intersects(buffered_roi) for buffered_roi in buffered_roi_polygons
-            )
-            if not in_buffered_roi:
-                train_items.append((geom, filepath))
-
-    if as_lists:
-        result = [train_items]
-        for items in category_items:
-            result.append(items)
-        return result
-
-    # Create datasets from the items
-    new_datasets = []
-
-    # Create train dataset by filtering original index
-    if train_items:
-        train_filepaths = {filepath for _, filepath in train_items}
-        mask = dataset.index["filepath"].isin(train_filepaths)
-        train_gdf = dataset.index[mask].copy()
+    # Normalize files to list of Path objects
+    if isinstance(aoi_files, (str, Path)):
+        file_list = [Path(aoi_files)]
     else:
-        # Create empty GeoDataFrame with correct structure
-        train_gdf = gpd.GeoDataFrame(
-            {"filepath": []}, geometry=[], crs=dataset.index.crs
-        )
-        # Create empty IntervalIndex to match original structure
-        empty_temporal_index = pd.IntervalIndex.from_tuples(
-            [], closed="both", name="datetime"
-        )
-        train_gdf.index = empty_temporal_index
+        file_list = [Path(f) for f in aoi_files]
 
-    train_ds = deepcopy(dataset)
-    train_ds.index = train_gdf
-    if len(train_gdf) > 0:
-        train_ds.paths = train_gdf["filepath"].tolist()
-    else:
-        train_ds.paths = []
-    new_datasets.append(train_ds)
-
-    # Create category datasets (validation and/or test) by filtering original index
-    for items in category_items:
-        if items:
-            cat_filepaths = {filepath for _, filepath in items}
-            mask = dataset.index["filepath"].isin(cat_filepaths)
-            cat_gdf = dataset.index[mask].copy()
-        else:
-            # Create empty GeoDataFrame with correct structure
-            cat_gdf = gpd.GeoDataFrame(
-                {"filepath": []}, geometry=[], crs=dataset.index.crs
-            )
-            # Create empty IntervalIndex to match original structure
-            empty_temporal_index = pd.IntervalIndex.from_tuples(
-                [], closed="both", name="datetime"
-            )
-            cat_gdf.index = empty_temporal_index
-
-        ds = deepcopy(dataset)
-        ds.index = cat_gdf
-        if len(cat_gdf) > 0:
-            ds.paths = cat_gdf["filepath"].tolist()
-        else:
-            ds.paths = []
-        new_datasets.append(ds)
-
-    return new_datasets
-
-
-def _process_aois(
-    aois: Union[
-        Sequence[Tuple[float, float, float, float]],
-        str,
-        Path,
-    ],
-    dataset: GeoDataset,
-    crs: Optional[Union[str, Dict[str, Any]]] = "EPSG:4326",
-    buffer_size: float = 0.0,
-) -> Tuple[List, List]:
-    """Helper function to process AOIs into Polygon objects.
-
-    Args:
-        aois: Areas of interest in one of the supported formats
-        dataset: Dataset to be split
-        crs: The CRS of the input AOIs
-        buffer_size: Size of buffer to apply around AOIs
-
-    Returns:
-        Tuple of (roi_polygons, buffered_roi_polygons)
-    """
-    from shapely.geometry import box
-
-    roi_polygons = []
-    buffered_roi_polygons = []
-
-    # Handle GeoJSON file input (if aois is a string or Path)
-    if isinstance(aois, (str, Path)):
-        geojson_path = Path(aois)
-        if not geojson_path.exists():
-            raise ValueError(f"GeoJSON file not found: {geojson_path}")
+    # Load all AOI geometries from files and convert to bounding boxes
+    all_aoi_polygons = []
+    for file_path in file_list:
+        if not file_path.exists():
+            raise ValueError(f"AOI file not found: {file_path}")
 
         try:
-            # Read the GeoJSON file using geopandas
-            gdf = gpd.read_file(geojson_path)
-
-            # Filter to only keep Polygon geometries
+            gdf = gpd.read_file(file_path)
             gdf = gdf[gdf.geometry.type.isin(["Polygon", "MultiPolygon"])]
 
             if gdf.empty:
-                raise ValueError("No valid Polygon features found in GeoJSON file")
+                raise ValueError(f"No valid Polygon features found in {file_path}")
 
-            # Create bounding boxes from geometries
-            aoi_list = []
+            # Instead of reprojecting geometries, transform only bounds to dataset CRS
+            rectangles = []
             for geom in gdf.geometry:
-                bounds = geom.bounds  # Returns (minx, miny, maxx, maxy)
-                # Reorder to (minx, maxx, miny, maxy) as expected by the function
-                aoi_list.append((bounds[0], bounds[2], bounds[1], bounds[3]))
+                bounds = geom.bounds  # minx, miny, maxx, maxy in original CRS
 
-            aois = aoi_list
+                # Transform bounds to dataset CRS if needed
+                if crs is not None and crs != dataset.crs:
+                    transformed_bounds = _transform_bounds_to_crs(
+                        bounds, crs, dataset.crs
+                    )
+                else:
+                    transformed_bounds = bounds
+
+                # Create rectangle from transformed bounds
+                minx, miny, maxx, maxy = transformed_bounds
+                rectangle = box(minx, miny, maxx, maxy)
+                rectangles.append(rectangle)
+
+            all_aoi_polygons.append(rectangles)
+
         except Exception as e:
-            raise ValueError(f"Error processing GeoJSON file: {str(e)}")
+            raise ValueError(f"Error processing AOI file {file_path}: {str(e)}")
 
-    # Handle CRS transformation if needed
-    need_transform = False
-    transformer = None
+    # Convert buffer size to dataset CRS units
+    buffer_size_crs = _convert_buffer_to_crs_units(buffer_size_metres, dataset.crs)
 
-    if crs is not None:
-        # Set up transformer if CRSs are different
-        if crs != dataset.crs:
-            need_transform = True
-            source_crs = CRS.from_user_input(crs)
-            target_crs = CRS.from_user_input(dataset.crs)
-            transformer = Transformer.from_crs(source_crs, target_crs, always_xy=True)
-
-    for aoi in aois:
-        if len(aoi) == 4:
-            # Spatial only (minx, maxx, miny, maxy)
-            minx, maxx, miny, maxy = aoi
-
-            # Transform coordinates if needed
-            if need_transform:
-                minx, miny = transformer.transform(minx, miny)
-                maxx, maxy = transformer.transform(maxx, maxy)
-
-            # Create polygon from bounding box
-            polygon = box(minx, miny, maxx, maxy)
-            roi_polygons.append(polygon)
-
-            # Create buffered polygon for training set determination
-            buffered_polygon = box(
-                minx - buffer_size,
-                miny - buffer_size,
-                maxx + buffer_size,
-                maxy + buffer_size,
-            )
-            buffered_roi_polygons.append(buffered_polygon)
+    # Create buffered versions for training exclusion
+    all_buffered_polygons = []
+    for polygons in all_aoi_polygons:
+        if buffer_size_crs > 0:
+            buffered = [poly.buffer(buffer_size_crs) for poly in polygons]
         else:
-            raise ValueError("AOIs must be tuples of length 4 (minx, maxx, miny, maxy)")
+            buffered = polygons.copy()
+        all_buffered_polygons.append(buffered)
 
-    # Check for overlapping AOIs within the same category
-    for i, roi in enumerate(roi_polygons):
-        if any(
-            roi.intersects(x) and not roi.intersection(x).is_empty
-            for x in roi_polygons[i + 1 :]
-        ):
-            raise ValueError(
-                "AOIs within the same category (validation or test) cannot overlap."
-            )
+    # Process each geometry in the dataset
+    remainder_items = []
+    aoi_datasets_items = [[] for _ in file_list]
 
-    return roi_polygons, buffered_roi_polygons
+    for idx, row in dataset.index.iterrows():
+        dataset_geom = row.geometry
+        filepath = row.filepath
+
+        # Track which AOI files this geometry intersects with
+        intersected_aois = set()
+
+        # Check intersection with each AOI file
+        for file_idx, polygons in enumerate(all_aoi_polygons):
+            for polygon in polygons:
+                if dataset_geom.intersects(polygon):
+                    intersection = dataset_geom.intersection(polygon)
+                    intersection = _ensure_valid_polygon(intersection)
+                    if intersection is not None and not intersection.is_empty:
+                        aoi_datasets_items[file_idx].append(
+                            (intersection, filepath, idx)
+                        )
+                        intersected_aois.add(file_idx)
+
+        # For remainder: split dataset geometry into boxes excluding all buffered AOIs
+        remainder_geoms = _split_dataset_geometry_excluding_aois(
+            dataset_geom, all_buffered_polygons
+        )
+
+        for geom in remainder_geoms:
+            if geom is not None and not geom.is_empty:
+                remainder_items.append((geom, filepath, idx))
+
+    # Create datasets
+    result_datasets = []
+
+    # Create remainder dataset (first in list)
+    remainder_gdf = _create_geodataframe_from_items(remainder_items, dataset)
+    remainder_ds = deepcopy(dataset)
+    remainder_ds.index = remainder_gdf
+    remainder_ds.paths = (
+        remainder_gdf["filepath"].unique().tolist() if len(remainder_gdf) > 0 else []
+    )
+    result_datasets.append(remainder_ds)
+
+    # Create datasets for each AOI file
+    for items in aoi_datasets_items:
+        aoi_gdf = _create_geodataframe_from_items(items, dataset)
+        aoi_ds = deepcopy(dataset)
+        aoi_ds.index = aoi_gdf
+        aoi_ds.paths = aoi_gdf["filepath"].unique().tolist() if len(aoi_gdf) > 0 else []
+        result_datasets.append(aoi_ds)
+
+    return result_datasets
+
+
+def _split_dataset_geometry_excluding_aois(dataset_geom, all_buffered_polygons):
+    """Split dataset geometry into boxes excluding all AOI polygons to avoid holes."""
+    current_geoms = [dataset_geom]
+
+    # Process each AOI file's polygons
+    for buffered_polygons in all_buffered_polygons:
+        for buffered_polygon in buffered_polygons:
+            new_geoms = []
+            for geom in current_geoms:
+                if geom.intersects(buffered_polygon):
+                    # Split into maximum 4 boxes around the AOI
+                    split_boxes = _split_geometry_into_boxes(geom, buffered_polygon)
+                    new_geoms.extend(split_boxes)
+                else:
+                    new_geoms.append(geom)
+            current_geoms = new_geoms
+
+    return [_ensure_valid_polygon(geom) for geom in current_geoms]
+
+
+def _create_geodataframe_from_items(items, original_dataset):
+    """Create GeoDataFrame from items with proper structure."""
+    if not items:
+        # Create empty GeoDataFrame with correct structure
+        empty_gdf = gpd.GeoDataFrame(
+            {"filepath": []}, geometry=[], crs=original_dataset.index.crs
+        )
+        empty_temporal_index = pd.IntervalIndex.from_tuples(
+            [], closed="both", name="datetime"
+        )
+        empty_gdf.index = empty_temporal_index
+        return empty_gdf
+
+    # Create new GeoDataFrame with split geometries
+    data = []
+    temporal_indices = []
+
+    for geom, filepath, temporal_idx in items:
+        # Ensure geometry is valid for raster operations
+        if geom.geom_type in ["Point", "LineString"]:
+            continue
+        elif geom.geom_type == "GeometryCollection":
+            # Extract only Polygon/MultiPolygon parts
+            polygons = [
+                g for g in geom.geoms if g.geom_type in ["Polygon", "MultiPolygon"]
+            ]
+            if not polygons:
+                continue
+            from shapely.ops import unary_union
+
+            geom = unary_union(polygons)
+            if geom.is_empty:
+                continue
+
+        data.append({"filepath": filepath, "geometry": geom})
+        temporal_indices.append(temporal_idx)
+
+    # Create GeoDataFrame
+    gdf = gpd.GeoDataFrame(data, crs=original_dataset.index.crs)
+    gdf.index = pd.Index(temporal_indices, name=original_dataset.index.index.name)
+
+    return gdf
+
+
+def _ensure_valid_polygon(geom):
+    """Ensure geometry is a valid Polygon or MultiPolygon for raster operations."""
+    if geom.is_empty:
+        return None
+
+    # Handle different geometry types
+    if geom.geom_type in ["Polygon", "MultiPolygon"]:
+        return geom
+    elif geom.geom_type == "GeometryCollection":
+        # Extract only Polygon/MultiPolygon parts
+        polygons = [g for g in geom.geoms if g.geom_type in ["Polygon", "MultiPolygon"]]
+        if not polygons:
+            return None
+        from shapely.ops import unary_union
+
+        result = unary_union(polygons)
+        return result if not result.is_empty else None
+    else:
+        # Skip Point, LineString, etc. as they can't represent raster coverage
+        return None
+
+
+def _convert_buffer_to_crs_units(buffer_meters: float, dataset_crs: str) -> float:
+    """Convert buffer size from meters to dataset CRS units.
+
+    Args:
+        buffer_meters: Buffer size in meters
+        dataset_crs: CRS of the dataset
+
+    Returns:
+        Buffer size in dataset CRS units
+    """
+    if buffer_meters == 0:
+        return 0
+
+    try:
+        crs_obj = CRS.from_user_input(dataset_crs)
+
+        # If CRS is already in meters, return as-is
+        if crs_obj.axis_info[0].unit_name in ["metre", "meter", "m"]:
+            return buffer_meters
+
+        # If CRS is in degrees (like EPSG:4326), convert meters to degrees
+        # Using rough approximation: 1 degree ≈ 111,320 meters at equator
+        if crs_obj.axis_info[0].unit_name in ["degree", "degrees"]:
+            return buffer_meters / 111320.0
+
+        # For other units, return the buffer as-is (user's responsibility)
+        return buffer_meters
+
+    except Exception:
+        # If we can't determine the CRS units, assume it's in the same units as provided
+        return buffer_meters
+
+
+def _split_geometry_into_boxes(
+    original_geom: Polygon, subtract_geom: Polygon
+) -> List[Polygon]:
+    """
+    Split a geometry into multiple box geometries that exclude the subtract_geom area.
+
+    Instead of using geometric difference (which can create holes), this function
+    creates multiple rectangular geometries that cover the original area while
+    excluding the subtract area.
+
+    Args:
+        original_geom: The original geometry to split
+        subtract_geom: The geometry to exclude from the original
+
+    Returns:
+        List of box geometries that cover the original area excluding the subtract area
+    """
+    if not original_geom.intersects(subtract_geom):
+        # No intersection, return original geometry
+        return [original_geom]
+
+    # Get bounds of the original geometry
+    minx, miny, maxx, maxy = original_geom.bounds
+
+    # Get bounds of the subtract geometry
+    sub_minx, sub_miny, sub_maxx, sub_maxy = subtract_geom.bounds
+
+    boxes = []
+
+    # Create boxes around the subtract geometry:
+    # Left box
+    if minx < sub_minx:
+        left_box = box(minx, miny, min(sub_minx, maxx), maxy)
+        if original_geom.intersects(left_box):
+            intersection = original_geom.intersection(left_box)
+            intersection = _ensure_valid_polygon(intersection)
+            if intersection is not None and not intersection.is_empty:
+                boxes.append(intersection)
+
+    # Right box
+    if maxx > sub_maxx:
+        right_box = box(max(sub_maxx, minx), miny, maxx, maxy)
+        if original_geom.intersects(right_box):
+            intersection = original_geom.intersection(right_box)
+            intersection = _ensure_valid_polygon(intersection)
+            if intersection is not None and not intersection.is_empty:
+                boxes.append(intersection)
+
+    # Bottom box (between left and right boundaries of subtract_geom)
+    if miny < sub_miny:
+        bottom_box = box(
+            max(minx, sub_minx), miny, min(maxx, sub_maxx), min(sub_miny, maxy)
+        )
+        if original_geom.intersects(bottom_box):
+            intersection = original_geom.intersection(bottom_box)
+            intersection = _ensure_valid_polygon(intersection)
+            if intersection is not None and not intersection.is_empty:
+                boxes.append(intersection)
+
+    # Top box (between left and right boundaries of subtract_geom)
+    if maxy > sub_maxy:
+        top_box = box(
+            max(minx, sub_minx), max(sub_maxy, miny), min(maxx, sub_maxx), maxy
+        )
+        if original_geom.intersects(top_box):
+            intersection = original_geom.intersection(top_box)
+            intersection = _ensure_valid_polygon(intersection)
+            if intersection is not None and not intersection.is_empty:
+                boxes.append(intersection)
+
+    return boxes

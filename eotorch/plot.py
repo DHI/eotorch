@@ -5,6 +5,7 @@ import geopandas as gpd
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
+import pyproj
 import rasterio as rst
 from folium.plugins import Draw, MeasureControl
 from folium.raster_layers import ImageOverlay
@@ -56,12 +57,9 @@ def plot_dataset_index(dataset, map=None, color="olive", name=None):
     Returns:
         folium.Map: The map with dataset boundaries visualized
     """
-    # Get all geometries from the geopandas index
-    # The new index is a GeoDataFrame, not an R-tree
-    index_gdf = dataset.index
-
     if map is None:
         map = folium.Map()
+        # map = folium.Map(crs="EPSG4326")
         # Assume a new map needs controls
         has_draw_control, has_measure_control = False, False
     else:
@@ -84,61 +82,75 @@ def plot_dataset_index(dataset, map=None, color="olive", name=None):
         if isinstance(child, folium.FeatureGroup)
     ]
 
-    # Refined renaming logic if name conflicts
     count = 1
     while feature_group_name in existing_feature_group_names:
         feature_group_name = f"{base_name} ({count})"
         count += 1
 
-    feature_group = folium.FeatureGroup(
-        name=feature_group_name, show=True
-    )  # Ensure show=True
+    feature_group = folium.FeatureGroup(name=feature_group_name, show=True)
 
-    style_dict = dict(fill=False, weight=5, opacity=0.7, color=color)
+    style_dict = dict(
+        fill=True, fillColor=color, fillOpacity=0.3, weight=2, opacity=0.7, color=color
+    )
 
-    # Track bounds of the current dataset being added
     current_bounds = None
-    try:
-        # Get all geometries from the geopandas index
-        # The new index is a GeoDataFrame, not an R-tree
-        index_gdf = dataset.index
+    index_gdf = dataset.index
 
-        if index_gdf.empty:
-            print(
-                f"Warning: No objects found in dataset '{name}'. Skipping bounds fitting and GeoJson addition."
-            )
-            geoms_list = []
-        else:
-            geoms_list = index_gdf.geometry.tolist()
-            # Get bounds from the GeoDataFrame
-            bounds = index_gdf.total_bounds  # returns [minx, miny, maxx, maxy]
-            current_bounds = tuple(bounds)
-    except Exception as e:  # Handle cases where dataset might be empty or index invalid
+    if index_gdf.empty:
         print(
-            f"Warning: Could not get bounds for dataset '{name}'. Error: {e}. Skipping bounds fitting for this dataset."
+            f"Warning: No objects found in dataset '{name}'. Skipping bounds fitting and GeoJson addition."
         )
-        geoms_list = []  # Ensure geoms_list is empty if bounds failed
+        geoms_list = []
+    else:
+        geoms_list = index_gdf.geometry.tolist()
+        bounds = index_gdf.total_bounds  # returns [minx, miny, maxx, maxy]
+        current_bounds = tuple(bounds)
 
     if (
         current_bounds and geoms_list
     ):  # Only add GeoJson if bounds were determined and objects exist
         for geom in geoms_list:  # Iterate over the geometries
             try:  # Add try-except for individual geometry processing
+                # Get original bounds before transformation
+                original_bounds = geom.bounds  # (minx, miny, maxx, maxy)
+
                 # Convert to lat/lon if needed
                 if dataset.crs != 4326:  # Assuming CRS 4326 is WGS84
                     # Transform geometry to WGS84 for folium
+                    # gdf_temp = gpd.GeoDataFrame([1], geometry=[geom], crs="EPSG:4326")
                     gdf_temp = gpd.GeoDataFrame([1], geometry=[geom], crs=dataset.crs)
                     gdf_temp = gdf_temp.to_crs(4326)
                     geom_transformed = gdf_temp.geometry.iloc[0]
+                    transformed_bounds = geom_transformed.bounds
                 else:
                     geom_transformed = geom
+                    transformed_bounds = original_bounds
 
                 def create_style_function(style):
                     return lambda x: style
 
+                # Create tooltip with bounds information
+                tooltip_text = (
+                    f"Bounds ({dataset.crs.name}):<br>"
+                    f"Min X: {original_bounds[0]:.6f}<br>"
+                    f"Min Y: {original_bounds[1]:.6f}<br>"
+                    f"Max X: {original_bounds[2]:.6f}<br>"
+                    f"Max Y: {original_bounds[3]:.6f}"
+                )
+
+                if dataset.crs != 4326:
+                    tooltip_text += (
+                        f"<br><br>Bounds (WGS84):<br>"
+                        f"Min Lon: {transformed_bounds[0]:.6f}<br>"
+                        f"Min Lat: {transformed_bounds[1]:.6f}<br>"
+                        f"Max Lon: {transformed_bounds[2]:.6f}<br>"
+                        f"Max Lat: {transformed_bounds[3]:.6f}"
+                    )
+
                 folium.GeoJson(
                     geom_transformed,
                     style_function=create_style_function(style_dict),
+                    tooltip=tooltip_text,
                 ).add_to(feature_group)
             except Exception as e:
                 print(
@@ -400,16 +412,45 @@ def plot_samplers_on_map(
         # Add the sample feature group to the map
         sample_group.add_to(map)
 
-    # Fit the map bounds to show all content
-    if datasets:
-        # Use the bounds of the first dataset as a fallback if multiple datasets have varying extents
-        map.fit_bounds(
-            bounds=utils.convert_bounds(
-                utils.torchgeo_bb_to_shapely(
-                    datasets[0].index.bounds, bbox_crs=datasets[0].crs
-                ).bounds
-            )
-        )
+    # Fit map bounds to encompass all datasets
+    try:
+        all_bounds = []
+        for dataset in datasets:
+            if not dataset.index.empty:
+                # Get bounds in the dataset's original CRS
+                dataset_bounds = (
+                    dataset.index.total_bounds
+                )  # [minx, miny, maxx, maxy] numpy array
+
+                # Convert to WGS84 (EPSG:4326) for folium
+                if dataset.crs != pyproj.CRS("EPSG:4326"):
+                    # Convert numpy array to tuple to ensure correct format interpretation
+                    # total_bounds returns [minx, miny, maxx, maxy], convert to tuple for correct handling
+                    bounds_tuple = tuple(dataset_bounds)  # (minx, miny, maxx, maxy)
+                    bounds_poly = utils.torchgeo_bb_to_shapely(
+                        bounds_tuple, bbox_crs=dataset.crs, target_crs="EPSG:4326"
+                    )
+                    transformed_bounds = bounds_poly.bounds  # (minx, miny, maxx, maxy)
+                else:
+                    transformed_bounds = tuple(dataset_bounds)
+
+                all_bounds.append(transformed_bounds)
+
+        if all_bounds:
+            # Calculate the overall bounds encompassing all datasets
+            min_x = min(bounds[0] for bounds in all_bounds)
+            min_y = min(bounds[1] for bounds in all_bounds)
+            max_x = max(bounds[2] for bounds in all_bounds)
+            max_y = max(bounds[3] for bounds in all_bounds)
+
+            # Convert to folium format: ((lat1, lon1), (lat2, lon2))
+            # Note: folium expects (lat, lon) which is (y, x)
+            folium_bounds = ((min_y, min_x), (max_y, max_x))
+            map.fit_bounds(bounds=folium_bounds)
+
+    except Exception as e:
+        print(f"Warning: Could not fit map bounds for datasets. Error: {e}")
+        # Continue without fitting bounds
 
     # Always add the layer control
     folium.LayerControl().add_to(map)
@@ -619,7 +660,7 @@ def plot_samples(
             batch = next(_iterator)
             sample = unbind_samples(batch)[0]
             if (
-                (sample["image"] == 0).all()
+                (("image" in sample) and (sample["image"] == 0).all())
                 or ("mask" in sample and (sample["mask"] == nodata_val).all())
                 or ("mask" in sample and (sample["mask"] == -1).all())
             ):

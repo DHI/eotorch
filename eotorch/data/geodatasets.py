@@ -90,18 +90,12 @@ class CustomCacheRasterDataset(RasterDataset, SamplePlotMixin):
         Raises:
             IndexError: if query is not found in the index
         """
-        # Use GeoPandas spatial indexing instead of R-tree
-        if hasattr(self.index, "cx"):
-            # New GeoPandas approach
-            query_geom = shapely_box(query.minx, query.miny, query.maxx, query.maxy)
-            intersecting_items = self.index[self.index.geometry.intersects(query_geom)]
-            filepaths = cast(list[str], intersecting_items["filepath"].tolist())
-        else:
-            # Legacy R-tree approach for backwards compatibility
-            hits = self.index.intersection(tuple(query), objects=True)
-            filepaths = cast(list[str], [hit.object for hit in hits])
+        interval = pd.Interval(query.mint, query.maxt)
+        index = self.index.iloc[self.index.index.overlaps(interval)]
+        index = index.cx[query.minx : query.maxx, query.miny : query.maxy]  # type: ignore[misc]
 
-        if not filepaths:
+        filepaths = index.filepath.tolist()
+        if index.empty:
             raise IndexError(
                 f"query: {query} not found in index with bounds: {self.bounds}"
             )
@@ -111,7 +105,7 @@ class CustomCacheRasterDataset(RasterDataset, SamplePlotMixin):
             filename_regex = re.compile(self.filename_regex, re.VERBOSE)
             for band in self.bands:
                 band_filepaths = []
-                for filepath in filepaths:
+                for filepath in index.filepath:
                     filename = os.path.basename(filepath)
                     directory = os.path.dirname(filepath)
                     match = re.match(filename_regex, filename)
@@ -130,15 +124,19 @@ class CustomCacheRasterDataset(RasterDataset, SamplePlotMixin):
         sample = {"crs": self.crs, "bounds": query}
 
         data = data.to(self.dtype)
+
         if self.is_image:
+            sample["image"] = data
             sample["image"] = data
             sample["image_filepaths"] = filepaths
         else:
+            sample["mask"] = data.squeeze(0)
             sample["mask"] = data
             sample["mask_filepaths"] = filepaths
 
         if self.transforms is not None:
             sample = self.transforms(sample)
+
         return sample
 
     def _repr_html_(self):
@@ -213,8 +211,6 @@ class CustomCacheRasterDataset(RasterDataset, SamplePlotMixin):
                 "Union results in an empty dataset based on merged index items."
             )
 
-        # --- Paths for the new dataset's constructor ---
-        # This ensures new_dataset.files can be correctly computed by RasterDataset parent.
         def _ensure_list_of_paths(
             paths_attr: str | os.PathLike | Iterable[str] | Iterable[os.PathLike],
         ):
@@ -367,20 +363,24 @@ class PlottabeLabelDataset(CustomCacheRasterDataset):
         pixel_counts = defaultdict(int)
 
         # Use GeoPandas iteration instead of R-tree intersection
-        for _, row in self.index.iterrows():
+        for temporal_interval, row in self.index.iterrows():
             # Create bounding box from geometry bounds
             bounds = row.geometry.bounds  # (minx, miny, maxx, maxy)
+            # Get temporal bounds from the index (which is a pd.Interval)
             bbox = BoundingBox(
-                bounds[0], bounds[2], bounds[1], bounds[3], 0, 1
-            )  # Add time dimension
+                bounds[0],
+                bounds[2],
+                bounds[1],
+                bounds[3],
+                temporal_interval.left,
+                temporal_interval.right,
+            )
             counts = self._get_pixel_counts(bbox)
             for key, cnt in counts.items():
                 pixel_counts[key] += cnt
         return dict(pixel_counts)
 
     def _get_pixel_counts(self, bbox: BoundingBox) -> dict[int, int]:
-        import numpy as np
-
         out_dict = {}
         sample = self.__getitem__(bbox)
         mask = sample["mask"]
@@ -475,11 +475,17 @@ class LabelledRasterDataset(
             label_ds: PlottabeLabelDataset = self.datasets[-1]
             pixel_counts = defaultdict(int)
             # Use GeoPandas iteration instead of R-tree intersection
-            for _, row in self.index.iterrows():
+            for temporal_interval, row in self.index.iterrows():
                 bounds = row.geometry.bounds  # (minx, miny, maxx, maxy)
+                # Get temporal bounds from the index (which is a pd.Interval)
                 bbox = BoundingBox(
-                    bounds[0], bounds[2], bounds[1], bounds[3], 0, 1
-                )  # Add time dimension
+                    bounds[0],
+                    bounds[2],
+                    bounds[1],
+                    bounds[3],
+                    temporal_interval.left,
+                    temporal_interval.right,
+                )
                 counts = label_ds._get_pixel_counts(bbox)
                 for key, cnt in counts.items():
                     pixel_counts[key] += cnt

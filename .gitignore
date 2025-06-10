@@ -146,3 +146,4 @@ notebooks/**
 !notebooks/segmentation.ipynb
 *Zone.Identifier
 *.geojson
+*instructions.md

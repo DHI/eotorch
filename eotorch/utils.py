@@ -750,18 +750,20 @@ def _format_filepaths(filepaths):
 
 
 def torchgeo_bb_to_shapely(
-    bbox: list | BoundingBox,
+    bbox: list | tuple | BoundingBox,
     bbox_crs: str | pyproj.CRS,
     target_crs: str | pyproj.CRS = "EPSG:4326",
 ):
     """
-    Convert a list of bound coordinates or a BoundingBox object to a Shapely Polygon.
+    Convert a list of bound coordinates, tuple, or a BoundingBox object to a Shapely Polygon.
 
     Parameters:
-        bbox (list or BoundingBox):
-            The bounding box to convert. If a list, it should be in the format
-            [minx, maxx, miny, maxy], it may also contain more than 4 values (e.g. mint, maxt).
-        If a BoundingBox object, it should have the attributes minx, maxx, miny, maxy.
+        bbox (list, tuple, or BoundingBox):
+            The bounding box to convert.
+            - If a list: should be in the format [minx, maxx, miny, maxy] (torchgeo format)
+            - If a tuple: should be in the format (minx, miny, maxx, maxy) (geopandas bounds format)
+            - If a BoundingBox object: should have the attributes minx, maxx, miny, maxy.
+            May contain more than 4 values (e.g. mint, maxt).
         bbox_crs (str or pyproj.CRS):
             The coordinate reference system of the input bounding box.
         target_crs (str or pyproj.CRS, optional):
@@ -778,11 +780,27 @@ def torchgeo_bb_to_shapely(
         bbox_crs = pyproj.CRS(bbox_crs)
 
     # Create a shapely polygon from the bbox coordinates
-    if isinstance(bbox, list):
-        polygon = shapely.geometry.box(
-            minx=bbox[0], miny=bbox[2], maxx=bbox[1], maxy=bbox[3]
-        )
+    if isinstance(bbox, (list, tuple, np.ndarray)):
+        # Handle both list and tuple formats
+        # For geopandas geometry.bounds: (minx, miny, maxx, maxy)
+        # For torchgeo list format: [minx, maxx, miny, maxy]
+        if len(bbox) >= 4:
+            if isinstance(bbox, tuple):
+                # geopandas bounds format: (minx, miny, maxx, maxy)
+                polygon = shapely.geometry.box(
+                    minx=bbox[0], miny=bbox[1], maxx=bbox[2], maxy=bbox[3]
+                )
+            else:
+                # torchgeo list format: [minx, maxx, miny, maxy]
+                polygon = shapely.geometry.box(
+                    minx=bbox[0], miny=bbox[2], maxx=bbox[1], maxy=bbox[3]
+                )
+        else:
+            raise ValueError(
+                f"Bounding box must have at least 4 coordinates, got {len(bbox)}"
+            )
     else:
+        # BoundingBox object with attributes
         polygon = shapely.geometry.box(
             minx=bbox.minx, miny=bbox.miny, maxx=bbox.maxx, maxy=bbox.maxy
         )
