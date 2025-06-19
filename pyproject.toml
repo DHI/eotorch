@@ -27,7 +27,7 @@ dependencies = [
 ]
 
 authors = [
-  { name="First Last", email="initials@dhigroup.com" },
+  { name="Paul Daniel", email="pada@dhigroup.com" },
 ]
 description = "Useful library"
 readme = "README.md"
