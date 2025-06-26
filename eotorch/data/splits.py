@@ -12,8 +12,6 @@ from torch import Generator, default_generator, randperm
 from torchgeo.datasets import GeoDataset, IntersectionDataset, RasterDataset
 from torchgeo.datasets.splits import _fractions_to_lengths
 
-from eotorch.data.geodatasets import LabelledRasterDataset
-
 
 def _transform_bounds_to_crs(bounds, source_crs, target_crs):
     """Transform bounding box coordinates from source CRS to target CRS.
@@ -276,7 +274,7 @@ def file_wise_split(
 
     # Get all items and corresponding file paths from the image dataset index
     dataset_items = [
-        (row.geometry, row.filepath) for _, row in img_dataset.index.iterrows()
+        (row["geometry"], row["filepath"]) for _, row in img_dataset.index.iterrows()
     ]
     dataset_files = [Path(filepath).resolve() for _, filepath in dataset_items]
 
@@ -343,7 +341,9 @@ def random_bbox_assignment(
                 )
 
     # Get all items from the dataset index
-    items_data = [(row.geometry, row.filepath) for _, row in dataset.index.iterrows()]
+    items_data = [
+        (row["geometry"], row["filepath"]) for _, row in dataset.index.iterrows()
+    ]
 
     # Randomly permute the items
     indices = randperm(len(items_data), generator=generator)
@@ -411,33 +411,8 @@ def aoi_split(
         followed by one dataset for each provided file.
     """
 
-    if isinstance(dataset, LabelledRasterDataset):
-        # Split image and label datasets separately
-        img_datasets = aoi_split(
-            dataset.datasets[0],
-            aoi_files=aoi_files,
-            crs=crs,
-            buffer_size_metres=buffer_size_metres,
-        )
-        label_datasets = aoi_split(
-            dataset.datasets[1],
-            aoi_files=aoi_files,
-            crs=crs,
-            buffer_size_metres=buffer_size_metres,
-        )
-
-        # Create new LabelledRasterDatasets
-        datasets_to_return = []
-        for img_ds, label_ds in zip(img_datasets, label_datasets):
-            datasets_to_return.append(
-                LabelledRasterDataset(
-                    img_ds,
-                    label_ds,
-                    collate_fn=dataset.collate_fn,
-                    transforms=dataset.transforms,
-                )
-            )
-        return datasets_to_return
+    # Handle LabelledRasterDataset/IntersectionDataset by processing the intersection directly
+    is_intersection_dataset = isinstance(dataset, IntersectionDataset)
 
     # Normalize files to list of Path objects
     if isinstance(aoi_files, (str, Path)):
@@ -498,8 +473,17 @@ def aoi_split(
     aoi_datasets_items = [[] for _ in file_list]
 
     for idx, row in dataset.index.iterrows():
-        dataset_geom = row.geometry
-        filepath = row.filepath
+        dataset_geom = row["geometry"]
+
+        # Handle different filepath column structures
+        if "filepath" in row.index:
+            filepath = row["filepath"]
+        elif "filepath_1" in row.index:
+            # For IntersectionDataset, use the first dataset's filepath as the identifier
+            filepath = row["filepath_1"]
+        else:
+            # Fallback: use the index as identifier
+            filepath = str(idx)
 
         # Track which AOI files this geometry intersects with
         intersected_aois = set()
@@ -532,9 +516,19 @@ def aoi_split(
     remainder_gdf = _create_geodataframe_from_items(remainder_items, dataset)
     remainder_ds = deepcopy(dataset)
     remainder_ds.index = remainder_gdf
-    remainder_ds.paths = (
-        remainder_gdf["filepath"].unique().tolist() if len(remainder_gdf) > 0 else []
-    )
+
+    # Update paths based on dataset type
+    if is_intersection_dataset:
+        # For IntersectionDataset: update sub-dataset paths only
+        _update_intersection_dataset_paths(remainder_ds, remainder_gdf)
+    else:
+        # For regular datasets: update paths on the dataset itself
+        remainder_ds.paths = (
+            remainder_gdf["filepath"].unique().tolist()
+            if len(remainder_gdf) > 0
+            else []
+        )
+
     result_datasets.append(remainder_ds)
 
     # Create datasets for each AOI file
@@ -542,7 +536,17 @@ def aoi_split(
         aoi_gdf = _create_geodataframe_from_items(items, dataset)
         aoi_ds = deepcopy(dataset)
         aoi_ds.index = aoi_gdf
-        aoi_ds.paths = aoi_gdf["filepath"].unique().tolist() if len(aoi_gdf) > 0 else []
+
+        # Update paths based on dataset type
+        if is_intersection_dataset:
+            # For IntersectionDataset: update sub-dataset paths only
+            _update_intersection_dataset_paths(aoi_ds, aoi_gdf)
+        else:
+            # For regular datasets: update paths on the dataset itself
+            aoi_ds.paths = (
+                aoi_gdf["filepath"].unique().tolist() if len(aoi_gdf) > 0 else []
+            )
+
         result_datasets.append(aoi_ds)
 
     return result_datasets
@@ -738,3 +742,44 @@ def _split_geometry_into_boxes(
                 boxes.append(intersection)
 
     return boxes
+
+
+def _update_intersection_dataset_paths(intersection_dataset, index_gdf):
+    """Update the paths of sub-datasets in an IntersectionDataset based on the intersection index.
+
+    Args:
+        intersection_dataset: The IntersectionDataset to update
+        index_gdf: The GeoDataFrame index containing the geometries after splitting
+    """
+    if len(index_gdf) == 0:
+        # Empty dataset - set empty paths for both sub-datasets
+        intersection_dataset.datasets[0].paths = []
+        intersection_dataset.datasets[1].paths = []
+        return
+
+    # Get the bounds of the intersection geometries to determine relevant files
+    intersection_bounds = index_gdf.total_bounds  # [minx, miny, maxx, maxy]
+    intersection_bbox = box(
+        intersection_bounds[0],
+        intersection_bounds[1],
+        intersection_bounds[2],
+        intersection_bounds[3],
+    )
+
+    # Update image dataset paths
+    img_dataset = intersection_dataset.datasets[0]
+    if not img_dataset.index.empty:
+        img_mask = img_dataset.index.geometry.intersects(intersection_bbox)
+        img_paths = img_dataset.index.loc[img_mask, "filepath"].unique().tolist()
+        img_dataset.paths = img_paths
+    else:
+        img_dataset.paths = []
+
+    # Update label dataset paths
+    label_dataset = intersection_dataset.datasets[1]
+    if not label_dataset.index.empty:
+        label_mask = label_dataset.index.geometry.intersects(intersection_bbox)
+        label_paths = label_dataset.index.loc[label_mask, "filepath"].unique().tolist()
+        label_dataset.paths = label_paths
+    else:
+        label_dataset.paths = []

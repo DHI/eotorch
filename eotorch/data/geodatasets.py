@@ -18,6 +18,7 @@ import torch
 from matplotlib import cm
 from pyproj import CRS
 from rasterio.plot import show
+from shapely import Polygon
 from shapely.geometry import box as shapely_box
 from torchgeo.datasets import IntersectionDataset, RasterDataset
 from torchgeo.datasets.utils import BoundingBox
@@ -29,6 +30,235 @@ from eotorch.utils import _format_filepaths, tranform_index
 
 if TYPE_CHECKING:
     from torch import Tensor
+
+
+def split_raster_into_dense_areas(
+    file_path: str | Path, polygon: Polygon, min_length: int, nodata_value: int | float
+) -> list[Polygon]:
+    """Split a raster into multiple areas with higher label density.
+
+    Args:
+        file_path: Path to the raster file
+        polygon: Shapely polygon defining the area to split
+        min_length: Minimum length (in pixels) of the shortest side of polygon box
+        nodata_value: Value indicating no data in the label file
+
+    Returns:
+        List of polygons representing areas with higher label density
+    """
+    with rst.open(file_path) as src:
+        # Get the transform and bounds
+        transform = src.transform
+        bounds = src.bounds
+
+        # Convert polygon to pixel coordinates
+        minx, miny, maxx, maxy = polygon.bounds
+
+        # Clip to raster bounds
+        minx = max(minx, bounds.left)
+        miny = max(miny, bounds.bottom)
+        maxx = min(maxx, bounds.right)
+        maxy = min(maxy, bounds.top)
+
+        # Convert to pixel coordinates
+        col_min, row_max = ~transform * (minx, miny)
+        col_max, row_min = ~transform * (maxx, maxy)
+
+        # Ensure integer pixel coordinates
+        col_min, col_max = int(col_min), int(col_max)
+        row_min, row_max = int(row_min), int(row_max)
+
+        # Read the data for the area
+        window = rst.windows.Window(
+            col_min, row_min, col_max - col_min, row_max - row_min
+        )
+        data = src.read(1, window=window)
+
+        # Find areas with labels (not nodata)
+        labeled_mask = data != nodata_value
+
+        # If no labels found, return empty list
+        if not labeled_mask.any():
+            return []
+
+        # Find bounding boxes of labeled regions
+        polygons = []
+
+        # Simple approach: create rectangles around labeled pixels
+        labeled_rows, labeled_cols = np.where(labeled_mask)
+
+        if len(labeled_rows) == 0:
+            return []
+
+        # Group nearby labeled pixels into rectangles
+        # Create a simple grid-based approach
+        min_row, max_row = labeled_rows.min(), labeled_rows.max()
+        min_col, max_col = labeled_cols.min(), labeled_cols.max()
+
+        # Calculate grid size based on min_length
+        height = max_row - min_row + 1
+        width = max_col - min_col + 1
+
+        # Determine how many splits are needed
+        rows_splits = max(1, height // min_length)
+        cols_splits = max(1, width // min_length)
+
+        row_step = height // rows_splits
+        col_step = width // cols_splits
+
+        # Create a grid of cells and check which ones contain labels
+        labeled_cells = np.zeros((rows_splits, cols_splits), dtype=bool)
+        cell_bounds = {}
+
+        for i in range(rows_splits):
+            for j in range(cols_splits):
+                # Calculate grid cell boundaries
+                cell_row_min = min_row + i * row_step
+                cell_row_max = (
+                    min_row + (i + 1) * row_step if i < rows_splits - 1 else max_row + 1
+                )
+                cell_col_min = min_col + j * col_step
+                cell_col_max = (
+                    min_col + (j + 1) * col_step if j < cols_splits - 1 else max_col + 1
+                )
+
+                # Check if this cell contains any labels
+                cell_mask = labeled_mask[
+                    cell_row_min:cell_row_max, cell_col_min:cell_col_max
+                ]
+                if cell_mask.any():
+                    labeled_cells[i, j] = True
+                    cell_bounds[(i, j)] = (
+                        cell_row_min,
+                        cell_row_max,
+                        cell_col_min,
+                        cell_col_max,
+                    )
+
+        # Find rectangular groups of neighboring cells
+        visited = np.zeros_like(labeled_cells, dtype=bool)
+
+        for i in range(rows_splits):
+            for j in range(cols_splits):
+                if labeled_cells[i, j] and not visited[i, j]:
+                    # Find the largest rectangle starting from this cell
+                    rect_cells = _find_largest_rectangle(labeled_cells, visited, i, j)
+
+                    if rect_cells:
+                        # Calculate bounds for the merged rectangle
+                        min_i = min(cell[0] for cell in rect_cells)
+                        max_i = max(cell[0] for cell in rect_cells)
+                        min_j = min(cell[1] for cell in rect_cells)
+                        max_j = max(cell[1] for cell in rect_cells)
+
+                        # Get pixel bounds
+                        cell_row_min, _, cell_col_min, _ = cell_bounds[(min_i, min_j)]
+                        _, cell_row_max, _, cell_col_max = cell_bounds[(max_i, max_j)]
+
+                        # Convert to geographic coordinates
+                        geo_minx, geo_maxy = transform * (
+                            col_min + cell_col_min,
+                            row_min + cell_row_min,
+                        )
+                        geo_maxx, geo_miny = transform * (
+                            col_min + cell_col_max,
+                            row_min + cell_row_max,
+                        )
+
+                        # Create polygon
+                        cell_polygon = shapely_box(
+                            geo_minx, geo_miny, geo_maxx, geo_maxy
+                        )
+
+                        # Intersect with original polygon to ensure we stay within bounds
+                        intersected = polygon.intersection(cell_polygon)
+                        if not intersected.is_empty and hasattr(intersected, "bounds"):
+                            polygons.append(intersected)
+
+        # If no grid cells had labels, create one rectangle around all labeled pixels
+        if not polygons:
+            geo_minx, geo_maxy = transform * (col_min + min_col, row_min + min_row)
+            geo_maxx, geo_miny = transform * (
+                col_min + max_col + 1,
+                row_min + max_row + 1,
+            )
+            cell_polygon = shapely_box(geo_minx, geo_miny, geo_maxx, geo_maxy)
+            intersected = polygon.intersection(cell_polygon)
+            if not intersected.is_empty:
+                polygons.append(intersected)
+
+        return polygons
+
+
+def _find_largest_rectangle(
+    labeled_cells: np.ndarray, visited: np.ndarray, start_i: int, start_j: int
+) -> list[tuple[int, int]]:
+    """Find the largest rectangle of neighboring labeled cells starting from a given position.
+
+    Args:
+        labeled_cells: 2D boolean array indicating which cells contain labels
+        visited: 2D boolean array tracking which cells have been processed
+        start_i: Starting row index
+        start_j: Starting column index
+
+    Returns:
+        List of (i, j) tuples representing the cells in the rectangle
+    """
+    rows, cols = labeled_cells.shape
+
+    # Find the maximum width rectangle starting from this row
+    max_area = 0
+    best_rect = []
+
+    # Try different heights starting from current position
+    for height in range(1, rows - start_i + 1):
+        # Check if we can extend to this height
+        can_extend = True
+        for h in range(height):
+            if (
+                start_i + h >= rows
+                or not labeled_cells[start_i + h, start_j]
+                or visited[start_i + h, start_j]
+            ):
+                can_extend = False
+                break
+
+        if not can_extend:
+            break
+
+        # Find maximum width for this height
+        width = 0
+        for w in range(cols - start_j):
+            # Check if all cells in this column for the current height are labeled and unvisited
+            valid_column = True
+            for h in range(height):
+                if (
+                    start_i + h >= rows
+                    or start_j + w >= cols
+                    or not labeled_cells[start_i + h, start_j + w]
+                    or visited[start_i + h, start_j + w]
+                ):
+                    valid_column = False
+                    break
+
+            if valid_column:
+                width += 1
+            else:
+                break
+
+        # Check if this rectangle is better than previous ones
+        area = height * width
+        if area > max_area:
+            max_area = area
+            best_rect = [
+                (start_i + h, start_j + w) for h in range(height) for w in range(width)
+            ]
+
+    # Mark all cells in the best rectangle as visited
+    for i, j in best_rect:
+        visited[i, j] = True
+
+    return best_rect
 
 
 class SamplePlotMixin:
@@ -402,6 +632,47 @@ class PlottabeLabelDataset(CustomCacheRasterDataset):
 
         return out_dict
 
+    def split_sparse_index(self, min_length: int = 300) -> None:
+        """Apply split index to create more densely labeled dataset rows.
+
+        Args:
+            min_length: Minimum length (in pixels) of the shortest side of polygon box
+        """
+        new_rows = []
+
+        for temporal_interval, row in self.index.iterrows():
+            filepath = row.filepath
+            polygon = row.geometry
+
+            # Split the area into more densely labeled regions
+            split_polygons = split_raster_into_dense_areas(
+                file_path=filepath,
+                polygon=polygon,
+                min_length=min_length,
+                nodata_value=self.nodata_value,
+            )
+
+            # Create new rows for each split polygon
+            for split_polygon in split_polygons:
+                new_row = row.copy()
+                new_row.geometry = split_polygon
+                new_rows.append((temporal_interval, new_row))
+
+        # Create new index if we have split polygons
+        if new_rows:
+            # Create new GeoDataFrame
+            new_data = []
+            new_temporal_intervals = []
+
+            for temporal_interval, row in new_rows:
+                new_data.append(row)
+                new_temporal_intervals.append(temporal_interval)
+
+            new_gdf = gpd.GeoDataFrame(new_data, crs=self.index.crs)
+            new_gdf.index = pd.IntervalIndex(new_temporal_intervals, name="datetime")
+
+            self.index = new_gdf
+
 
 class LabelledRasterDataset(
     IntersectionDataset,
@@ -565,6 +836,8 @@ def get_segmentation_dataset(
     class_mapping: dict[int, str] = None,
     cache_size: int = 20,
     reduce_zero_label: bool = True,
+    split_sparse_labels: bool = False,
+    split_sparse_labels_min_size: int = 300,
     image_separate_files: bool = False,
 ) -> PlottableImageDataset | LabelledRasterDataset:
     r"""
@@ -595,6 +868,9 @@ def get_segmentation_dataset(
         class_mapping (dict): Mapping of class indices to class names. Used for visualization.
         cache_size (int): Size of the memory file cache to use for image and label file reading.
         reduce_zero_label (bool): Subtract 1 from all labels. Useful when labels start from 1 instead of the expected 0.
+        split_sparse_labels (bool): If True, will try to split the label rasters into multiple boxes, in order to reduce the number of nodata
+                                    pixels in the label rasters. This is useful for large label rasters with sparse labels.
+        split_sparse_labels_min_size (int): Minimum length (in pixels) of the shortest side of polygon box to be created when splitting sparse labels.
         image_separate_files (bool): Set to True if you images are stored in individual files, e.g. red.tif, green.tif, blue.tif.
 
     Returns:
@@ -650,6 +926,8 @@ def get_segmentation_dataset(
             res=res,
             crs=crs,
         )
+        if split_sparse_labels:
+            label_ds.split_sparse_index(split_sparse_labels_min_size)
 
         return LabelledRasterDataset(image_ds, label_ds)
 
