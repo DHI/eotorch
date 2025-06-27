@@ -23,7 +23,7 @@ dependencies = [
     "folium>=0.19.5",
     "geopandas>=1.0.1",
     "numpy==2.2.3",
-    "torchgeo @ git+https://github.com/microsoft/torchgeo.git@fd6f9539d9b21760b9a40d8f858900145a82a616",
+    "torchgeo",
 ]
 
 authors = [
@@ -74,6 +74,7 @@ torch = [
 torchvision = [
   { index = "pytorch-cu126", extra = "cuda126" },
 ]
+torchgeo = { git = "https://github.com/microsoft/torchgeo", rev = "fd6f9539d9b21760b9a40d8f858900145a82a616" }
 
 [[tool.uv.index]]
 name = "pytorch-cu126"
