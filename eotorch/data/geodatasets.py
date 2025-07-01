@@ -64,9 +64,19 @@ def split_raster_into_dense_areas(
         col_min, row_max = ~transform * (minx, miny)
         col_max, row_min = ~transform * (maxx, maxy)
 
-        # Ensure integer pixel coordinates
-        col_min, col_max = int(col_min), int(col_max)
-        row_min, row_max = int(row_min), int(row_max)
+        # Ensure integer pixel coordinates and fix ordering
+        col_min, col_max = int(min(col_min, col_max)), int(max(col_min, col_max))
+        row_min, row_max = int(min(row_min, row_max)), int(max(row_min, row_max))
+
+        # Ensure we stay within raster bounds
+        col_min = max(0, col_min)
+        col_max = min(src.width, col_max)
+        row_min = max(0, row_min)
+        row_max = min(src.height, row_max)
+
+        # Check if we have a valid window
+        if col_min >= col_max or row_min >= row_max:
+            return []
 
         # Read the data for the area
         window = rst.windows.Window(
