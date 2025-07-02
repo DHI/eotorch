@@ -33,7 +33,11 @@ if TYPE_CHECKING:
 
 
 def split_raster_into_dense_areas(
-    file_path: str | Path, polygon: Polygon, min_length: int, nodata_value: int | float
+    file_path: str | Path,
+    polygon: Polygon,
+    min_length: int,
+    nodata_value: int | float,
+    polygon_crs: CRS = None,
 ) -> list[Polygon]:
     """Split a raster into multiple areas with higher label density.
 
@@ -42,16 +46,33 @@ def split_raster_into_dense_areas(
         polygon: Shapely polygon defining the area to split
         min_length: Minimum length (in pixels) of the shortest side of polygon box
         nodata_value: Value indicating no data in the label file
+        polygon_crs: CRS of the input polygon. If provided, raster will be warped to this CRS
+                     for processing, and results will be in polygon CRS
 
     Returns:
-        List of polygons representing areas with higher label density
+        List of polygons representing areas with higher label density (in polygon CRS)
     """
     with rst.open(file_path) as src:
-        # Get the transform and bounds
-        transform = src.transform
-        bounds = src.bounds
+        # Use WarpedVRT to work in polygon CRS if provided, otherwise use raster CRS
+        target_crs = polygon_crs if polygon_crs is not None else src.crs
 
-        # Convert polygon to pixel coordinates
+        if src.crs != target_crs:
+            # Use WarpedVRT to read raster data in the target CRS
+            vrt = rst.vrt.WarpedVRT(src, crs=target_crs)
+            transform = vrt.transform
+            bounds = vrt.bounds
+            width = vrt.width
+            height = vrt.height
+            data_source = vrt
+        else:
+            # Use original raster if CRS matches
+            transform = src.transform
+            bounds = src.bounds
+            width = src.width
+            height = src.height
+            data_source = src
+
+        # Convert polygon to pixel coordinates (now in the same CRS as raster data)
         minx, miny, maxx, maxy = polygon.bounds
 
         # Clip to raster bounds
@@ -70,9 +91,9 @@ def split_raster_into_dense_areas(
 
         # Ensure we stay within raster bounds
         col_min = max(0, col_min)
-        col_max = min(src.width, col_max)
+        col_max = min(width, col_max)
         row_min = max(0, row_min)
-        row_max = min(src.height, row_max)
+        row_max = min(height, row_max)
 
         # Check if we have a valid window
         if col_min >= col_max or row_min >= row_max:
@@ -82,7 +103,7 @@ def split_raster_into_dense_areas(
         window = rst.windows.Window(
             col_min, row_min, col_max - col_min, row_max - row_min
         )
-        data = src.read(1, window=window)
+        data = data_source.read(1, window=window)
 
         # Find areas with labels (not nodata)
         labeled_mask = data != nodata_value
@@ -196,6 +217,10 @@ def split_raster_into_dense_areas(
             intersected = polygon.intersection(cell_polygon)
             if not intersected.is_empty:
                 polygons.append(intersected)
+
+        # Close VRT if we created one
+        if src.crs != target_crs:
+            data_source.close()
 
         return polygons
 
@@ -660,6 +685,7 @@ class PlottabeLabelDataset(CustomCacheRasterDataset):
                 polygon=polygon,
                 min_length=min_length,
                 nodata_value=self.nodata_value,
+                polygon_crs=self.index.crs,
             )
 
             # Create new rows for each split polygon
