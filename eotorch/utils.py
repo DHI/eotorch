@@ -568,7 +568,7 @@ class Region:
         return map
 
 
-def tranform_index(
+def transform_index(
     index: gpd.GeoDataFrame, current_crs: str | pyproj.CRS, new_crs: str | pyproj.CRS
 ) -> gpd.GeoDataFrame:
     """

@@ -26,7 +26,7 @@ from torchgeo.datasets.utils import BoundingBox
 from eotorch.bandindex import BAND_INDEX
 from eotorch.inference.inference_utils import prediction_to_numpy
 from eotorch.plot import label_map, plot_dataset_index, plot_numpy_array, plot_samples
-from eotorch.utils import _format_filepaths, tranform_index
+from eotorch.utils import _format_filepaths, transform_index
 
 if TYPE_CHECKING:
     from torch import Tensor
@@ -847,7 +847,7 @@ class LabelledRasterDataset(
         self.datasets[1].crs = new_crs
 
         if index_needs_update and len(self.index) > 0:
-            self.index = tranform_index(
+            self.index = transform_index(
                 index=self.index, current_crs=old_crs, new_crs=new_crs
             )
 
