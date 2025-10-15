@@ -1,6 +1,7 @@
 from copy import deepcopy
 from math import isclose
 from pathlib import Path
+from glob import glob
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union, cast
 
 import geopandas as gpd
@@ -218,25 +219,40 @@ def file_wise_split(
     dataset: RasterDataset,
     val_img_files: Union[str, Path, List[str], List[Path], None] = None,
     test_img_files: Union[str, Path, List[str], List[Path], None] = None,
+    val_img_glob: Union[str, Path] = None,
+    test_img_glob: Union[str, Path] = None,
     ratios_or_counts: Optional[Sequence[float]] = None,
 ) -> List[RasterDataset]:
     """
     Splits a dataset based on image files, ensuring no file overlap between splits.
 
-    Args:
-        dataset: The dataset to be split (RasterDataset or IntersectionDataset).
-        val_img_files: Files for the validation set.
-        test_img_files: Files for the test set.
-        ratios_or_counts: Ratios or counts for random splitting (overrides file lists).
-
-    Returns:
-        A list of datasets [train, validation (optional), test (optional)].
+    Parameters:
+        dataset (RasterDataset): 
+            The dataset to be split (RasterDataset or IntersectionDataset).
+        val_img_files (Union[str, Path, List[str], List[Path], None], optional): 
+            Files for the validation set. Defaults to None.
+        test_img_files (Union[str, Path, List[str], List[Path], None], optional): 
+            Files for the test set. Defaults to None.
+        val_img_glob (Union[str, Path], optional): 
+            glob pattern to find images for the validation set. Overrides `val_img_files`. Defaults to None.
+        test_img_glob (Union[str, Path], optional): 
+            glob pattern to find images for the test set. Overrides `test_img_files`. Defaults to None.
+        ratios_or_counts (Optional[Sequence[float]], optional): 
+            Ratios or counts for random splitting (overrides file lists). Defaults to None.
 
     Raises:
-        ValueError: If input parameters are invalid or files are not found.
-    """
+        ValueError: 
+            If input parameters are invalid or files are not found.
+        TypeError: 
+            If dataset is not a RasterDataset or IntersectionDataset.
+
+    Returns:
+        List[RasterDataset]: 
+            A list of datasets [train, validation (optional), test (optional)].
+    """    
+
     use_ratios = ratios_or_counts is not None
-    use_files = (val_img_files is not None) or (test_img_files is not None)
+    use_files = (val_img_files or test_img_files or val_img_glob or test_img_glob) is not None
 
     if not use_ratios and not use_files:
         raise ValueError(
@@ -259,6 +275,8 @@ def file_wise_split(
         )
 
     # Perform file-based split
+    val_img_files = glob(val_img_glob) if val_img_glob is not None else val_img_files
+    test_img_files = glob(test_img_glob) if test_img_glob is not None else test_img_files
     val_files = _format_paths(val_img_files)
     test_files = _format_paths(test_img_files)
 
