@@ -1,5 +1,9 @@
-from .deepresunet import ClfDeepResUNet
+from .deepresunet import ClfDeepResUNet, RegDeepResUNet
 
-MODEL_MAPPING = {
+CLF_MODEL_MAPPING = {
     "deepresunet": ClfDeepResUNet,
+}
+
+REG_MODEL_MAPPING = {
+    "deepresunet": RegDeepResUNet,
 }

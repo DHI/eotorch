@@ -7,9 +7,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pyproj
 import rasterio as rst
+import torch
 from folium.plugins import Draw, MeasureControl
 from folium.raster_layers import ImageOverlay
 from matplotlib import cm
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 from rasterio.plot import show
 from rasterio.vrt import WarpedVRT
 from rasterio.windows import get_data_window
@@ -568,7 +570,7 @@ def plot_numpy_array(
         )
 
     numeric_data_values = {
-        v for v in potential_data_values if isinstance(v, (int, np.integer))
+        v for v in potential_data_values if isinstance(v, (int, float, np.integer, np.floating))
     }
 
     cmap = plt.get_cmap(colormap).copy()
@@ -582,15 +584,19 @@ def plot_numpy_array(
         show(array_to_plot, ax=ax, cmap=cmap, vmin=-1, vmax=0, **kwargs)
 
     else:
-        min_class = min(numeric_data_values)
-        max_class = max(numeric_data_values)
+        min_val = min(numeric_data_values)
+        max_val = max(numeric_data_values)
 
-        bounds = np.arange(min_class - 0.5, max_class + 1.5)
-        if len(bounds) < 2:
-            bounds = np.array([min_class - 0.5, min_class + 0.5])
-            max_class = min_class
-
-        norm = plt.matplotlib.colors.BoundaryNorm(bounds, cmap.N)
+        # Use BoundaryNorm for discrete data (int values) and Normalize for continuous data
+        if all(isinstance(v, (int, np.integer)) for v in numeric_data_values):
+            # For discrete data (classification)
+            bounds = np.arange(min_val - 0.5, max_val + 1.5)
+            if len(bounds) < 2:
+                bounds = np.array([min_val - 0.5, min_val + 0.5])
+            norm = plt.matplotlib.colors.BoundaryNorm(bounds, cmap.N)
+        else:
+            # For continuous data (regression)
+            norm = plt.matplotlib.colors.Normalize(vmin=min_val, vmax=max_val)
 
         # Pass the array_to_plot (masked or unmasked)
         show(array_to_plot, ax=ax, cmap=cmap, norm=norm, **kwargs)
@@ -611,27 +617,42 @@ def plot_numpy_array(
         if v not in effective_class_mapping:
             effective_class_mapping[v] = str(v)
 
-    present_data_values = sorted(
-        list(set(v for v in data_values if isinstance(v, (int, np.integer))))
-    )
-
-    if norm:
-        for i in present_data_values:
-            if i >= bounds[0] and i < bounds[-1]:
-                color = cmap(norm(i))
-                label = effective_class_mapping.get(i, str(i))
-                legend_patches.append(mpatches.Patch(color=color, label=label))
-
-    if nodata_present:  # Add nodata legend only if it was actually present
-        legend_patches.append(mpatches.Patch(color=nodata_color, label="No Data"))
-
-    if legend_patches:
-        ax.legend(
-            handles=legend_patches,
-            bbox_to_anchor=(1.05, 1),
-            loc=2,
-            borderaxespad=0.0,
+    # For continuous data, create a colorbar instead of discrete legend patches
+    is_continuous = not all(isinstance(v, (int, np.integer)) for v in numeric_data_values)
+    
+    if is_continuous:
+        # For continuous data (regression), position colorbar without resizing axes
+        divider = make_axes_locatable(ax)
+        cax = divider.append_axes("right", size="5%", pad=0.05)
+        plt.colorbar(plt.cm.ScalarMappable(norm=norm, cmap=cmap), cax=cax)
+    else:
+        # For discrete data, create legend patches
+        present_data_values = sorted(
+            list(set(v for v in data_values if isinstance(v, (int, np.integer))))
         )
+        
+        if norm:
+            for i in present_data_values:
+                if isinstance(norm, plt.matplotlib.colors.BoundaryNorm):
+                    if i >= norm.boundaries[0] and i < norm.boundaries[-1]:
+                        color = cmap(norm(i))
+                        label = effective_class_mapping.get(i, str(i))
+                        legend_patches.append(mpatches.Patch(color=color, label=label))
+                else:
+                    color = cmap(norm(i))
+                    label = effective_class_mapping.get(i, str(i))
+                    legend_patches.append(mpatches.Patch(color=color, label=label))
+
+        if nodata_present:  # Add nodata legend only if it was actually present
+            legend_patches.append(mpatches.Patch(color=nodata_color, label="No Data"))
+
+        if legend_patches:
+            ax.legend(
+                handles=legend_patches,
+                bbox_to_anchor=(1.05, 1),
+                loc=2,
+                borderaxespad=0.0,
+            )
 
 
 def plot_samples(
@@ -640,6 +661,7 @@ def plot_samples(
     patch_size: int = 256,
     nodata_val: int = 0,
     show_filepaths: bool = False,
+    dataset_type: str = 'classification',
 ):
     from torch.utils.data import DataLoader
     from torchgeo.datasets import stack_samples, unbind_samples
@@ -659,12 +681,19 @@ def plot_samples(
         try:
             batch = next(_iterator)
             sample = unbind_samples(batch)[0]
-            if (
-                (("image" in sample) and (sample["image"] == 0).all())
-                or ("mask" in sample and (sample["mask"] == nodata_val).all())
-                or ("mask" in sample and (sample["mask"] == -1).all())
-            ):
-                continue
+            if dataset_type == 'classification':
+                if (
+                    (("image" in sample) and (sample["image"] == 0).all())
+                    or ("mask" in sample and (sample["mask"] == nodata_val).all())
+                    or ("mask" in sample and (sample["mask"] == -1).all())
+                ):
+                    continue
+            elif dataset_type == 'regression':
+                if (
+                    (("image" in sample) and (sample["image"] == 0).all())
+                    or ("mask" in sample and torch.equal(sample["mask"], torch.full_like(sample["mask"], nodata_val)))
+                ):
+                    continue
             samples.append(sample)
             if len(samples) == n:
                 break
