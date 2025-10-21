@@ -445,7 +445,7 @@ def aoi_split(
             raise ValueError(f"AOI file not found: {file_path}")
 
         try:
-            gdf = gpd.read_file(file_path)
+            gdf = gpd.read_file(file_path).to_crs(dataset.crs)
             gdf = gdf[gdf.geometry.type.isin(["Polygon", "MultiPolygon"])]
 
             if gdf.empty:
@@ -456,16 +456,8 @@ def aoi_split(
             for geom in gdf.geometry:
                 bounds = geom.bounds  # minx, miny, maxx, maxy in original CRS
 
-                # Transform bounds to dataset CRS if needed
-                if crs is not None and crs != dataset.crs:
-                    transformed_bounds = _transform_bounds_to_crs(
-                        bounds, crs, dataset.crs
-                    )
-                else:
-                    transformed_bounds = bounds
-
                 # Create rectangle from transformed bounds
-                minx, miny, maxx, maxy = transformed_bounds
+                minx, miny, maxx, maxy = bounds
                 rectangle = box(minx, miny, maxx, maxy)
                 rectangles.append(rectangle)
 
