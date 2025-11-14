@@ -1,12 +1,14 @@
 # System features
+import json
 import logging
 import random
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Union
 
 # Data management
 import numpy as np
 import rasterio as rst
+from alive_progress import alive_bar
 from rasterio.enums import Resampling
 
 from eotorch.bandindex import BAND_INDEX
@@ -285,3 +287,215 @@ def resample(
     )
 
     return out_image, profile
+
+
+def zscore_normalize(
+    input_files: Union[str, Path, List[Union[str, Path]]],
+    out_dir: Union[str, Path],
+    bands: List[int] = None,
+    save_stats: bool = False,
+    sample_size: float = 1.0,
+) -> Dict[str, np.ndarray]:
+    """
+    Applies z-score normalization to a set of images based on mean and standard deviation
+    computed across all input files.
+
+    This normalization method transforms the data so that it has zero mean and unit variance:
+        normalized = (x - mean) / std
+
+    This is the normalization method used in Prithvi-EO-2.0 fine-tuning examples.
+
+    Parameters:
+        input_files (str | Path | List[str | Path]):
+            Either a single file path, a directory path (all .tif files will be processed),
+            or a list of file paths to normalize.
+        out_dir (str | Path):
+            Directory where normalized images will be saved. Will be created if it doesn't exist.
+        bands (List[int], optional):
+            List of 1-based band indices to process. If None, all bands are processed.
+            Defaults to None.
+        save_stats (bool, optional):
+            If True, saves the computed mean and std statistics to a JSON file in out_dir.
+            Defaults to False.
+        sample_size (float, optional):
+            Fraction of pixels to use for computing statistics (0-1). Use < 1 for large datasets
+            to speed up computation. Defaults to 1.0 (use all pixels).
+
+    Returns:
+        Dict[str, np.ndarray]:
+            Dictionary with keys 'mean' and 'std', each containing a numpy array of per-band statistics.
+
+    Example:
+        >>> # Normalize all images in a directory
+        >>> stats = zscore_normalize(
+        ...     input_files="/path/to/images",
+        ...     out_dir="/path/to/normalized",
+        ...     save_stats=True
+        ... )
+        >>> print(f"Mean per band: {stats['mean']}")
+        >>> print(f"Std per band: {stats['std']}")
+
+        >>> # Normalize specific files
+        >>> files = ["/path/to/img1.tif", "/path/to/img2.tif"]
+        >>> stats = zscore_normalize(
+        ...     input_files=files,
+        ...     out_dir="/path/to/normalized",
+        ...     bands=[1, 2, 3, 4],  # Only process first 4 bands
+        ...     save_stats=True
+        ... )
+    """
+    # Parse input files
+    input_files = Path(input_files) if isinstance(input_files, str) else input_files
+
+    if isinstance(input_files, Path):
+        if input_files.is_dir():
+            # Get all .tif files in directory
+            file_list = sorted(input_files.glob("*.tif")) + sorted(
+                input_files.glob("*.tiff")
+            )
+            if not file_list:
+                raise ValueError(
+                    f"No .tif or .tiff files found in directory: {input_files}"
+                )
+        else:
+            # Single file
+            file_list = [input_files]
+    else:
+        # List of files
+        file_list = [Path(f) for f in input_files]
+
+    if not file_list:
+        raise ValueError("No input files provided")
+
+    logger.info(f"Processing {len(file_list)} files for z-score normalization")
+
+    # Create output directory
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Determine bands to process
+    with rst.open(file_list[0]) as src:
+        n_bands = src.count
+        if bands is None:
+            bands = list(range(1, n_bands + 1))
+        else:
+            if max(bands) > n_bands:
+                raise ValueError(
+                    f"Band index {max(bands)} exceeds number of bands ({n_bands})"
+                )
+
+    logger.info(
+        f"Computing statistics for {len(bands)} bands across {len(file_list)} files"
+    )
+
+    # First pass: compute mean and std across all files
+    band_sums = np.zeros(len(bands), dtype=np.float64)
+    band_sq_sums = np.zeros(len(bands), dtype=np.float64)
+    total_pixels = 0
+
+    with alive_bar(len(file_list), title="Computing statistics", unit="files") as bar:
+        for file_path in file_list:
+            with rst.open(file_path) as src:
+                # Read data in chunks if needed
+                if sample_size < 1.0:
+                    # Sample random windows
+                    windows = list(slice_image(*src.shape, as_windows=True))
+                    n_samples = max(1, int(len(windows) * sample_size))
+                    windows = random.sample(windows, n_samples)
+                else:
+                    windows = slice_image(*src.shape, as_windows=True)
+
+                for window in windows:
+                    data = src.read(indexes=bands, window=window)
+                    # Mask out nodata values if present
+                    if src.nodata is not None:
+                        mask = data != src.nodata
+                        data = data.astype(np.float64)
+                        data[~mask] = np.nan
+                    else:
+                        data = data.astype(np.float64)
+
+                    # Also mask out zeros (common nodata indicator)
+                    data[data == 0] = np.nan
+
+                    # Compute sums per band
+                    for i in range(len(bands)):
+                        valid_pixels = ~np.isnan(data[i])
+                        if i == 0:  # Count pixels only once
+                            total_pixels += np.sum(valid_pixels)
+                        band_sums[i] += np.nansum(data[i])
+                        band_sq_sums[i] += np.nansum(data[i] ** 2)
+
+            bar()
+
+    if total_pixels == 0:
+        raise ValueError("No valid pixels found in input files")
+
+    # Compute mean and std
+    means = band_sums / total_pixels
+    stds = np.sqrt((band_sq_sums / total_pixels) - (means**2))
+
+    # Avoid division by zero
+    stds[stds < 1e-10] = 1.0
+
+    logger.info(f"Computed statistics from {total_pixels:,} pixels")
+    logger.info(f"Means: {means}")
+    logger.info(f"Stds: {stds}")
+
+    # Save statistics if requested
+    if save_stats:
+        stats_file = out_dir / "zscore_stats.json"
+        stats_dict = {
+            "means": means.tolist(),
+            "stds": stds.tolist(),
+            "bands": bands,
+            "n_files": len(file_list),
+            "total_pixels": int(total_pixels),
+        }
+        with open(stats_file, "w") as f:
+            json.dump(stats_dict, f, indent=2)
+        logger.info(f"Statistics saved to {stats_file}")
+
+    # Second pass: normalize and save files
+    logger.info("Normalizing and saving files...")
+    with alive_bar(len(file_list), title="Normalizing files", unit="files") as bar:
+        for file_path in file_list:
+            out_path = out_dir / f"{file_path.stem}_zscore.tif"
+
+            with rst.open(file_path) as src:
+                profile = src.profile.copy()
+                profile.update(
+                    dtype="float32",
+                    nodata=np.nan,
+                )
+
+                # Process in chunks to handle large files
+                windows = slice_image(*src.shape, as_windows=True)
+
+                with rst.open(out_path, "w", **profile) as dst:
+                    for window in windows:
+                        data = src.read(indexes=bands, window=window)
+
+                        # Mask out nodata values
+                        if src.nodata is not None:
+                            mask = data != src.nodata
+                            data = data.astype(np.float32)
+                            data[~mask] = np.nan
+                        else:
+                            data = data.astype(np.float32)
+
+                        # Mask out zeros
+                        data[data == 0] = np.nan
+
+                        # Apply z-score normalization
+                        for i in range(len(bands)):
+                            data[i] = (data[i] - means[i]) / stds[i]
+
+                        dst.write(data, window=window)
+
+            logger.info(f"Saved normalized file: {out_path}")
+            bar()
+
+    logger.info(f"Z-score normalization complete. Files saved to {out_dir}")
+
+    return {"mean": means, "std": stds}
