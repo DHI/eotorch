@@ -20,7 +20,12 @@ from pyproj import CRS
 from rasterio.plot import show
 from shapely import Polygon
 from shapely.geometry import box as shapely_box
-from torchgeo.datasets import IntersectionDataset, RasterDataset
+from torchgeo.datasets import (
+    GeoDataset,
+    IntersectionDataset,
+    RasterDataset,
+    concat_samples,
+)
 from torchgeo.datasets.utils import BoundingBox
 
 from eotorch.bandindex import BAND_INDEX
@@ -714,6 +719,30 @@ class LabelledRasterDataset(
     IntersectionDataset,
     SamplePlotMixin,
 ):
+    def __init__(
+        self,
+        dataset1: GeoDataset,
+        dataset2: GeoDataset,
+        collate_fn: Callable[
+            [Sequence[dict[str, Any]]], dict[str, Any]
+        ] = concat_samples,
+        transforms: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    ) -> None:
+        super().__init__(dataset1, dataset2, collate_fn, transforms)
+
+        # rename index columns resulting from merge, for more clarity
+        if "filepath_1" in self.index.columns:
+            self.index = self.index.rename(
+                columns={"filepath_1": "image_filepath", "filepath_2": "label_filepath"}
+            )
+        if "datetime_1" in self.index.columns:
+            self.index = self.index.rename(
+                columns={
+                    "datetime_1": "image_datetime",
+                    "datetime_2": "label_datetime",
+                }
+            )
+
     def plot(self, sample: dict[str, Any], **kwargs):
         predictions = sample.pop("prediction", None)
         n_cols = 3 if predictions is not None else 2
