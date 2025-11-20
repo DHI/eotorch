@@ -339,7 +339,13 @@ def random_bbox_assignment(
         A list of the subset datasets.
     """
 
-    if not (isclose(sum(lengths), 1) or isclose(sum(lengths), len(dataset))):
+    # Determine the dataset to split (handle IntersectionDataset)
+    if isinstance(dataset, IntersectionDataset):
+        split_dataset = dataset.datasets[0]
+    else:
+        split_dataset = dataset
+
+    if not (isclose(sum(lengths), 1) or isclose(sum(lengths), len(split_dataset))):
         raise ValueError(
             "Sum of input lengths must equal 1 or the length of dataset's index."
         )
@@ -348,7 +354,7 @@ def random_bbox_assignment(
         raise ValueError("All items in input lengths must be greater than 0.")
 
     if isclose(sum(lengths), 1):
-        lengths = _fractions_to_lengths(lengths, len(dataset))
+        lengths = _fractions_to_lengths(lengths, len(split_dataset))
     lengths = cast(Sequence[int], lengths)
     zero_length_idces = [i for i, length in enumerate(lengths) if length == 0]
     non_zero_length_idces = [i for i, length in enumerate(lengths) if length > 0]
@@ -364,7 +370,7 @@ def random_bbox_assignment(
 
     # Get all items from the dataset index
     items_data = [
-        (row["geometry"], row["filepath"]) for _, row in dataset.index.iterrows()
+        (row["geometry"], row["filepath"]) for _, row in split_dataset.index.iterrows()
     ]
 
     # Randomly permute the items
@@ -382,12 +388,12 @@ def random_bbox_assignment(
         if split_items:
             # Extract filepaths to filter original index
             split_filepaths = {filepath for _, filepath in split_items}
-            mask = dataset.index["filepath"].isin(split_filepaths)
-            filtered_index = dataset.index[mask].copy()
+            mask = split_dataset.index["filepath"].isin(split_filepaths)
+            filtered_index = split_dataset.index[mask].copy()
         else:
             # Create empty GeoDataFrame with correct structure
             empty_gdf = gpd.GeoDataFrame(
-                {"filepath": []}, geometry=[], crs=dataset.index.crs
+                {"filepath": []}, geometry=[], crs=split_dataset.index.crs
             )
             # Create empty IntervalIndex to match original structure
             empty_temporal_index = pd.IntervalIndex.from_tuples(
@@ -399,18 +405,7 @@ def random_bbox_assignment(
         new_indexes.append(filtered_index)
         start_idx = end_idx
 
-    # Create new datasets
-    new_datasets = []
-    for index in new_indexes:
-        ds = deepcopy(dataset)
-        ds.index = index
-        if len(index) > 0:
-            ds.paths = index["filepath"].tolist()
-        else:
-            ds.paths = []
-        new_datasets.append(ds)
-
-    return new_datasets
+    return _build_split_datasets(dataset, new_indexes)
 
 
 def aoi_split(
