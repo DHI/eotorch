@@ -68,12 +68,21 @@ from eotorch.data import splits
 train_ds, val_ds = splits.aoi_split(
     dataset=ds,
     aoi_files="validation_zones.geojson",
+    crs="EPSG:4326",        # CRS of the AOI file (default: EPSG:4326)
     buffer_size_metres=100  # Optional buffer
 )
 ```
 
+### Parameters
+
+- **`aoi_files`**: Single filepath or sequence of filepaths to shapefile or GeoJSON files containing the AOI polygons.
+- **`crs`**: The CRS of the input AOI geometries (e.g., `"EPSG:4326"` for lat/lon). The function will automatically transform AOI bounds to match the dataset's CRS. Default is `"EPSG:4326"`.
+- **`buffer_size_metres`**: Size of buffer in meters to apply around AOIs. Default is 0.
+
 ### Buffer Zone
 The `buffer_size_metres` parameter allows you to define a buffer zone around your AOIs. Data within this buffer zone is excluded from the training set (remainder dataset). This is crucial for preventing spatial autocorrelation leakage when your training samples are close to your validation region.
+
+**Note:** The buffer size is automatically converted to the dataset's CRS units. For geographic CRS (like EPSG:4326), a rough approximation of 1 degree ≈ 111,320 meters is used.
 
 ### Splitting Logic
 

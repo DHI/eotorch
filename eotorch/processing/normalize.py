@@ -409,14 +409,14 @@ def zscore_normalize(
                     data = src.read(indexes=bands, window=window)
                     # Mask out nodata values if present
                     if src.nodata is not None:
-                        mask = data != src.nodata
+                        mask = data == src.nodata
                         data = data.astype(np.float64)
-                        data[~mask] = np.nan
+                        data[mask] = np.nan
                     else:
                         data = data.astype(np.float64)
 
                     # Also mask out zeros (common nodata indicator)
-                    data[data == 0] = np.nan
+                    # data[data == 0] = np.nan
 
                     # Compute sums per band
                     for i in range(len(bands)):
@@ -466,7 +466,7 @@ def zscore_normalize(
                 profile = src.profile.copy()
                 profile.update(
                     dtype="float32",
-                    nodata=np.nan,
+                    # nodata=np.nan,
                 )
 
                 # Process in chunks to handle large files
@@ -477,15 +477,15 @@ def zscore_normalize(
                         data = src.read(indexes=bands, window=window)
 
                         # Mask out nodata values
-                        if src.nodata is not None:
-                            mask = data != src.nodata
-                            data = data.astype(np.float32)
-                            data[~mask] = np.nan
-                        else:
-                            data = data.astype(np.float32)
+                        # if src.nodata is not None:
+                        # mask = data != src.nodata
+                        # data = data.astype(np.float32)
+                        # data[~mask] = np.nan
+                        # else:
+                        # data = data.astype(np.float32)
 
                         # Mask out zeros
-                        data[data == 0] = np.nan
+                        # data[data == 0] = np.nan
 
                         # Apply z-score normalization
                         for i in range(len(bands)):
