@@ -16,7 +16,11 @@
 
 - [Installation](#installation)
 - [Core Concepts](#core-concepts)
-- [Quick Start](#quick-start)
+  - [1. Dataset Creation with `get_segmentation_dataset()`](#1-dataset-creation-with-get_segmentation_dataset)
+  - [2. Data Splitting with `splits`](#2-data-splitting-with-splits)
+  - [3. Data Loading with `SegmentationDataModule`](#3-data-loading-with-segmentationdatamodule)
+  - [4. Inference with `SemanticSegmentationTask.predict_on_tif_file()`](#4-inference-with-semanticsegmentationtaskpredict_on_tif_file)
+  - [5. Preprocessing with `eotorch.processing`](#5-preprocessing-with-eotorchprocessing)
 - [Key Differences from TorchGeo](#key-differences-from-torchgeo)
 - [API Reference](#api-reference)
 - [Examples](#examples)

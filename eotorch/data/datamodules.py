@@ -79,8 +79,8 @@ class SegmentationDataModule(GeoDataModule):
         num_workers: int = 0,
         persistent_workers: bool = False,
         pin_memory: bool = False,
+        drop_last: bool = False,
         train_sampler_config: dict[str, Any] = None,
-        **kwargs: Any,
     ):
         """
         Initialize the SegmentationDataModule.
@@ -94,6 +94,8 @@ class SegmentationDataModule(GeoDataModule):
             num_workers: The number of worker processes for data loading.
             persistent_workers: Whether to use persistent workers for data loading.
             pin_memory: Whether to pin memory for data loading.
+            drop_last: Whether to drop the last incomplete batch. This is useful when
+                using models with BatchNorm layers that fail with batch_size=1.
             train_sampler_config: The training sampler configuration (optional).
                 If None, a default sampler will be used. The default is a GridGeoSampler with the following parameters:
                 size=patch_size, stride=patch_size / 2.
@@ -105,14 +107,12 @@ class SegmentationDataModule(GeoDataModule):
                 Any sampler from torchgeo.samplers can be used here. The sampler will be initialized with the following parameters.
                 Example of some other sampler configurations:
                 train_sampler_config = {"type": "RandomGeoSampler", "length": length}
-            **kwargs: Additional keyword arguments.
         """
         super().__init__(
-            # train_cls,
             dataset_class=train_dataset.__class__,
             batch_size=batch_size,
             patch_size=patch_size,
-            num_workers=num_workers,  # **dataset_kwargs
+            num_workers=num_workers,
         )
 
         self.train_dataset = train_dataset
@@ -123,6 +123,7 @@ class SegmentationDataModule(GeoDataModule):
 
         self.persistent_workers = persistent_workers
         self.pin_memory = pin_memory
+        self.drop_last = drop_last
         self.aug = None
 
         def _format_dict_for_yaml(d: dict):
@@ -150,6 +151,7 @@ class SegmentationDataModule(GeoDataModule):
                     "num_workers": num_workers,
                     "persistent_workers": persistent_workers,
                     "pin_memory": pin_memory,
+                    "drop_last": drop_last,
                     "train_sampler_config": train_sampler_config,
                 }
             )
@@ -425,6 +427,7 @@ If this is not desired, please provide a val_dataset to the data module.
             collate_fn=self.collate_fn,
             persistent_workers=self.persistent_workers,
             pin_memory=self.pin_memory,
+            drop_last=self.drop_last if split == "train" else False,
         )
 
     def transfer_batch_to_device(

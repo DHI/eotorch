@@ -416,7 +416,7 @@ def zscore_normalize(
                         data = data.astype(np.float64)
 
                     # Also mask out zeros (common nodata indicator)
-                    # data[data == 0] = np.nan
+                    data[data == 0] = np.nan
 
                     # Compute sums per band
                     for i in range(len(bands)):
@@ -469,6 +469,9 @@ def zscore_normalize(
                     # nodata=np.nan,
                 )
 
+                # Determine the fill value for nodata pixels
+                nodata_fill = src.nodata if src.nodata is not None else 0.0
+
                 # Process in chunks to handle large files
                 windows = slice_image(*src.shape, as_windows=True)
 
@@ -476,20 +479,20 @@ def zscore_normalize(
                     for window in windows:
                         data = src.read(indexes=bands, window=window)
 
-                        # Mask out nodata values
-                        # if src.nodata is not None:
-                        # mask = data != src.nodata
-                        # data = data.astype(np.float32)
-                        # data[~mask] = np.nan
-                        # else:
-                        # data = data.astype(np.float32)
+                        # Create mask for nodata pixels (zeros, explicit nodata, or NaN)
+                        nodata_mask = (
+                            (data == 0) | (data == nodata_fill) | np.isnan(data)
+                        )
 
-                        # Mask out zeros
-                        # data[data == 0] = np.nan
+                        # Convert to float for normalization
+                        data = data.astype(np.float32)
 
                         # Apply z-score normalization
                         for i in range(len(bands)):
                             data[i] = (data[i] - means[i]) / stds[i]
+
+                        # Set nodata pixels to the nodata value (not NaN) to avoid issues during training
+                        data[nodata_mask] = nodata_fill
 
                         dst.write(data, window=window)
 
