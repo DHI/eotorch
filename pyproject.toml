@@ -14,10 +14,13 @@ exclude = ["notebooks", "tests", "images"]
 [tool.hatch.metadata]
 allow-direct-references = true
 
+[tool.hatch.version]
+path = "eotorch/__about__.py"
+
 [project]
 # name on PyPI (e.g. pip install eotorch)
 name = "eotorch"
-version = "0.0.1"
+dynamic = ["version"]
 dependencies = [
     "alive-progress>=3.2.0",
     "folium>=0.19.5",
@@ -28,8 +31,10 @@ dependencies = [
 
 authors = [
   { name="Paul Daniel", email="pada@dhigroup.com" },
+  { name="Nicklas Simonsen", email="nisi@dhigroup.com" },
+  { name="Marie Lund Larsen", email="mlla@dhigroup.com" },
 ]
-description = "Useful library"
+description = "Geospatial deep learning built on top of TorchGeo and PyTorch Lightning"
 readme = "README.md"
 requires-python = ">=3.11"
 license = {file = "LICENSE"}
