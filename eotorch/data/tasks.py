@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, Callable
 import numpy as np
 import segmentation_models_pytorch as smp
 import torch
+from lightning import LightningModule
 from matplotlib import pyplot as plt
 from torchgeo.datasets import RGBBandsMissingError, unbind_samples
 from torchgeo.datasets.utils import array_to_tensor
@@ -913,3 +914,354 @@ class RegressionTask(TorchGeoRegressionTask):
             func_supports_batching=func_supports_batching,
         )
 
+
+class PatchSegmentationTask(LightningModule):
+    """Lightning module for semantic segmentation with DeepResUNet backbone."""
+
+    def __init__(
+        self,
+        num_classes: int,
+        in_channels: int,
+        num_filters: int = 128,
+        model = 'deepresunet',
+        loss: str = 'dice',
+        task: str = 'multiclass',
+        class_weights: Tensor | None = None,
+        weights: WeightsEnum | str | bool | None = None,
+        ignore_index: int | None = None,
+        lr: float = 1e-3,
+        model_kwargs: dict[str, Any] = None,
+        lr_scheduler: dict[str, Any] | None = None,
+    ) -> None:
+        """Initialize model, optimization config, and metric collections."""
+        super().__init__()
+        self.weights = weights
+        self.in_channels = in_channels
+        self.num_classes = num_classes
+        self.num_filters = num_filters
+        self.loss = loss
+        class_weights = class_weights
+        self.ignore_index = ignore_index
+        self.task = task
+        self.lr = lr
+        self.model_kwargs = model_kwargs or {}
+        self.lr_scheduler = lr_scheduler or {}
+        self.save_hyperparameters(ignore={"weights"})
+
+        self.configure_models()
+        self.configure_losses()
+        self.configure_metrics()
+
+    def configure_models(self) -> None:
+        model: str = self.hparams["model"]
+        weights = self.weights
+
+        if model.lower() in CLF_MODEL_MAPPING:
+            model_cls = CLF_MODEL_MAPPING[model]
+
+            init_args = get_init_args(model_cls)
+            for param in init_args:
+                if (
+                    param in self.hparams
+                ):  # all the args from __init__ are in hparams, like num_classes, in_channels, etc.
+                    self.model_kwargs[param] = self.hparams[param]
+
+            print(f"Initializing model {model} with kwargs {self.model_kwargs}")
+            self.model: nn.Module = model_cls(**self.model_kwargs)
+
+            if weights:
+                if isinstance(weights, (str, Path)):
+                    weights = torch.load(weights)
+                self.model.load_state_dict(weights)
+                print(f"Weights loaded successfully from {weights}")
+
+        else:
+            super().configure_models()
+
+    def configure_losses(self) -> None:
+        """Configure the training loss function based on the selected loss name."""
+        ignore_index: int | None = self.hparams["ignore_index"]
+        class_weights: Tensor | None = self.hparams["class_weights"]
+        if class_weights is not None and not isinstance(class_weights, Tensor):
+            class_weights = torch.tensor(class_weights, dtype=torch.float32)
+
+        match self.hparams["loss"]:
+            case "ce":
+                from torch import nn
+
+                ignore_value = -1000 if ignore_index is None else ignore_index
+                self.criterion: nn.Module = nn.CrossEntropyLoss(
+                    ignore_index=ignore_value, weight=class_weights
+                )
+            case "bce":
+                from torch import nn
+
+                self.criterion = nn.BCEWithLogitsLoss()
+            case "jaccard":
+                # JaccardLoss requires a list of classes to use instead of a class
+                # index to ignore.
+                classes = [
+                    i for i in range(self.hparams["num_classes"]) if i != ignore_index
+                ]
+
+                self.criterion = smp.losses.JaccardLoss(
+                    mode=self.hparams["task"], classes=classes
+                )
+            case "focal":
+                self.criterion = smp.losses.FocalLoss(
+                    mode=self.hparams["task"],
+                    ignore_index=ignore_index,
+                    normalized=True,
+                    alpha=0.8,
+                    gamma=3.0,
+                )
+            case "dice":
+                self.criterion = smp.losses.DiceLoss(
+                    mode=self.hparams["task"],
+                    ignore_index=ignore_index,
+                    from_logits=True,
+                )
+
+    def configure_optimizers(self) -> dict[str, Any]:
+        """Build optimizer and scheduler configuration for Lightning."""
+        optimizer = torch.optim.AdamW(self.parameters(), lr=self.hparams["lr"], weight_decay=1e-4)
+        if self.lr_scheduler:
+            scheduler = self.lr_scheduler
+        else:
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer, patience=10, min_lr=1e-6, factor=0.2
+            )
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "monitor": "val_loss",
+            },
+        }
+    
+    def configure_metrics(self) -> None:
+        """Create train/validation/test metric collections."""
+        num_classes = self.hparams["num_classes"]
+        ignore_index = self.hparams["ignore_index"]
+        class_names = self.hparams.get("class_names") or [
+            str(i) for i in range(num_classes)
+        ]
+        
+        metrics = MetricCollection(
+            {
+                # Macro-averaged metrics (consistent with TerraTorch naming)
+                "mIoU": MulticlassJaccardIndex(
+                    num_classes=num_classes,
+                    ignore_index=ignore_index,
+                    average="macro",
+                ),
+                "F1_Score": MulticlassF1Score(
+                    num_classes=num_classes,
+                    ignore_index=ignore_index,
+                    average="macro",
+                ),
+                "Accuracy": MulticlassAccuracy(
+                    num_classes=num_classes,
+                    ignore_index=ignore_index,
+                    average="macro",
+                ),
+                # Micro-averaged (pixel-level) accuracy
+                "Pixel_Accuracy": MulticlassAccuracy(
+                    num_classes=num_classes,
+                    ignore_index=ignore_index,
+                    average="micro",
+                ),
+                # Per-class metrics using ClasswiseWrapper (like TerraTorch)
+                "IoU": ClasswiseWrapper(
+                    MulticlassJaccardIndex(
+                        num_classes=num_classes,
+                        ignore_index=ignore_index,
+                        average=None,
+                    ),
+                    labels=class_names,
+                    prefix="IoU_",
+                ),
+                "Class_Accuracy": ClasswiseWrapper(
+                    MulticlassAccuracy(
+                        num_classes=num_classes,
+                        ignore_index=ignore_index,
+                        average=None,
+                    ),
+                    labels=class_names,
+                    prefix="Class_Accuracy_",
+                ),
+                "Class_F1": ClasswiseWrapper(
+                    MulticlassF1Score(
+                        num_classes=num_classes,
+                        ignore_index=ignore_index,
+                        average=None,
+                    ),
+                    labels=class_names,
+                    prefix="Class_F1_",
+                ),
+            }
+        )
+        self.train_metrics = metrics.clone(prefix="train/")
+        self.val_metrics = metrics.clone(prefix="val/")
+        self.test_metrics = metrics.clone(prefix="test/")
+
+
+    def training_step(self, batch: tuple[Tensor, Tensor], batch_idx: int) -> Tensor:
+        """Run one training step and log aggregate/per-class training metrics."""
+        x, y = batch
+        y_hat = self(x)
+        batch_size = x.shape[0]
+        loss = self.criterion(y_hat, y)
+        
+        self.log("train_loss", loss, batch_size=batch_size, prog_bar=True, on_epoch=True)
+        computed = self.train_metrics(y_hat, y)
+        self.log_dict(computed, batch_size=batch_size)
+
+        return loss
+
+    def validation_step(self, batch: tuple[Tensor, Tensor]) -> None:
+        """Run one validation step and log aggregate/per-class validation metrics."""
+        x, y = batch
+
+        batch_size = x.shape[0]
+        y_hat = self(x)
+        loss = self.criterion(y_hat, y)
+
+        self.log("val_loss", loss, batch_size=batch_size)
+        computed = self.val_metrics(y_hat, y)
+        self.log_dict(computed, batch_size=batch_size)
+
+    def predict_step(self, batch: Tensor) -> Tensor:
+        """Predict class probabilities for an input batch."""
+        with torch.inference_mode():
+            y_hat: Tensor = self(batch)
+
+            match self.task:
+                case "binary" | "multilabel":
+                    y_hat = y_hat.sigmoid()
+                case "multiclass":
+                    y_hat = y_hat.softmax(dim=1)
+
+            return y_hat
+
+    def predict_class(self, batch: Tensor | np.ndarray) -> np.ndarray:
+        """Predict class indices for a tensor or ndarray batch."""
+        if isinstance(batch, np.ndarray):
+            batch = array_to_tensor(batch)
+        batch = batch.to(self.device)
+        probs = self.predict_step(batch)
+        preds = probs.argmax(dim=1).cpu().numpy().astype("uint8")
+        return preds
+
+    def forward(self, x: Tensor) -> Tensor:
+        """Forward pass through the segmentation backbone."""
+        return self.model(x)
+    
+    @staticmethod
+    def predict_on_tif_file(
+        tif_file_path: str | Path,
+        checkpoint_path: str | Path,
+        func_supports_batching: bool = True,
+        batch_size: int = 8,
+        out_file_path: str | Path | None = None,
+        show_results: bool = False,
+        progress_bar: bool = True,
+        patch_size: int | None = None,
+        class_mapping: dict[int, str] | None = None,
+    ) -> Path | str:
+        """Run tiled inference on a TIF file using a saved model checkpoint."""
+        from eotorch.inference.inference import predict_on_tif_generic
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        reduce_zero_label = False
+        checkpoint_data = torch.load(
+            checkpoint_path, weights_only=False, map_location=device
+        )
+        hparams = checkpoint_data.get("hyper_parameters", {})
+        data_module_params = checkpoint_data.get("datamodule_hyper_parameters")
+        state_dict = checkpoint_data.get("state_dict", {})
+
+        if "num_classes" not in hparams and "model.output.weight" in state_dict:
+            hparams["num_classes"] = int(state_dict["model.output.weight"].shape[0])
+        if "in_channels" not in hparams and "model.input_conv.conv.weight" in state_dict:
+            hparams["in_channels"] = int(state_dict["model.input_conv.conv.weight"].shape[1])
+        if "num_filters" not in hparams and "model.input_conv.conv.weight" in state_dict:
+            hparams["num_filters"] = int(state_dict["model.input_conv.conv.weight"].shape[0])
+        if "lr" not in hparams and "learning_rate" in hparams:
+            hparams["lr"] = hparams["learning_rate"]
+
+        if ("num_classes" not in hparams) and data_module_params:
+            dataset_args = data_module_params.get("dataset_args", {})
+            class_mapping_from_data = dataset_args.get("class_mapping")
+            if class_mapping_from_data:
+                hparams["num_classes"] = len(class_mapping_from_data)
+
+        missing_required = [k for k in ("num_classes", "in_channels") if k not in hparams]
+        if missing_required:
+            raise ValueError(
+                "Missing required model hyperparameters in checkpoint: "
+                + ", ".join(missing_required)
+                + ". Please provide a checkpoint that includes hyper_parameters or includes model state_dict keys "
+                + "for input/output layers."
+            )
+
+        init_keys = [
+            "num_classes",
+            "in_channels",
+            "num_filters",
+            "loss",
+            "task",
+            "ignore_index",
+            "lr",
+            "lr_scheduler",
+        ]
+        init_kwargs = {k: hparams[k] for k in init_keys if k in hparams}
+
+        lightning_module = PatchSegmentationTask.load_from_checkpoint(
+            checkpoint_path,
+            map_location=device,
+            **init_kwargs,
+        )
+        lightning_module.to(device)
+        lightning_module.eval()
+        if data_module_params:
+            dataset_args = data_module_params.get("dataset_args", {})
+            class_mapping = class_mapping or dataset_args.get("class_mapping")
+            lightning_module.datamodule_params = data_module_params
+            lightning_module.info_logged = False
+            reduce_zero_label = dataset_args.get("reduce_zero_label", False)
+
+        if (not data_module_params) and (not patch_size):
+            raise ValueError(
+                "No datamodule_hyper_parameters found in checkpoint and patch_size is not set. "
+                "Please provide a valid checkpoint with datamodule_hyper_parameters or set patch_size."
+            )
+        _ps = patch_size
+        if data_module_params and data_module_params.get("patch_size"):
+            _ps = data_module_params.get("patch_size")
+
+        if not _ps:
+            patch_size_info = " (not found in checkpoint)"
+        else:
+            patch_size = _ps
+            patch_size_info = " (found in model checkpoint)"
+
+        patch_size_info = f"Using patch size: {_ps}" + patch_size_info
+        print(patch_size_info)
+        if reduce_zero_label:
+            print(
+                "Found reduce_zero_label = True in datamodule_params. Adding 1 to class predictions."
+            )
+            lightning_module.reduce_zero_label = True
+
+        return predict_on_tif_generic(
+            tif_file_path=tif_file_path,
+            prediction_func=lightning_module.predict_class,
+            show_results=show_results,
+            patch_size=_ps,
+            batch_size=batch_size,
+            progress_bar=progress_bar,
+            out_file_path=out_file_path,
+            class_mapping=class_mapping,
+            func_supports_batching=func_supports_batching,
+        )
