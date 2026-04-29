@@ -17,7 +17,8 @@ logger = logging.getLogger(__name__)
 
 def normalize(
     img_path: str | Path,
-    sensor: str = None,
+    sensor: str | None = None,
+    indexes: List | None = None,
     limits: Dict | Tuple = (1, 99),
     out_res: float | None = None,
     bands: List | None = None,
@@ -67,6 +68,8 @@ def normalize(
         if bands is not None:
             band_index = {band: band_index[band] for band in bands}
         band_list = [b + 1 for b in list(band_index.values())]
+    elif indexes:
+        band_list = indexes
     else:
         with rst.open(img_path) as src:
             band_list = list(range(1, src.count + 1))
