@@ -1,7 +1,7 @@
 from copy import deepcopy
+from glob import glob
 from math import isclose
 from pathlib import Path
-from glob import glob
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union, cast
 
 import geopandas as gpd
@@ -227,32 +227,34 @@ def file_wise_split(
     Splits a dataset based on image files, ensuring no file overlap between splits.
 
     Parameters:
-        dataset (RasterDataset): 
+        dataset (RasterDataset):
             The dataset to be split (RasterDataset or IntersectionDataset).
-        val_img_files (Union[str, Path, List[str], List[Path], None], optional): 
+        val_img_files (Union[str, Path, List[str], List[Path], None], optional):
             Files for the validation set. Defaults to None.
-        test_img_files (Union[str, Path, List[str], List[Path], None], optional): 
+        test_img_files (Union[str, Path, List[str], List[Path], None], optional):
             Files for the test set. Defaults to None.
-        val_img_glob (Union[str, Path], optional): 
+        val_img_glob (Union[str, Path], optional):
             glob pattern to find images for the validation set. Overrides `val_img_files`. Defaults to None.
-        test_img_glob (Union[str, Path], optional): 
+        test_img_glob (Union[str, Path], optional):
             glob pattern to find images for the test set. Overrides `test_img_files`. Defaults to None.
-        ratios_or_counts (Optional[Sequence[float]], optional): 
+        ratios_or_counts (Optional[Sequence[float]], optional):
             Ratios or counts for random splitting (overrides file lists). Defaults to None.
 
     Raises:
-        ValueError: 
+        ValueError:
             If input parameters are invalid or files are not found.
-        TypeError: 
+        TypeError:
             If dataset is not a RasterDataset or IntersectionDataset.
 
     Returns:
-        List[RasterDataset]: 
+        List[RasterDataset]:
             A list of datasets [train, validation (optional), test (optional)].
-    """    
+    """
 
     use_ratios = ratios_or_counts is not None
-    use_files = (val_img_files or test_img_files or val_img_glob or test_img_glob) is not None
+    use_files = (
+        val_img_files or test_img_files or val_img_glob or test_img_glob
+    ) is not None
 
     if not use_ratios and not use_files:
         raise ValueError(
@@ -276,7 +278,9 @@ def file_wise_split(
 
     # Perform file-based split
     val_img_files = glob(val_img_glob) if val_img_glob is not None else val_img_files
-    test_img_files = glob(test_img_glob) if test_img_glob is not None else test_img_files
+    test_img_files = (
+        glob(test_img_glob) if test_img_glob is not None else test_img_files
+    )
     val_files = _format_paths(val_img_files)
     test_files = _format_paths(test_img_files)
 
@@ -335,7 +339,13 @@ def random_bbox_assignment(
         A list of the subset datasets.
     """
 
-    if not (isclose(sum(lengths), 1) or isclose(sum(lengths), len(dataset))):
+    # Determine the dataset to split (handle IntersectionDataset)
+    if isinstance(dataset, IntersectionDataset):
+        split_dataset = dataset.datasets[0]
+    else:
+        split_dataset = dataset
+
+    if not (isclose(sum(lengths), 1) or isclose(sum(lengths), len(split_dataset))):
         raise ValueError(
             "Sum of input lengths must equal 1 or the length of dataset's index."
         )
@@ -344,7 +354,7 @@ def random_bbox_assignment(
         raise ValueError("All items in input lengths must be greater than 0.")
 
     if isclose(sum(lengths), 1):
-        lengths = _fractions_to_lengths(lengths, len(dataset))
+        lengths = _fractions_to_lengths(lengths, len(split_dataset))
     lengths = cast(Sequence[int], lengths)
     zero_length_idces = [i for i, length in enumerate(lengths) if length == 0]
     non_zero_length_idces = [i for i, length in enumerate(lengths) if length > 0]
@@ -360,7 +370,7 @@ def random_bbox_assignment(
 
     # Get all items from the dataset index
     items_data = [
-        (row["geometry"], row["filepath"]) for _, row in dataset.index.iterrows()
+        (row["geometry"], row["filepath"]) for _, row in split_dataset.index.iterrows()
     ]
 
     # Randomly permute the items
@@ -378,12 +388,12 @@ def random_bbox_assignment(
         if split_items:
             # Extract filepaths to filter original index
             split_filepaths = {filepath for _, filepath in split_items}
-            mask = dataset.index["filepath"].isin(split_filepaths)
-            filtered_index = dataset.index[mask].copy()
+            mask = split_dataset.index["filepath"].isin(split_filepaths)
+            filtered_index = split_dataset.index[mask].copy()
         else:
             # Create empty GeoDataFrame with correct structure
             empty_gdf = gpd.GeoDataFrame(
-                {"filepath": []}, geometry=[], crs=dataset.index.crs
+                {"filepath": []}, geometry=[], crs=split_dataset.index.crs
             )
             # Create empty IntervalIndex to match original structure
             empty_temporal_index = pd.IntervalIndex.from_tuples(
@@ -395,18 +405,7 @@ def random_bbox_assignment(
         new_indexes.append(filtered_index)
         start_idx = end_idx
 
-    # Create new datasets
-    new_datasets = []
-    for index in new_indexes:
-        ds = deepcopy(dataset)
-        ds.index = index
-        if len(index) > 0:
-            ds.paths = index["filepath"].tolist()
-        else:
-            ds.paths = []
-        new_datasets.append(ds)
-
-    return new_datasets
+    return _build_split_datasets(dataset, new_indexes)
 
 
 def aoi_split(
@@ -488,9 +487,9 @@ def aoi_split(
         # Handle different filepath column structures
         if "filepath" in row.index:
             filepath = row["filepath"]
-        elif "filepath_1" in row.index:
+        elif "image_filepath" in row.index:
             # For IntersectionDataset, use the first dataset's filepath as the identifier
-            filepath = row["filepath_1"]
+            filepath = row["image_filepath"]
         else:
             # Fallback: use the index as identifier
             filepath = str(idx)
