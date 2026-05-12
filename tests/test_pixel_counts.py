@@ -305,9 +305,7 @@ def test_pixel_counts_class_distribution(label_dataset):
     assert pixel_counts[0] > pixel_counts[1], (
         "Class 0 should have more pixels than class 1"
     )
-    assert pixel_counts[0] > 900000, (
-        "Class 0 should have over 900k pixels (background)"
-    )
+    assert pixel_counts[0] > 900000, "Class 0 should have over 900k pixels (background)"
 
     # Class 1 should be the second most common
     class_counts_sorted = sorted(pixel_counts.items(), key=lambda x: x[1], reverse=True)

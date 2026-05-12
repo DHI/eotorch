@@ -787,8 +787,10 @@ def torchgeo_bb_to_shapely(
     if isinstance(bbox, torch.Tensor):
         # torchgeo v0.9 _slice_to_tensor format: [xmin, xmax, xres, ymin, ymax, yres, tmin, tmax, tres]
         polygon = shapely.geometry.box(
-            minx=bbox[0].item(), miny=bbox[3].item(),
-            maxx=bbox[1].item(), maxy=bbox[4].item()
+            minx=bbox[0].item(),
+            miny=bbox[3].item(),
+            maxx=bbox[1].item(),
+            maxy=bbox[4].item(),
         )
     elif isinstance(bbox, (list, tuple, np.ndarray)):
         # Handle both list and tuple formats

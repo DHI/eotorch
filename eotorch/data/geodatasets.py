@@ -310,7 +310,7 @@ class SamplePlotMixin:
         patch_size: int = 256,
         show_filepaths: bool = False,
         nodata_val: int | float = 0,
-        dataset_type: str = 'classification',
+        dataset_type: str = "classification",
     ):
         # if the dataset is an IntersectionDataset, get the nodata value from the label dataset
         if isinstance(self, IntersectionDataset) and hasattr(
@@ -366,7 +366,7 @@ class CustomCacheRasterDataset(RasterDataset, SamplePlotMixin):
         x, y, t = self._disambiguate_slice(index)
         interval = pd.Interval(t.start, t.stop)
         df = self.index.iloc[self.index.index.overlaps(interval)]
-        df = df.cx[x.start:x.stop, y.start:y.stop]
+        df = df.cx[x.start : x.stop, y.start : y.stop]
         filepaths = df.filepath.tolist()
 
         sample = super().__getitem__(index)
@@ -788,7 +788,9 @@ class ClassificationRasterDataset(
         ] = concat_samples,
         transforms: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ) -> None:
-        super().__init__(dataset1, dataset2, collate_fn=collate_fn, transforms=transforms)
+        super().__init__(
+            dataset1, dataset2, collate_fn=collate_fn, transforms=transforms
+        )
 
         # rename index columns resulting from merge, for more clarity
         if "filepath_1" in self.index.columns:
@@ -904,7 +906,9 @@ class ClassificationRasterDataset(
             transforms=self.transforms,
         )
 
-    def __and__(self, other: ClassificationRasterDataset) -> ClassificationRasterDataset:
+    def __and__(
+        self, other: ClassificationRasterDataset
+    ) -> ClassificationRasterDataset:
         return ClassificationRasterDataset(
             IntersectionDataset(self.datasets[0], other.datasets[0]),
             IntersectionDataset(self.datasets[1], other.datasets[1]),
@@ -1145,7 +1149,7 @@ def get_segmentation_dataset(
         label_ds_class.class_mapping = class_mapping
         label_ds_class.filename_regex = label_filename_regex
         label_ds_class.date_format = label_date_format
-        label_ds_class.dataset_type = 'classification'
+        label_ds_class.dataset_type = "classification"
 
         label_ds = label_ds_class(
             paths=labels_dir,
@@ -1177,7 +1181,7 @@ def get_regression_dataset(
     sensor_name: str = None,
     crs: CRS = None,
     res: float = None,
-    nodata_value: float = 0.,
+    nodata_value: float = 0.0,
     bands_to_return: tuple[str] = None,
     image_transforms: Callable[[dict[str, Any]], dict[str, Any]] = None,
     label_transforms: Callable[[dict[str, Any]], dict[str, Any]] = None,
@@ -1245,7 +1249,6 @@ def get_regression_dataset(
     image_ds_class.separate_files = image_separate_files
     image_ds_class.filename_regex = image_filename_regex
     image_ds_class.date_format = image_date_format
-    
 
     image_ds = image_ds_class(
         paths=images_dir,
@@ -1262,7 +1265,7 @@ def get_regression_dataset(
         label_ds_class.filename_regex = label_filename_regex
         label_ds_class.date_format = label_date_format
         label_ds_class.nodata_value = nodata_value
-        label_ds_class.dataset_type = 'regression'
+        label_ds_class.dataset_type = "regression"
 
         label_ds = label_ds_class(
             paths=labels_dir,
