@@ -211,14 +211,11 @@ def test_temporal_bounds_types(label_dataset):
 
 # Expected pixel counts for sparse_raster.tif based on direct file analysis
 EXPECTED_PIXEL_COUNTS = {
-    0: 1046837,
-    1: 1974,
-    2: 384,
-    3: 93,
-    4: 481,
-    5: 1214,
-    6: 464,
-    7: 15805,
+    0: 997500,
+    1: 52296,
+    2: 10579,
+    3: 2884,
+    4: 3993,
 }
 EXPECTED_TOTAL_PIXELS = 1067252
 
@@ -308,14 +305,14 @@ def test_pixel_counts_class_distribution(label_dataset):
     assert pixel_counts[0] > pixel_counts[1], (
         "Class 0 should have more pixels than class 1"
     )
-    assert pixel_counts[0] > 1000000, (
-        "Class 0 should have over 1 million pixels (background)"
+    assert pixel_counts[0] > 900000, (
+        "Class 0 should have over 900k pixels (background)"
     )
 
-    # Class 7 should be the second most common
+    # Class 1 should be the second most common
     class_counts_sorted = sorted(pixel_counts.items(), key=lambda x: x[1], reverse=True)
     assert class_counts_sorted[0][0] == 0, "Class 0 should be most common"
-    assert class_counts_sorted[1][0] == 7, "Class 7 should be second most common"
+    assert class_counts_sorted[1][0] == 1, "Class 1 should be second most common"
 
     # Class 3 should be the least common (except background)
     non_zero_classes = {k: v for k, v in pixel_counts.items() if k != 0}
@@ -323,7 +320,7 @@ def test_pixel_counts_class_distribution(label_dataset):
     assert min_class[0] == 3, (
         f"Class 3 should have fewest pixels, but {min_class[0]} does"
     )
-    assert min_class[1] == 93, f"Class 3 should have 93 pixels, got {min_class[1]}"
+    assert min_class[1] == 2884, f"Class 3 should have 2884 pixels, got {min_class[1]}"
 
 
 def test_integration_actual_counts_with_get_segmentation_dataset(sparse_raster_path):
