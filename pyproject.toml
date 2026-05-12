@@ -33,7 +33,7 @@ authors = [
 ]
 description = "Geospatial deep learning built on top of TorchGeo and PyTorch Lightning"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 license = {file = "LICENSE"}
 classifiers = [
     "Programming Language :: Python :: 3",
