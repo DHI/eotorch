@@ -160,13 +160,14 @@ def _build_split_datasets(
                 img_ds_new.paths = []
 
             # Create new label dataset index based on intersection with new image dataset bounds
-            img_bounds = img_ds_new.bounds
+            img_bounds = img_ds_new.bounds  # tuple of (x_slice, y_slice, t_slice)
 
             # For GeoPandas, we need to intersect with the image bounds
             if not label_ds_orig.index.empty:
                 # Create bounding box geometry for intersection
+                x_slice, y_slice, _ = img_bounds
                 img_bbox_geom = box(
-                    img_bounds.minx, img_bounds.miny, img_bounds.maxx, img_bounds.maxy
+                    x_slice.start, y_slice.start, x_slice.stop, y_slice.stop
                 )
 
                 # Find labels that intersect with the image bounds

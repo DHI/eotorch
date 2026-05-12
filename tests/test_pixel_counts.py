@@ -4,11 +4,10 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
-from torchgeo.datasets.utils import BoundingBox
 
 from eotorch.data.geodatasets import (
-    LabelledRasterDataset,
-    PlottabeLabelDataset,
+    ClassificationRasterDataset,
+    PlottableClassificationDataset,
     PlottableImageDataset,
     get_segmentation_dataset,
 )
@@ -28,8 +27,8 @@ def sparse_raster_path(test_data_dir):
 
 @pytest.fixture
 def label_dataset(sparse_raster_path):
-    """Create a PlottabeLabelDataset for testing."""
-    dataset = PlottabeLabelDataset(
+    """Create a PlottableClassificationDataset for testing."""
+    dataset = PlottableClassificationDataset(
         paths=sparse_raster_path, cache_size=1, reduce_zero_label=False
     )
     # Set nodata_value to None to avoid filtering out class 0
@@ -45,15 +44,15 @@ def image_dataset(sparse_raster_path):
 
 @pytest.fixture
 def labelled_dataset(sparse_raster_path):
-    """Create a LabelledRasterDataset for testing."""
+    """Create a ClassificationRasterDataset for testing."""
     # Use the same file for both image and labels for simplicity
     image_ds = PlottableImageDataset(paths=sparse_raster_path, cache_size=1)
-    label_ds = PlottabeLabelDataset(
+    label_ds = PlottableClassificationDataset(
         paths=sparse_raster_path, cache_size=1, reduce_zero_label=False
     )
     # Set nodata_value to None to avoid filtering out class 0
     label_ds.nodata_value = None
-    return LabelledRasterDataset(image_ds, label_ds)
+    return ClassificationRasterDataset(image_ds, label_ds)
 
 
 def test_label_dataset_temporal_bounds_structure(label_dataset):
@@ -107,32 +106,29 @@ def test_labelled_dataset_get_label_pixel_counts(labelled_dataset):
         pytest.fail(f"get_label_pixel_counts raised an unexpected exception: {e}")
 
 
-def test_bounding_box_temporal_bounds_consistency(label_dataset):
-    """Test that BoundingBox creation uses consistent temporal bounds."""
+def test_geoslice_temporal_bounds_consistency(label_dataset):
+    """Test that GeoSlice creation uses consistent temporal bounds."""
     # Iterate through the dataset and check that temporal bounds are consistent
     for temporal_interval, row in label_dataset.index.iterrows():
         bounds = row.geometry.bounds
 
-        # Create BoundingBox the same way as in the fixed methods
-        bbox = BoundingBox(
-            bounds[0],
-            bounds[2],
-            bounds[1],
-            bounds[3],
-            temporal_interval.left,
-            temporal_interval.right,
+        # Create GeoSlice the same way as in the fixed methods
+        geo_slice = (
+            slice(bounds[0], bounds[2]),  # x: minx to maxx
+            slice(bounds[1], bounds[3]),  # y: miny to maxy
+            slice(temporal_interval.left, temporal_interval.right),  # t
         )
 
         # Verify temporal bounds types are consistent
-        assert type(bbox.mint) is type(temporal_interval.left), (
-            "BoundingBox mint should have same type as temporal_interval.left"
+        assert type(geo_slice[2].start) is type(temporal_interval.left), (
+            "GeoSlice t.start should have same type as temporal_interval.left"
         )
-        assert type(bbox.maxt) is type(temporal_interval.right), (
-            "BoundingBox maxt should have same type as temporal_interval.right"
+        assert type(geo_slice[2].stop) is type(temporal_interval.right), (
+            "GeoSlice t.stop should have same type as temporal_interval.right"
         )
 
         # Verify they're not the old hardcoded values
-        assert bbox.mint != 0 or bbox.maxt != 1, (
+        assert geo_slice[2].start != 0 or geo_slice[2].stop != 1, (
             "Should not use hardcoded 0,1 temporal bounds"
         )
 
@@ -141,13 +137,13 @@ def test_no_datetime_comparison_error(label_dataset, labelled_dataset):
     """Test that the specific pandas datetime comparison error is fixed."""
     import pandas.errors
 
-    # Test PlottabeLabelDataset.get_pixel_counts()
+    # Test PlottableClassificationDataset.get_pixel_counts()
     try:
         label_dataset.get_pixel_counts()
     except pandas.errors.InvalidComparison as e:
         pytest.fail(f"get_pixel_counts still raises InvalidComparison error: {e}")
 
-    # Test LabelledRasterDataset.get_label_pixel_counts()
+    # Test ClassificationRasterDataset.get_label_pixel_counts()
     try:
         labelled_dataset.get_label_pixel_counts()
     except pandas.errors.InvalidComparison as e:
@@ -282,7 +278,7 @@ def test_labelled_dataset_actual_pixel_counts(labelled_dataset):
 def test_pixel_counts_with_reduce_zero_label(sparse_raster_path):
     """Test pixel counts with reduce_zero_label=True option."""
     # Create dataset with reduce_zero_label=True
-    label_dataset = PlottabeLabelDataset(
+    label_dataset = PlottableClassificationDataset(
         paths=sparse_raster_path, cache_size=1, reduce_zero_label=True
     )
     # Set nodata_value to None to avoid filtering out any classes
@@ -363,7 +359,7 @@ def test_pixel_counts_edge_cases(sparse_raster_path):
 
     # Test with different cache sizes
     for cache_size in [1, 5, 20]:
-        label_dataset = PlottabeLabelDataset(
+        label_dataset = PlottableClassificationDataset(
             paths=sparse_raster_path, cache_size=cache_size, reduce_zero_label=False
         )
         # Set nodata_value to None to avoid filtering out class 0
@@ -388,7 +384,7 @@ def test_pixel_counts_edge_cases(sparse_raster_path):
         7: "class_7",
     }
 
-    label_dataset_with_mapping = PlottabeLabelDataset(
+    label_dataset_with_mapping = PlottableClassificationDataset(
         paths=sparse_raster_path, cache_size=1, reduce_zero_label=False
     )
     # Set nodata_value to None to avoid filtering out class 0
@@ -414,28 +410,25 @@ def test_temporal_bounds_are_not_hardcoded_integers(label_dataset):
     for temporal_interval, row in label_dataset.index.iterrows():
         bounds = row.geometry.bounds
 
-        # Create BoundingBox exactly as the fixed code does
-        bbox = BoundingBox(
-            bounds[0],
-            bounds[2],
-            bounds[1],
-            bounds[3],
-            temporal_interval.left,
-            temporal_interval.right,
+        # Create GeoSlice exactly as the fixed code does
+        geo_slice = (
+            slice(bounds[0], bounds[2]),
+            slice(bounds[1], bounds[3]),
+            slice(temporal_interval.left, temporal_interval.right),
         )
 
         # The key assertion: temporal bounds should NOT be 0 and 1
         # (unless the actual data legitimately has those values)
         if hasattr(temporal_interval.left, "year"):  # It's a timestamp
-            assert bbox.mint != 0, "mint should not be hardcoded integer 0"
-            assert bbox.maxt != 1, "maxt should not be hardcoded integer 1"
+            assert geo_slice[2].start != 0, "t.start should not be hardcoded integer 0"
+            assert geo_slice[2].stop != 1, "t.stop should not be hardcoded integer 1"
 
         # Additional check: types should match
-        assert type(bbox.mint) is type(temporal_interval.left), (
-            f"mint type {type(bbox.mint)} should match temporal_interval.left type {type(temporal_interval.left)}"
+        assert type(geo_slice[2].start) is type(temporal_interval.left), (
+            f"t.start type {type(geo_slice[2].start)} should match temporal_interval.left type {type(temporal_interval.left)}"
         )
-        assert type(bbox.maxt) is type(temporal_interval.right), (
-            f"maxt type {type(bbox.maxt)} should match temporal_interval.right type {type(temporal_interval.right)}"
+        assert type(geo_slice[2].stop) is type(temporal_interval.right), (
+            f"t.stop type {type(geo_slice[2].stop)} should match temporal_interval.right type {type(temporal_interval.right)}"
         )
 
 
@@ -445,7 +438,7 @@ def test_error_regression_pandas_invalid_comparison(labelled_dataset):
 
     # This is the exact error that was occurring before the fix:
     # "Invalid comparison between dtype=datetime64[ns] and int"
-    # The error occurred when creating BoundingBox with hardcoded int values (0, 1)
+    # The error occurred when using hardcoded int values (0, 1) for temporal bounds
     # but the dataset had pandas Timestamp temporal bounds
     # Verify that we can call the methods without this specific error
     try:
