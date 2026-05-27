@@ -149,7 +149,7 @@ class FileSource(VectorSource):
     def _get_geoms(self) -> list:
         features = []
         for c in self.classes:
-            features.append(read_shp(c, self.root_dir, self.crs))
+            features.append(read_vector(os.path.join(self.root_dir, f"{c}.shp")).to_crs(self.crs).geometry)
         features = {i: f for i, f in enumerate(features, start=1)}
         return features
 
@@ -201,52 +201,21 @@ def infer_meta(img_path: Path | str) -> tuple[rasterio.Affine, tuple, rasterio.C
     return transform, shape, crs
 
 
-def read_shp(
-    fn: Path | str, root_dir: Path | str, crs: rasterio.CRS | str
-) -> list[Polygon | MultiPolygon]:
+def read_vector(path: str | Path) -> gpd.GeoDataFrame:
+    """Read a vector file into a GeoDataFrame.
+
+    Parameters
+    ----------
+    path : str | Path
+        Path to vector file. Supported formats include shapefile and parquet.
+
+    Returns
+    -------
+    geopandas.GeoDataFrame
+        GeoDataFrame with geometry and attributes from the input file.
     """
-    Read shapefiles matching either the filename `fn` or looks for the shapefile/geojson
-    matching the stem name without extension, e.g. 'trees', in the `root_dir`.
-
-    Parameters:
-        fn (Path | str):
-            Filename of vector file or name of class matching the stem name of the file without extension.
-        root_dir (Path | str):
-            Root directory to look for vector files in.
-        crs (rasterio.crs.CRS | str):
-            Coordinate system to project files to.
-
-    Raises:
-        ValueError:
-            The file could either not be found or the file format is not one of the supported extensions.
-
-    Returns:
-        list[Polygon | MultiPolygon]:
-            List of geometries
-    """
-    fn = Path(fn)
-    root_dir = Path(root_dir)
-    try:
-        if fn.suffix == "":
-            if os.path.exists(os.path.join(root_dir, f"{fn}.shp")):
-                shp = (
-                    read_dataframe(os.path.join(root_dir, f"{fn}.shp"))
-                    .to_crs(crs)
-                    .geometry
-                )
-            elif os.path.exists(os.path.join(root_dir, f"{fn}.geojson")):
-                shp = (
-                    read_dataframe(os.path.join(root_dir, f"{fn}.geojson"))
-                    .to_crs(crs)
-                    .geometry
-                )
-            else:
-                raise ValueError(
-                    f"The file format is either not supported or the file {fn} cannot be found."
-                )
-        else:
-            shp = read_dataframe(fn).to_crs(crs).geometry
-    except:
-        logger.warning("The file does not exist:", os.path.join(root_dir, f"{fn}.shp"))
-        shp = []
-    return shp
+    path = Path(path)
+    if path.suffix == '.parquet':
+        return gpd.read_parquet(path)
+    else:
+        return gpd.read_file(path)
