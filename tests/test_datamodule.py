@@ -13,18 +13,38 @@ from eotorch.data.geodatasets import (
     PlottableImageDataset,
 )
 
-TEST_DATA = Path(__file__).parent.parent / "test_data"
+TEST_DATA = Path(__file__).parent / "data"
+
+
+@pytest.fixture(autouse=True)
+def _restore_class_attrs():
+    """Save and restore class-level attributes modified by tests."""
+    saved = {
+        "img_glob": PlottableImageDataset.filename_glob,
+        "img_all_bands": PlottableImageDataset.all_bands,
+        "img_rgb_bands": PlottableImageDataset.rgb_bands,
+        "lbl_glob": PlottableClassificationDataset.filename_glob,
+    }
+    yield
+    PlottableImageDataset.filename_glob = saved["img_glob"]
+    PlottableImageDataset.all_bands = saved["img_all_bands"]
+    PlottableImageDataset.rgb_bands = saved["img_rgb_bands"]
+    PlottableClassificationDataset.filename_glob = saved["lbl_glob"]
 
 
 @pytest.fixture
 def image_dataset():
-    return PlottableImageDataset(paths=TEST_DATA / "images", cache_size=1)
+    PlottableImageDataset.filename_glob = "image_*.tif"
+    PlottableImageDataset.all_bands = ["red", "green", "blue"]
+    PlottableImageDataset.rgb_bands = ["red", "green", "blue"]
+    return PlottableImageDataset(paths=str(TEST_DATA), cache_size=1)
 
 
 @pytest.fixture
 def label_dataset():
+    PlottableClassificationDataset.filename_glob = "label_*.tif"
     return PlottableClassificationDataset(
-        paths=TEST_DATA / "labels", cache_size=1, reduce_zero_label=False
+        paths=str(TEST_DATA), cache_size=1, reduce_zero_label=False
     )
 
 
