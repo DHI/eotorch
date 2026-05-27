@@ -922,30 +922,28 @@ class PatchSegmentationTask(LightningModule):
         self,
         num_classes: int,
         in_channels: int,
-        num_filters: int = 128,
-        model = 'deepresunet',
+        num_filters: int = 256,
+        model: str = 'deepresunet',
+        backbone: str = 'resnet34',
         loss: str = 'dice',
         task: str = 'multiclass',
         class_weights: Tensor | None = None,
         weights: WeightsEnum | str | bool | None = None,
         ignore_index: int | None = None,
         lr: float = 1e-3,
+        freeze_backbone: bool = False,
+        freeze_decoder: bool = False,
         model_kwargs: dict[str, Any] = None,
         lr_scheduler: dict[str, Any] | None = None,
+        class_names: list[str] | None = None,
     ) -> None:
         """Initialize model, optimization config, and metric collections."""
         super().__init__()
         self.weights = weights
-        self.in_channels = in_channels
-        self.num_classes = num_classes
-        self.num_filters = num_filters
-        self.loss = loss
-        class_weights = class_weights
-        self.ignore_index = ignore_index
-        self.task = task
-        self.lr = lr
+        self.class_names = class_names
         self.model_kwargs = model_kwargs or {}
         self.lr_scheduler = lr_scheduler or {}
+
         self.save_hyperparameters(ignore={"weights"})
 
         self.configure_models()
@@ -954,6 +952,7 @@ class PatchSegmentationTask(LightningModule):
 
     def configure_models(self) -> None:
         model: str = self.hparams["model"]
+        backbone: str = self.hparams['backbone']
         weights = self.weights
 
         if model.lower() in CLF_MODEL_MAPPING:
@@ -976,7 +975,61 @@ class PatchSegmentationTask(LightningModule):
                 print(f"Weights loaded successfully from {weights}")
 
         else:
-            super().configure_models()
+            in_channels: int = self.hparams['in_channels']
+            num_classes: int = self.hparams['num_classes']
+            num_filters: int = self.hparams['num_filters']
+
+            match model.lower():
+                case 'unet':
+                    self.model = smp.Unet(
+                        encoder_name=backbone,
+                        encoder_weights='imagenet' if weights is True else None,
+                        in_channels=in_channels,
+                        classes=num_classes,
+                    )
+                case 'unet++' | 'unetplusplus':
+                    self.model = smp.UnetPlusPlus(
+                        encoder_name=backbone,
+                        encoder_weights='imagenet' if weights is True else None,
+                        in_channels=in_channels,
+                        classes=num_classes,
+                        decoder_channels=[num_filters]+[num_filters := num_filters // 2 for _ in range(4)],
+                    )
+                case 'upernet':
+                    self.model = smp.UPerNet(
+                        encoder_name=backbone,
+                        encoder_weights='imagenet' if weights is True else None,
+                        in_channels=in_channels,
+                        classes=num_classes,
+                        decoder_channels=num_filters,
+                    )
+                case 'segformer':
+                    self.model = smp.Segformer(
+                        encoder_name=backbone,
+                        encoder_weights='imagenet' if weights is True else None,
+                        in_channels=in_channels,
+                        classes=num_classes,
+                        decoder_segmentation_channels=num_filters,
+                    )
+                case 'dpt':
+                    self.model = smp.DPT(
+                        encoder_name='tu-vit_base_patch16_224.augreg_in21k',
+                        encoder_weights='imagenet' if weights is True else None,
+                        in_channels=in_channels,
+                        classes=num_classes,
+                        decoder_intermediate_channels=[num_filters * 2**i for i in [0, 1, 2, 2]],
+                        decoder_fusion_channels=num_filters,
+                    )
+
+            # Freeze backbone
+            if self.hparams['freeze_backbone']:
+                for param in self.model.encoder.parameters():
+                    param.requires_grad = False
+
+            # Freeze decoder
+            if self.hparams['freeze_decoder']:
+                for param in self.model.decoder.parameters():
+                    param.requires_grad = False
 
     def configure_losses(self) -> None:
         """Configure the training loss function based on the selected loss name."""
