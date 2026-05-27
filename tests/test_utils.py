@@ -1,5 +1,6 @@
 import pyproj
 import shapely.geometry
+import torch
 from torchgeo.datasets.utils import BoundingBox
 
 from eotorch.utils import torchgeo_bb_to_shapely
@@ -87,3 +88,14 @@ def test_torchgeo_bb_to_shapely_default_target_crs():
     assert -90.0 <= maxy <= 90.0
     assert maxx > minx
     assert maxy > miny
+
+
+def test_torchgeo_bb_to_shapely_tensor():
+    """Test conversion of a torchgeo v0.9 Tensor bounds to Shapely Polygon."""
+    # Tensor format: [xmin, xmax, xres, ymin, ymax, yres, tmin, tmax, tres]
+    bounds_tensor = torch.tensor([10.0, 20.0, 0.1, 30.0, 40.0, 0.1, 0.0, 1.0, 1.0])
+
+    polygon = torchgeo_bb_to_shapely(bounds_tensor, "EPSG:4326", "EPSG:4326")
+
+    assert isinstance(polygon, shapely.geometry.Polygon)
+    assert polygon.bounds == (10.0, 30.0, 20.0, 40.0)

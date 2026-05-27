@@ -26,7 +26,7 @@ from torchgeo.datasets import (
     RasterDataset,
     concat_samples,
 )
-from torchgeo.datasets.utils import BoundingBox
+from torchgeo.datasets.utils import BoundingBox  # deprecated but still used internally
 
 from eotorch.bandindex import BAND_INDEX
 from eotorch.inference.inference_utils import prediction_to_numpy
@@ -310,7 +310,7 @@ class SamplePlotMixin:
         patch_size: int = 256,
         show_filepaths: bool = False,
         nodata_val: int | float = 0,
-        dataset_type: str = 'classification',
+        dataset_type: str = "classification",
     ):
         # if the dataset is an IntersectionDataset, get the nodata value from the label dataset
         if isinstance(self, IntersectionDataset) and hasattr(
@@ -350,11 +350,11 @@ class CustomCacheRasterDataset(RasterDataset, SamplePlotMixin):
         # In order to avoid spamming "Skipping source" Log Messages in Rasterio Merge
         logging.getLogger("rasterio").setLevel(logging.WARNING)
 
-    def __getitem__(self, query: BoundingBox) -> dict[str, Any]:
+    def __getitem__(self, index) -> dict[str, Any]:
         """Retrieve image/mask and metadata indexed by query.
 
         Args:
-            query: (minx, maxx, miny, maxy, mint, maxt) coordinates to index
+            index: spatiotemporal slice to index (GeoSlice)
 
         Returns:
             sample of image/mask and metadata at that index
@@ -362,52 +362,19 @@ class CustomCacheRasterDataset(RasterDataset, SamplePlotMixin):
         Raises:
             IndexError: if query is not found in the index
         """
-        interval = pd.Interval(query.mint, query.maxt)
-        index = self.index.iloc[self.index.index.overlaps(interval)]
-        index = index.cx[query.minx : query.maxx, query.miny : query.maxy]  # type: ignore[misc]
+        # Extract filepaths before delegating to super
+        x, y, t = self._disambiguate_slice(index)
+        interval = pd.Interval(t.start, t.stop)
+        df = self.index.iloc[self.index.index.overlaps(interval)]
+        df = df.cx[x.start : x.stop, y.start : y.stop]
+        filepaths = df.filepath.tolist()
 
-        filepaths = index.filepath.tolist()
-        if index.empty:
-            raise IndexError(
-                f"query: {query} not found in index with bounds: {self.bounds}"
-            )
-
-        if self.separate_files:
-            data_list: list[Tensor] = []
-            filename_regex = re.compile(self.filename_regex, re.VERBOSE)
-            for band in self.bands:
-                band_filepaths = []
-                for filepath in index.filepath:
-                    filename = os.path.basename(filepath)
-                    directory = os.path.dirname(filepath)
-                    match = re.match(filename_regex, filename)
-                    if match:
-                        if "band" in match.groupdict():
-                            start = match.start("band")
-                            end = match.end("band")
-                            filename = filename[:start] + band + filename[end:]
-                    filepath = os.path.join(directory, filename)
-                    band_filepaths.append(filepath)
-                data_list.append(self._merge_files(band_filepaths, query))
-            data = torch.cat(data_list)
-        else:
-            data = self._merge_files(filepaths, query, self.band_indexes)
-
-        sample = {"crs": self.crs, "bounds": query}
-
-        data = data.to(self.dtype)
+        sample = super().__getitem__(index)
 
         if self.is_image:
-            sample["image"] = data
-            sample["image"] = data
             sample["image_filepaths"] = filepaths
         else:
-            sample["mask"] = data.squeeze(0)
-            sample["mask"] = data
             sample["mask_filepaths"] = filepaths
-
-        if self.transforms is not None:
-            sample = self.transforms(sample)
 
         return sample
 
@@ -585,8 +552,8 @@ class PlottableClassificationDataset(CustomCacheRasterDataset):
         super().__init__(paths, crs, res, bands, transforms, cache_size)
         self.reduce_zero_label = reduce_zero_label
 
-    def __getitem__(self, query: BoundingBox) -> dict[str, Any]:
-        sample = super().__getitem__(query)
+    def __getitem__(self, index) -> dict[str, Any]:
+        sample = super().__getitem__(index)
 
         if self.reduce_zero_label:
             sample["mask"] -= 1
@@ -636,25 +603,21 @@ class PlottableClassificationDataset(CustomCacheRasterDataset):
 
         # Use GeoPandas iteration instead of R-tree intersection
         for temporal_interval, row in self.index.iterrows():
-            # Create bounding box from geometry bounds
+            # Create GeoSlice from geometry bounds and temporal interval
             bounds = row.geometry.bounds  # (minx, miny, maxx, maxy)
-            # Get temporal bounds from the index (which is a pd.Interval)
-            bbox = BoundingBox(
-                bounds[0],
-                bounds[2],
-                bounds[1],
-                bounds[3],
-                temporal_interval.left,
-                temporal_interval.right,
+            geo_slice = (
+                slice(bounds[0], bounds[2]),  # x: minx to maxx
+                slice(bounds[1], bounds[3]),  # y: miny to maxy
+                slice(temporal_interval.left, temporal_interval.right),  # t
             )
-            counts = self._get_pixel_counts(bbox)
+            counts = self._get_pixel_counts(geo_slice)
             for key, cnt in counts.items():
                 pixel_counts[key] += cnt
         return dict(pixel_counts)
 
-    def _get_pixel_counts(self, bbox: BoundingBox) -> dict[int, int]:
+    def _get_pixel_counts(self, index) -> dict[int, int]:
         out_dict = {}
-        sample = self.__getitem__(bbox)
+        sample = self.__getitem__(index)
         mask = sample["mask"]
         if hasattr(mask, "numpy"):
             mask = mask.numpy()
@@ -737,8 +700,8 @@ class PlottableRegressionDataset(CustomCacheRasterDataset):
     ) -> None:
         super().__init__(paths, crs, res, bands, transforms, cache_size)
 
-    def __getitem__(self, query: BoundingBox) -> dict[str, Any]:
-        sample = super().__getitem__(query)
+    def __getitem__(self, index) -> dict[str, Any]:
+        sample = super().__getitem__(index)
         return sample
 
     def plot(self, sample, ax=None, **kwargs):
@@ -825,7 +788,9 @@ class ClassificationRasterDataset(
         ] = concat_samples,
         transforms: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ) -> None:
-        super().__init__(dataset1, dataset2, collate_fn, transforms)
+        super().__init__(
+            dataset1, dataset2, collate_fn=collate_fn, transforms=transforms
+        )
 
         # rename index columns resulting from merge, for more clarity
         if "filepath_1" in self.index.columns:
@@ -910,16 +875,12 @@ class ClassificationRasterDataset(
             # Use GeoPandas iteration instead of R-tree intersection
             for temporal_interval, row in self.index.iterrows():
                 bounds = row.geometry.bounds  # (minx, miny, maxx, maxy)
-                # Get temporal bounds from the index (which is a pd.Interval)
-                bbox = BoundingBox(
-                    bounds[0],
-                    bounds[2],
-                    bounds[1],
-                    bounds[3],
-                    temporal_interval.left,
-                    temporal_interval.right,
+                geo_slice = (
+                    slice(bounds[0], bounds[2]),  # x: minx to maxx
+                    slice(bounds[1], bounds[3]),  # y: miny to maxy
+                    slice(temporal_interval.left, temporal_interval.right),  # t
                 )
-                counts = label_ds._get_pixel_counts(bbox)
+                counts = label_ds._get_pixel_counts(geo_slice)
                 for key, cnt in counts.items():
                     pixel_counts[key] += cnt
             return dict(pixel_counts)
@@ -945,7 +906,9 @@ class ClassificationRasterDataset(
             transforms=self.transforms,
         )
 
-    def __and__(self, other: ClassificationRasterDataset) -> ClassificationRasterDataset:
+    def __and__(
+        self, other: ClassificationRasterDataset
+    ) -> ClassificationRasterDataset:
         return ClassificationRasterDataset(
             IntersectionDataset(self.datasets[0], other.datasets[0]),
             IntersectionDataset(self.datasets[1], other.datasets[1]),
@@ -1186,7 +1149,7 @@ def get_segmentation_dataset(
         label_ds_class.class_mapping = class_mapping
         label_ds_class.filename_regex = label_filename_regex
         label_ds_class.date_format = label_date_format
-        label_ds_class.dataset_type = 'classification'
+        label_ds_class.dataset_type = "classification"
 
         label_ds = label_ds_class(
             paths=labels_dir,
@@ -1218,7 +1181,7 @@ def get_regression_dataset(
     sensor_name: str = None,
     crs: CRS = None,
     res: float = None,
-    nodata_value: float = 0.,
+    nodata_value: float = 0.0,
     bands_to_return: tuple[str] = None,
     image_transforms: Callable[[dict[str, Any]], dict[str, Any]] = None,
     label_transforms: Callable[[dict[str, Any]], dict[str, Any]] = None,
@@ -1286,7 +1249,6 @@ def get_regression_dataset(
     image_ds_class.separate_files = image_separate_files
     image_ds_class.filename_regex = image_filename_regex
     image_ds_class.date_format = image_date_format
-    
 
     image_ds = image_ds_class(
         paths=images_dir,
@@ -1303,7 +1265,7 @@ def get_regression_dataset(
         label_ds_class.filename_regex = label_filename_regex
         label_ds_class.date_format = label_date_format
         label_ds_class.nodata_value = nodata_value
-        label_ds_class.dataset_type = 'regression'
+        label_ds_class.dataset_type = "regression"
 
         label_ds = label_ds_class(
             paths=labels_dir,

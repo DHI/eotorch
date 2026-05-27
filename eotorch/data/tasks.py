@@ -11,8 +11,10 @@ from matplotlib import pyplot as plt
 from torchgeo.datasets import RGBBandsMissingError, unbind_samples
 from torchgeo.datasets.utils import array_to_tensor
 from torchgeo.trainers import (
-    SemanticSegmentationTask as TorchGeoSemanticSegmentationTask,
     RegressionTask as TorchGeoRegressionTask,
+)
+from torchgeo.trainers import (
+    SemanticSegmentationTask as TorchGeoSemanticSegmentationTask,
 )
 from torchmetrics import MetricCollection
 from torchmetrics.classification import (
@@ -277,7 +279,8 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
                     labels=class_names,
                     prefix="Class_F1_",
                 ),
-            }
+            },
+            compute_groups=False,
         )
         self.train_metrics = metrics.clone(prefix="train/")
         self.val_metrics = metrics.clone(prefix="val/")
@@ -593,7 +596,7 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
 
 class RegressionTask(TorchGeoRegressionTask):
     """Task for regression problems, inheriting from TorchGeo's RegressionTask."""
-    
+
     def __init__(
         self,
         in_channels: int,
@@ -610,7 +613,7 @@ class RegressionTask(TorchGeoRegressionTask):
         lr_scheduler: dict[str, Any] = None,
     ):
         """Initialize a regression task.
-        
+
         Inherits from TorchGeo's RegressionTask and adds support for custom models,
         learning rate schedulers, and additional metrics.
 
@@ -655,7 +658,7 @@ class RegressionTask(TorchGeoRegressionTask):
         # Model selection
         if model.lower() in REG_MODEL_MAPPING:
             model_cls = REG_MODEL_MAPPING[model]
-           
+
             init_args = get_init_args(model_cls)
             for param in init_args:
                 if (
@@ -721,40 +724,46 @@ class RegressionTask(TorchGeoRegressionTask):
             },
         }
 
-    def training_step(self, batch: dict, batch_idx: int, dataloader_idx: int = 0) -> Tensor:
+    def training_step(
+        self, batch: dict, batch_idx: int, dataloader_idx: int = 0
+    ) -> Tensor:
         """Modified training step for regression tasks."""
         x = batch["image"]
         y = batch["mask"]
-        
+
         if x.ndim > 4:
             x = x.squeeze(0)
-            
+
         batch_size = x.shape[0]
         y_hat = self(x)
         if y_hat.ndim != y.ndim:
             y = y.unsqueeze(dim=1)
         loss = self.criterion(y_hat, y)
-        
-        self.log("train_loss", loss, batch_size=batch_size, prog_bar=True, on_epoch=True)
+
+        self.log(
+            "train_loss", loss, batch_size=batch_size, prog_bar=True, on_epoch=True
+        )
         self.train_metrics(y_hat, y)
         self.log_dict(self.train_metrics, batch_size=batch_size, on_epoch=True)
-        
+
         return loss
 
-    def validation_step(self, batch: dict, batch_idx: int = None, dataloader_idx: int = 0) -> None:
+    def validation_step(
+        self, batch: dict, batch_idx: int = None, dataloader_idx: int = 0
+    ) -> None:
         """Modified validation step for regression tasks."""
         x = batch["image"]
         y = batch["mask"]
-        
+
         if x.ndim > 4:
             x = x.squeeze(0)
-            
+
         batch_size = x.shape[0]
         y_hat = self(x)
         if y_hat.ndim != y.ndim:
             y = y.unsqueeze(dim=1)
         loss = self.criterion(y_hat, y)
-        
+
         self.log("val_loss", loss, batch_size=batch_size)
         self.val_metrics(y_hat, y)
         self.log_dict(self.val_metrics, batch_size=batch_size)
@@ -772,7 +781,7 @@ class RegressionTask(TorchGeoRegressionTask):
             # Get prediction and ensure it's in the right format
             # Use dimension 1 for the argmax to operate on the channel dimension
             # but preserve the batch dimension
-            if self.target_key == 'mask':
+            if self.target_key == "mask":
                 y = y.squeeze(dim=1)
                 y_hat = y_hat.squeeze(dim=1)
 
@@ -780,9 +789,7 @@ class RegressionTask(TorchGeoRegressionTask):
             valid_batch = {
                 "image": x.cpu(),
                 "mask": y.cpu(),  # Add channel dimension back
-                "prediction": y_hat
-                .detach()
-                .cpu(),  # Add channel dimension to match mask
+                "prediction": y_hat.detach().cpu(),  # Add channel dimension to match mask
             }
 
             # Only sample from first example for visualization
@@ -817,16 +824,16 @@ class RegressionTask(TorchGeoRegressionTask):
         """Modified test step for regression tasks."""
         x = batch["image"]
         y = batch["mask"]
-        
+
         if x.ndim > 4:
             x = x.squeeze(0)
-            
+
         batch_size = x.shape[0]
         y_hat = self(x)
         if y_hat.ndim != y.ndim:
             y = y.unsqueeze(dim=1)
         loss = self.criterion(y_hat, y)
-        
+
         self.log("test_loss", loss, batch_size=batch_size)
         self.test_metrics(y_hat, y)
         self.log_dict(self.test_metrics, batch_size=batch_size)
@@ -837,7 +844,7 @@ class RegressionTask(TorchGeoRegressionTask):
             return self(batch)
 
     @staticmethod
-    def predict_on_tif_file(       
+    def predict_on_tif_file(
         tif_file_path: str | Path,
         checkpoint_path: str | Path,
         func_supports_batching: bool = True,
@@ -852,9 +859,9 @@ class RegressionTask(TorchGeoRegressionTask):
         Perform predictions on a GeoTIFF file using a trained regression model.
 
         Parameters:
-            tif_file_path (str | Path): 
+            tif_file_path (str | Path):
                 Path to the input GeoTIFF file to perform predictions on.
-            checkpoint_path (str | Path): 
+            checkpoint_path (str | Path):
                 Path to the trained model checkpoint file .
             func_supports_batching (bool, optional):
                 Whether the prediction function supports batch processing. Defaults to True.
@@ -866,7 +873,7 @@ class RegressionTask(TorchGeoRegressionTask):
                 Whether to display the prediction results using matplotlib. Defaults to False.
             ax (plt.Axes, optional):
                 Matplotlib axes on which to plot the results. Only used if show_results is True. Defaults to None.
-            progress_bar (bool, optional): 
+            progress_bar (bool, optional):
                 Whether to display a progress bar during prediction. Defaults to True.
             patch_size (int, optional):
                 Size of image patches to process. If None, tries to get from checkpoint datamodule parameters. Defaults to None.
@@ -878,7 +885,7 @@ class RegressionTask(TorchGeoRegressionTask):
         Returns:
             numpy.ndarray:
                 Array containing the prediction results for the entire GeoTIFF image
-        """        
+        """
         from eotorch.inference.inference import predict_on_tif_generic
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -888,11 +895,11 @@ class RegressionTask(TorchGeoRegressionTask):
         )
         lightning_module.to(device)
         lightning_module.eval()
-        
+
         data_module_params = torch.load(
             checkpoint_path, weights_only=False, map_location=device
         ).get("datamodule_hyper_parameters")
-        
+
         if not data_module_params and not patch_size:
             raise ValueError(
                 "No datamodule_hyper_parameters found in checkpoint and patch_size is not set. "
@@ -923,9 +930,9 @@ class PatchSegmentationTask(LightningModule):
         num_classes: int,
         in_channels: int,
         num_filters: int = 128,
-        model = 'deepresunet',
-        loss: str = 'dice',
-        task: str = 'multiclass',
+        model="deepresunet",
+        loss: str = "dice",
+        task: str = "multiclass",
         class_weights: Tensor | None = None,
         weights: WeightsEnum | str | bool | None = None,
         ignore_index: int | None = None,
@@ -1024,7 +1031,9 @@ class PatchSegmentationTask(LightningModule):
 
     def configure_optimizers(self) -> dict[str, Any]:
         """Build optimizer and scheduler configuration for Lightning."""
-        optimizer = torch.optim.AdamW(self.parameters(), lr=self.hparams["lr"], weight_decay=1e-4)
+        optimizer = torch.optim.AdamW(
+            self.parameters(), lr=self.hparams["lr"], weight_decay=1e-4
+        )
         if self.lr_scheduler:
             scheduler = self.lr_scheduler
         else:
@@ -1038,7 +1047,7 @@ class PatchSegmentationTask(LightningModule):
                 "monitor": "val_loss",
             },
         }
-    
+
     def configure_metrics(self) -> None:
         """Create train/validation/test metric collections."""
         num_classes = self.hparams["num_classes"]
@@ -1046,7 +1055,7 @@ class PatchSegmentationTask(LightningModule):
         class_names = self.hparams.get("class_names") or [
             str(i) for i in range(num_classes)
         ]
-        
+
         metrics = MetricCollection(
             {
                 # Macro-averaged metrics (consistent with TerraTorch naming)
@@ -1105,15 +1114,16 @@ class PatchSegmentationTask(LightningModule):
         self.val_metrics = metrics.clone(prefix="val/")
         self.test_metrics = metrics.clone(prefix="test/")
 
-
     def training_step(self, batch: tuple[Tensor, Tensor], batch_idx: int) -> Tensor:
         """Run one training step and log aggregate/per-class training metrics."""
         x, y = batch
         y_hat = self(x)
         batch_size = x.shape[0]
         loss = self.criterion(y_hat, y)
-        
-        self.log("train_loss", loss, batch_size=batch_size, prog_bar=True, on_epoch=True)
+
+        self.log(
+            "train_loss", loss, batch_size=batch_size, prog_bar=True, on_epoch=True
+        )
         computed = self.train_metrics(y_hat, y)
         self.log_dict(computed, batch_size=batch_size)
 
@@ -1156,7 +1166,7 @@ class PatchSegmentationTask(LightningModule):
     def forward(self, x: Tensor) -> Tensor:
         """Forward pass through the segmentation backbone."""
         return self.model(x)
-    
+
     @staticmethod
     def predict_on_tif_file(
         tif_file_path: str | Path,
@@ -1183,10 +1193,20 @@ class PatchSegmentationTask(LightningModule):
 
         if "num_classes" not in hparams and "model.output.weight" in state_dict:
             hparams["num_classes"] = int(state_dict["model.output.weight"].shape[0])
-        if "in_channels" not in hparams and "model.input_conv.conv.weight" in state_dict:
-            hparams["in_channels"] = int(state_dict["model.input_conv.conv.weight"].shape[1])
-        if "num_filters" not in hparams and "model.input_conv.conv.weight" in state_dict:
-            hparams["num_filters"] = int(state_dict["model.input_conv.conv.weight"].shape[0])
+        if (
+            "in_channels" not in hparams
+            and "model.input_conv.conv.weight" in state_dict
+        ):
+            hparams["in_channels"] = int(
+                state_dict["model.input_conv.conv.weight"].shape[1]
+            )
+        if (
+            "num_filters" not in hparams
+            and "model.input_conv.conv.weight" in state_dict
+        ):
+            hparams["num_filters"] = int(
+                state_dict["model.input_conv.conv.weight"].shape[0]
+            )
         if "lr" not in hparams and "learning_rate" in hparams:
             hparams["lr"] = hparams["learning_rate"]
 
@@ -1196,7 +1216,9 @@ class PatchSegmentationTask(LightningModule):
             if class_mapping_from_data:
                 hparams["num_classes"] = len(class_mapping_from_data)
 
-        missing_required = [k for k in ("num_classes", "in_channels") if k not in hparams]
+        missing_required = [
+            k for k in ("num_classes", "in_channels") if k not in hparams
+        ]
         if missing_required:
             raise ValueError(
                 "Missing required model hyperparameters in checkpoint: "

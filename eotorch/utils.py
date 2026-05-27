@@ -750,16 +750,18 @@ def _format_filepaths(filepaths):
 
 
 def torchgeo_bb_to_shapely(
-    bbox: list | tuple | BoundingBox,
+    bbox,
     bbox_crs: str | pyproj.CRS,
     target_crs: str | pyproj.CRS = "EPSG:4326",
 ):
     """
-    Convert a list of bound coordinates, tuple, or a BoundingBox object to a Shapely Polygon.
+    Convert a list of bound coordinates, tuple, Tensor, or a BoundingBox object to a Shapely Polygon.
 
     Parameters:
-        bbox (list, tuple, or BoundingBox):
+        bbox (list, tuple, Tensor, or BoundingBox):
             The bounding box to convert.
+            - If a Tensor: expected format [xmin, xmax, xres, ymin, ymax, yres, tmin, tmax, tres]
+              (torchgeo v0.9 _slice_to_tensor format)
             - If a list: should be in the format [minx, maxx, miny, maxy] (torchgeo format)
             - If a tuple: should be in the format (minx, miny, maxx, maxy) (geopandas bounds format)
             - If a BoundingBox object: should have the attributes minx, maxx, miny, maxy.
@@ -773,6 +775,8 @@ def torchgeo_bb_to_shapely(
         shapely.geometry.Polygon:
             The converted Shapely Polygon.
     """
+    import torch
+
     if isinstance(target_crs, str):
         target_crs = pyproj.CRS(target_crs)
 
@@ -780,7 +784,15 @@ def torchgeo_bb_to_shapely(
         bbox_crs = pyproj.CRS(bbox_crs)
 
     # Create a shapely polygon from the bbox coordinates
-    if isinstance(bbox, (list, tuple, np.ndarray)):
+    if isinstance(bbox, torch.Tensor):
+        # torchgeo v0.9 _slice_to_tensor format: [xmin, xmax, xres, ymin, ymax, yres, tmin, tmax, tres]
+        polygon = shapely.geometry.box(
+            minx=bbox[0].item(),
+            miny=bbox[3].item(),
+            maxx=bbox[1].item(),
+            maxy=bbox[4].item(),
+        )
+    elif isinstance(bbox, (list, tuple, np.ndarray)):
         # Handle both list and tuple formats
         # For geopandas geometry.bounds: (minx, miny, maxx, maxy)
         # For torchgeo list format: [minx, maxx, miny, maxy]
