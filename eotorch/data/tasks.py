@@ -940,6 +940,7 @@ class PatchSegmentationTask(LightningModule):
         """Initialize model, optimization config, and metric collections."""
         super().__init__()
         self.weights = weights
+        self.task = task
         self.class_names = class_names
         self.model_kwargs = model_kwargs or {}
         self.lr_scheduler = lr_scheduler or {}
@@ -1020,6 +1021,8 @@ class PatchSegmentationTask(LightningModule):
                         decoder_intermediate_channels=[num_filters * 2**i for i in [0, 1, 2, 2]],
                         decoder_fusion_channels=num_filters,
                     )
+                case _:
+                    raise ValueError(f"Unknown model: {model}")
 
             # Freeze backbone
             if self.hparams['freeze_backbone']:
@@ -1074,21 +1077,35 @@ class PatchSegmentationTask(LightningModule):
                     ignore_index=ignore_index,
                     from_logits=True,
                 )
+            case _:
+                raise ValueError(f"Unknown loss: {self.hparams['loss']}")
 
     def configure_optimizers(self) -> dict[str, Any]:
         """Build optimizer and scheduler configuration for Lightning."""
         optimizer = torch.optim.AdamW(self.parameters(), lr=self.hparams["lr"], weight_decay=1e-4)
-        if self.lr_scheduler:
-            scheduler = self.lr_scheduler
-        else:
+        monitor = "val_loss"
+        if not self.lr_scheduler:
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
                 optimizer, patience=10, min_lr=1e-6, factor=0.2
             )
+        else:
+            scheduler_config = dict(self.lr_scheduler)
+            scheduler_type = scheduler_config.pop("type", None)
+            if not scheduler_type:
+                raise ValueError("lr_scheduler config must include a 'type' key")
+            if "monitor" in scheduler_config:
+                monitor = scheduler_config.pop("monitor")
+            if not hasattr(torch.optim.lr_scheduler, scheduler_type):
+                raise ValueError(
+                    f"Scheduler {scheduler_type} not found in torch.optim.lr_scheduler"
+                )
+            scheduler_cls = getattr(torch.optim.lr_scheduler, scheduler_type)
+            scheduler = scheduler_cls(optimizer, **scheduler_config)
         return {
             "optimizer": optimizer,
             "lr_scheduler": {
                 "scheduler": scheduler,
-                "monitor": "val_loss",
+                "monitor": monitor,
             },
         }
     
@@ -1189,7 +1206,7 @@ class PatchSegmentationTask(LightningModule):
         with torch.inference_mode():
             y_hat: Tensor = self(batch)
 
-            match self.task:
+            match self.hparams["task"]:
                 case "binary" | "multilabel":
                     y_hat = y_hat.sigmoid()
                 case "multiclass":
@@ -1204,6 +1221,8 @@ class PatchSegmentationTask(LightningModule):
         batch = batch.to(self.device)
         probs = self.predict_step(batch)
         preds = probs.argmax(dim=1).cpu().numpy().astype("uint8")
+        if hasattr(self, "reduce_zero_label") and self.reduce_zero_label:
+            preds += 1
         return preds
 
     def forward(self, x: Tensor) -> Tensor:
