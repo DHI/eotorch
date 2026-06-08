@@ -12,7 +12,6 @@ from torchgeo.datasets import RGBBandsMissingError, unbind_samples
 from torchgeo.datasets.utils import array_to_tensor
 from torchgeo.trainers import (
     SemanticSegmentationTask as TorchGeoSemanticSegmentationTask,
-    RegressionTask as TorchGeoRegressionTask,
 )
 from torchmetrics import MetricCollection
 from torchmetrics.classification import (
@@ -20,6 +19,7 @@ from torchmetrics.classification import (
     MulticlassF1Score,
     MulticlassJaccardIndex,
 )
+from torchmetrics.regression import MeanAbsoluteError, MeanSquaredError, R2Score
 from torchmetrics.wrappers import ClasswiseWrapper
 
 from eotorch.models import CLF_MODEL_MAPPING, REG_MODEL_MAPPING
@@ -591,9 +591,9 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
         )
 
 
-class RegressionTask(TorchGeoRegressionTask):
-    """Task for regression problems, inheriting from TorchGeo's RegressionTask."""
-    
+class RegressionTask(LightningModule):
+    """Lightning module for patch-based regression tasks."""
+
     def __init__(
         self,
         in_channels: int,
@@ -607,55 +607,28 @@ class RegressionTask(TorchGeoRegressionTask):
         freeze_backbone: bool = False,
         freeze_decoder: bool = False,
         model_kwargs: dict[str, Any] = None,
-        lr_scheduler: dict[str, Any] = None,
+        lr_scheduler: dict[str, Any] | None = None,
     ):
-        """Initialize a regression task.
-        
-        Inherits from TorchGeo's RegressionTask and adds support for custom models,
-        learning rate schedulers, and additional metrics.
-
-        Args:
-            in_channels: Number of input channels
-            model: Name of the model architecture to use
-            backbone: Name of the backbone to use (for applicable models)
-            weights: Initial model weights
-            loss: Loss function to use ('mse', 'mae', etc.)
-            lr: Learning rate
-            freeze_backbone: Whether to freeze backbone weights
-            freeze_decoder: Whether to freeze decoder weights
-            model_kwargs: Additional model-specific arguments
-            lr_scheduler: Learning rate scheduler configuration. If None, uses default:
-                        ReduceLROnPlateau with:
-                        * mode: "min"
-                        * factor: 0.2
-                        * patience: 10
-                        * min_lr: 1e-6
-                        * monitor: "val_loss"
-        """
+        """Initialize model, optimization config, and metric collections."""
+        super().__init__()
+        self.weights = weights
         self.model_kwargs = model_kwargs or {}
         self.lr_scheduler = lr_scheduler or {}
+        self.save_hyperparameters(ignore={"weights"})
 
-        super().__init__(
-            model=model,
-            backbone=backbone,
-            weights=weights,
-            in_channels=in_channels,
-            num_outputs=num_outputs,
-            num_filters=num_filters,
-            loss=loss,
-            lr=lr,
-            freeze_backbone=freeze_backbone,
-            freeze_decoder=freeze_decoder,
-        )
+        self.configure_models()
+        self.configure_losses()
+        self.configure_metrics()
 
     def configure_models(self) -> None:
+        """Create the regression model from registered local model mapping."""
         model: str = self.hparams["model"]
+        backbone: str = self.hparams["backbone"]
         weights = self.weights
 
-        # Model selection
         if model.lower() in REG_MODEL_MAPPING:
             model_cls = REG_MODEL_MAPPING[model]
-           
+
             init_args = get_init_args(model_cls)
             for param in init_args:
                 if (
@@ -673,7 +646,30 @@ class RegressionTask(TorchGeoRegressionTask):
                 print(f"Weights loaded successfully from {weights}")
 
         else:
-            super().configure_models()
+            in_channels: int = self.hparams["in_channels"]
+            num_outputs: int = self.hparams["num_outputs"]
+
+            match model.lower():
+                case "unet":
+                    self.model = smp.Unet(
+                        encoder_name=backbone,
+                        encoder_weights="imagenet" if weights is True else None,
+                        in_channels=in_channels,
+                        classes=num_outputs,
+                    )
+                case _:
+                    raise ValueError(
+                        f"Unknown regression model: {model}. "
+                        f"Available models are: {sorted(REG_MODEL_MAPPING.keys()) + ['unet']}"
+                    )
+
+            if self.hparams["freeze_backbone"]:
+                for param in self.model.encoder.parameters():
+                    param.requires_grad = False
+
+            if self.hparams["freeze_decoder"]:
+                for param in self.model.decoder.parameters():
+                    param.requires_grad = False
 
     def configure_losses(self) -> None:
         """Initialize the loss criterion for regression."""
@@ -689,224 +685,225 @@ class RegressionTask(TorchGeoRegressionTask):
             case _:
                 raise ValueError(f"Unknown loss: {self.hparams['loss']}")
 
-    def configure_optimizers(self):
+    def configure_optimizers(self) -> dict[str, Any]:
+        """Build optimizer and scheduler configuration for Lightning."""
         optimizer = torch.optim.AdamW(
             self.parameters(),
             lr=self.hparams["lr"],
             weight_decay=1e-4,  # Add some regularization
         )
-        monitor = None
+        monitor = "val_loss"
         if not self.lr_scheduler:
             scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
                 optimizer, patience=10, min_lr=1e-6, factor=0.2
             )
 
         else:
-            scheduler_type = self.lr_scheduler.pop("type")
-            if hasattr(torch.optim.lr_scheduler, scheduler_type):
-                scheduler_cls = getattr(torch.optim.lr_scheduler, scheduler_type)
-                if "monitor" in self.lr_scheduler:
-                    monitor = self.lr_scheduler.pop("monitor")
-                scheduler = scheduler_cls(optimizer, **self.lr_scheduler)
-            else:
+            scheduler_config = dict(self.lr_scheduler)
+            scheduler_type = scheduler_config.pop("type", None)
+            if not scheduler_type:
+                raise ValueError("lr_scheduler config must include a 'type' key")
+            if "monitor" in scheduler_config:
+                monitor = scheduler_config.pop("monitor")
+            if not hasattr(torch.optim.lr_scheduler, scheduler_type):
                 raise ValueError(
                     f"Scheduler {scheduler_type} not found in torch.optim.lr_scheduler"
                 )
+            scheduler_cls = getattr(torch.optim.lr_scheduler, scheduler_type)
+            scheduler = scheduler_cls(optimizer, **scheduler_config)
 
         return {
             "optimizer": optimizer,
             "lr_scheduler": {
                 "scheduler": scheduler,
-                "monitor": monitor or self.monitor,
+                "monitor": monitor,
             },
         }
 
-    def training_step(self, batch: dict, batch_idx: int, dataloader_idx: int = 0) -> Tensor:
-        """Modified training step for regression tasks."""
-        x = batch["image"]
-        y = batch["mask"]
-        
+    def configure_metrics(self) -> None:
+        """Create train/validation/test metric collections for regression."""
+        metrics = MetricCollection(
+            {
+                "MAE": MeanAbsoluteError(),
+                "MSE": MeanSquaredError(),
+                "R2": R2Score(),
+            }
+        )
+        self.train_metrics = metrics.clone(prefix="train/")
+        self.val_metrics = metrics.clone(prefix="val/")
+        self.test_metrics = metrics.clone(prefix="test/")
+
+    def _extract_inputs_and_targets(
+        self, batch: dict[str, Tensor] | tuple[Tensor, Tensor]
+    ) -> tuple[Tensor, Tensor]:
+        """Support both dict and tuple batch formats for patch-based loaders."""
+        if isinstance(batch, dict):
+            x = batch["image"]
+            y = batch["mask"]
+        else:
+            x, y = batch
+
         if x.ndim > 4:
             x = x.squeeze(0)
-            
+
+        if y.ndim == 4 and y.shape[1] == 1:
+            y = y.squeeze(1)
+
+        return x, y
+
+    def training_step(self, batch: Any, batch_idx: int) -> Tensor:
+        """Run one training step and log train metrics."""
+        x, y = self._extract_inputs_and_targets(batch)
+
         batch_size = x.shape[0]
         y_hat = self(x)
         if y_hat.ndim != y.ndim:
             y = y.unsqueeze(dim=1)
         loss = self.criterion(y_hat, y)
-        
+
         self.log("train_loss", loss, batch_size=batch_size, prog_bar=True, on_epoch=True)
-        self.train_metrics(y_hat, y)
-        self.log_dict(self.train_metrics, batch_size=batch_size, on_epoch=True)
-        
+        computed = self.train_metrics(y_hat, y)
+        self.log_dict(computed, batch_size=batch_size)
+
         return loss
 
-    def validation_step(self, batch: dict, batch_idx: int = None, dataloader_idx: int = 0) -> None:
-        """Modified validation step for regression tasks."""
-        x = batch["image"]
-        y = batch["mask"]
-        
-        if x.ndim > 4:
-            x = x.squeeze(0)
-            
+    def validation_step(self, batch: Any, batch_idx: int = 0) -> None:
+        """Run one validation step and log validation metrics."""
+        x, y = self._extract_inputs_and_targets(batch)
+
         batch_size = x.shape[0]
         y_hat = self(x)
         if y_hat.ndim != y.ndim:
             y = y.unsqueeze(dim=1)
         loss = self.criterion(y_hat, y)
-        
+
         self.log("val_loss", loss, batch_size=batch_size)
-        self.val_metrics(y_hat, y)
-        self.log_dict(self.val_metrics, batch_size=batch_size)
+        computed = self.val_metrics(y_hat, y)
+        self.log_dict(computed, batch_size=batch_size)
 
-        if (
-            batch_idx < 10
-            and hasattr(self.trainer, "datamodule")
-            and hasattr(self.trainer.datamodule, "plot")
-            and self.logger
-            and hasattr(self.logger, "experiment")
-            and hasattr(self.logger.experiment, "add_figure")
-        ):
-            datamodule = self.trainer.datamodule
+    def test_step(self, batch: Any, batch_idx: int) -> None:
+        """Run one test step and log test metrics."""
+        x, y = self._extract_inputs_and_targets(batch)
 
-            # Get prediction and ensure it's in the right format
-            # Use dimension 1 for the argmax to operate on the channel dimension
-            # but preserve the batch dimension
-            if self.target_key == 'mask':
-                y = y.squeeze(dim=1)
-                y_hat = y_hat.squeeze(dim=1)
-
-            # Create a new batch dictionary with the valid subset
-            valid_batch = {
-                "image": x.cpu(),
-                "mask": y.cpu(),  # Add channel dimension back
-                "prediction": y_hat
-                .detach()
-                .cpu(),  # Add channel dimension to match mask
-            }
-
-            # Only sample from first example for visualization
-            sample = unbind_samples(valid_batch)[0]
-
-            # Verify that sample has a prediction and remove extra dimension for plotting
-            if "prediction" in sample and sample["prediction"] is not None:
-                # Remove the channel dimension for plotting
-                sample["prediction"] = sample["prediction"].squeeze(0)
-
-            else:
-                print(f"Warning: Sample {batch_idx} missing prediction key")
-
-            fig: Figure | None = None
-            try:
-                fig = datamodule.plot(sample)
-            except RGBBandsMissingError:
-                print(f"RGB bands missing in batch {batch_idx}, skipping visualization")
-                pass
-            except Exception as e:
-                print(f"Error plotting sample from batch {batch_idx}: {e}")
-                pass
-
-            if fig:
-                summary_writer = self.logger.experiment
-                summary_writer.add_figure(
-                    f"image/{batch_idx}", fig, global_step=self.global_step
-                )
-                plt.close()
-
-    def test_step(self, batch: dict, batch_idx: int, dataloader_idx: int = 0) -> None:
-        """Modified test step for regression tasks."""
-        x = batch["image"]
-        y = batch["mask"]
-        
-        if x.ndim > 4:
-            x = x.squeeze(0)
-            
         batch_size = x.shape[0]
         y_hat = self(x)
         if y_hat.ndim != y.ndim:
             y = y.unsqueeze(dim=1)
         loss = self.criterion(y_hat, y)
-        
+
         self.log("test_loss", loss, batch_size=batch_size)
-        self.test_metrics(y_hat, y)
-        self.log_dict(self.test_metrics, batch_size=batch_size)
+        computed = self.test_metrics(y_hat, y)
+        self.log_dict(computed, batch_size=batch_size)
 
     def predict_step(self, batch: Tensor) -> Tensor:
         """Override to return raw values instead of probabilities."""
         with torch.inference_mode():
             return self(batch)
 
+    def forward(self, x: Tensor) -> Tensor:
+        """Forward pass through the regression backbone."""
+        return self.model(x)
+
+    def predict_value(self, batch: Tensor | np.ndarray) -> np.ndarray:
+        """Predict regression values for a tensor or ndarray batch."""
+        if isinstance(batch, np.ndarray):
+            batch = array_to_tensor(batch)
+        batch = batch.to(self.device)
+        preds = self.predict_step(batch)
+        return preds.detach().cpu().numpy()
+
     @staticmethod
-    def predict_on_tif_file(       
+    def predict_on_tif_file(
         tif_file_path: str | Path,
         checkpoint_path: str | Path,
         func_supports_batching: bool = True,
         batch_size: int = 8,
-        out_file_path: str | Path = None,
+        out_file_path: str | Path | None = None,
         show_results: bool = False,
         ax: plt.Axes = None,
         progress_bar: bool = True,
-        patch_size: int = None,
-    ):
-        """
-        Perform predictions on a GeoTIFF file using a trained regression model.
-
-        Parameters:
-            tif_file_path (str | Path): 
-                Path to the input GeoTIFF file to perform predictions on.
-            checkpoint_path (str | Path): 
-                Path to the trained model checkpoint file .
-            func_supports_batching (bool, optional):
-                Whether the prediction function supports batch processing. Defaults to True.
-            batch_size (int, optional):
-                Number of patches to process simultaneously. Only used if func_supports_batching is True. Defaults to 8.
-            out_file_path (str | Path, optional):
-                Path where the output predictions should be saved as a GeoTIFF. If None, output is not saved to file. Defaults to None.
-            show_results (bool, optional):
-                Whether to display the prediction results using matplotlib. Defaults to False.
-            ax (plt.Axes, optional):
-                Matplotlib axes on which to plot the results. Only used if show_results is True. Defaults to None.
-            progress_bar (bool, optional): 
-                Whether to display a progress bar during prediction. Defaults to True.
-            patch_size (int, optional):
-                Size of image patches to process. If None, tries to get from checkpoint datamodule parameters. Defaults to None.
-
-        Raises:
-            ValueError:
-                If no patch_size is provided and it cannot be found in the checkpoint's datamodule parameters
-
-        Returns:
-            numpy.ndarray:
-                Array containing the prediction results for the entire GeoTIFF image
-        """        
+        patch_size: int | None = None,
+    ) -> Path | str:
+        """Run tiled inference on a TIF file using a saved model checkpoint."""
         from eotorch.inference.inference import predict_on_tif_generic
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        checkpoint_data = torch.load(
+            checkpoint_path, weights_only=False, map_location=device
+        )
+        hparams = checkpoint_data.get("hyper_parameters", {})
+        data_module_params = checkpoint_data.get("datamodule_hyper_parameters")
+        state_dict = checkpoint_data.get("state_dict", {})
+
+        if "num_outputs" not in hparams:
+            for key in ("model.output.weight", "model.head.weight"):
+                if key in state_dict:
+                    hparams["num_outputs"] = int(state_dict[key].shape[0])
+                    break
+        if "in_channels" not in hparams:
+            for key in ("model.input_conv.conv.weight", "model.stem.0.weight"):
+                if key in state_dict:
+                    hparams["in_channels"] = int(state_dict[key].shape[1])
+                    break
+        if "num_filters" not in hparams and "model.input_conv.conv.weight" in state_dict:
+            hparams["num_filters"] = int(state_dict["model.input_conv.conv.weight"].shape[0])
+        if "lr" not in hparams and "learning_rate" in hparams:
+            hparams["lr"] = hparams["learning_rate"]
+
+        missing_required = [k for k in ("in_channels", "num_outputs") if k not in hparams]
+        if missing_required:
+            raise ValueError(
+                "Missing required model hyperparameters in checkpoint: "
+                + ", ".join(missing_required)
+                + ". Please provide a checkpoint that includes hyper_parameters or includes model state_dict keys "
+                + "for input/output layers."
+            )
+
+        init_keys = [
+            "in_channels",
+            "num_outputs",
+            "num_filters",
+            "model",
+            "backbone",
+            "loss",
+            "lr",
+            "lr_scheduler",
+            "freeze_backbone",
+            "freeze_decoder",
+        ]
+        init_kwargs = {k: hparams[k] for k in init_keys if k in hparams}
+
         lightning_module = RegressionTask.load_from_checkpoint(
             checkpoint_path,
             map_location=device,
+            **init_kwargs,
         )
         lightning_module.to(device)
         lightning_module.eval()
-        
-        data_module_params = torch.load(
-            checkpoint_path, weights_only=False, map_location=device
-        ).get("datamodule_hyper_parameters")
-        
+
         if not data_module_params and not patch_size:
             raise ValueError(
                 "No datamodule_hyper_parameters found in checkpoint and patch_size is not set. "
                 "Please provide a valid checkpoint with datamodule_hyper_parameters or set patch_size."
             )
 
-        patch_size = data_module_params.get("patch_size", patch_size)
-        print(f"Using patch size: {patch_size}")
+        _ps = patch_size
+        if data_module_params and data_module_params.get("patch_size"):
+            _ps = data_module_params.get("patch_size")
+
+        if not _ps:
+            patch_size_info = " (not found in checkpoint)"
+        else:
+            patch_size_info = " (found in model checkpoint)"
+
+        patch_size_info = f"Using patch size: {_ps}" + patch_size_info
+        print(patch_size_info)
 
         return predict_on_tif_generic(
             tif_file_path=tif_file_path,
-            prediction_func=lambda x: lightning_module.predict_step(x).cpu().numpy(),
+            prediction_func=lightning_module.predict_value,
             show_results=show_results,
-            patch_size=patch_size,
+            patch_size=_ps,
             batch_size=batch_size,
             progress_bar=progress_bar,
             out_file_path=out_file_path,
