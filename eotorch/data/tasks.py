@@ -797,7 +797,11 @@ class RegressionTask(LightningModule):
     def predict_step(self, batch: Tensor) -> Tensor:
         """Override to return raw values instead of probabilities."""
         with torch.inference_mode():
-            return self(batch)
+            y = self(batch)
+        # predict_on_tif_generic expects (B, H, W) so each patch is 2D.
+        if y.ndim == 4 and y.shape[1] == 1:
+            y = y[:, 0, :, :]
+        return y
 
     def forward(self, x: Tensor) -> Tensor:
         """Forward pass through the regression backbone."""
