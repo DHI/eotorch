@@ -726,7 +726,6 @@ class RegressionTask(LightningModule):
             {
                 "MAE": MeanAbsoluteError(),
                 "MSE": MeanSquaredError(),
-                "R2": R2Score(),
             }
         )
         self.train_metrics = metrics.clone(prefix="train/")
