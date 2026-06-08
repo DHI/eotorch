@@ -23,6 +23,9 @@ def predict_on_tif_generic(
     ax: plt.Axes = None,
     progress_bar: bool = True,
     overlap: int = 2,
+    dtype : str = "uint8",
+    num_bands : int = 1,
+    nodata_value : int = 0,
 ) -> Path:
     """
     Predict segmentation classes on a TIF file using a custom prediction function.
@@ -39,28 +42,39 @@ def predict_on_tif_generic(
         Path to the input TIF file.
     prediction_func : Callable
         Accepts the input image batch supplied by the data_and_window_generator
-        and returns a NumPy array of shape (batch_size, patch_size, patch_size, num_classes).
+        and returns a NumPy array of shape (batch_size, patch_size, patch_size, num_classes). 
+        Dimensions and data type of the input batch will depend on the implementation of the data_and_window_generator, 
+        but it should be compatible with the prediction_func.
     data_and_window_generator : Generator
         A generator that yields batches of data and their corresponding windows.
         The generator should yield tuples of the form (batch, windows), where
         windows is a list of rasterio windows (in image coordinates) indicating the location of each patch
-        If None, the function will use a default patch generator, which simply loads unmodified patches straight from the TIF file.
-    patch_size : int
-        Integer size of the patch to use for prediction.
-    overlap : int
-        Overlap factor between patches (larger values increase overlap).
+        If None, the function will use a default patch generator, which simply loads unmodified patches straight from the TIF file. 
+        Defaults to None.
+    patch_size : int 
+        Integer size of the patch to use for prediction. Defaults to 256.
     class_mapping : dict[int, str], optional
-        Mapping from predicted class indices to class names for visualization.
+        Mapping from predicted class indices to class names for visualization. Defaults to None.
     func_supports_batching : bool
-        Whether the prediction_func supports batched processing.
+        Whether the prediction_func supports batched processing. Defaults to True.
     batch_size : int
-        The batch size used for prediction (ignored if func_supports_batching is False).
+        The batch size used for prediction (ignored if func_supports_batching is False). Defaults to 8.
     out_file_path : str | Path, optional
-        Output path for saving the results. Writes to a "predictions" subfolder if None.
+        Output path for saving the results. Writes to a "predictions" subfolder if None. Defaults to None.
     show_results : bool
-        If True, display the prediction output in a notebook environment.
+        If True, display the prediction output in a notebook environment. Defaults to False.
     ax : plt.Axes, optional
-        Matplotlib Axes object for plotting if show_results is True.
+        Matplotlib Axes object for plotting if show_results is True. Defaults to None, in which case a new figure and axes will be created.
+    progress_bar : bool
+        Whether to display a progress bar during inference. Defaults to True.
+    overlap : int
+        Overlap factor between patches (larger values increase overlap). Defaults to 2, which means 50% overlap.
+    dtype : str
+        Data type for the output TIF file. Defaults to "uint8".
+    num_bands : int
+        Number of bands in the output TIF file. Defaults to 1.
+    nodata_value : int
+        Value to use for no-data pixels in the output TIF file. Defaults to 0.
 
 
     Returns
@@ -74,7 +88,7 @@ def predict_on_tif_generic(
         meta = src_in.meta.copy()
         old_no_data = meta["nodata"]
 
-    meta.update({"dtype": "uint8", "count": 1, "nodata": 0})
+    meta.update({"dtype": dtype, "count": num_bands, "nodata": nodata_value})
     batch_size = batch_size if func_supports_batching else 1
 
     if out_file_path is None:
