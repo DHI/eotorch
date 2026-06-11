@@ -15,6 +15,9 @@ from torchgeo.trainers import (
 )
 from torchmetrics import MetricCollection
 from torchmetrics.classification import (
+    BinaryAccuracy,
+    BinaryF1Score,
+    BinaryJaccardIndex,
     MulticlassAccuracy,
     MulticlassF1Score,
     MulticlassJaccardIndex,
@@ -224,6 +227,20 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
         class_names = self.hparams.get("class_names") or [
             str(i) for i in range(num_classes)
         ]
+
+        if num_classes == 1:
+            metrics = MetricCollection(
+                {
+                    "mIoU": BinaryJaccardIndex(ignore_index=ignore_index),
+                    "F1_Score": BinaryF1Score(ignore_index=ignore_index),
+                    "Accuracy": BinaryAccuracy(ignore_index=ignore_index),
+                    "Pixel_Accuracy": BinaryAccuracy(ignore_index=ignore_index),
+                }
+            )
+            self.train_metrics = metrics.clone(prefix="train/")
+            self.val_metrics = metrics.clone(prefix="val/")
+            self.test_metrics = metrics.clone(prefix="test/")
+            return
 
         metrics = MetricCollection(
             {
@@ -656,6 +673,14 @@ class RegressionTask(LightningModule):
                         encoder_weights="imagenet" if weights is True else None,
                         in_channels=in_channels,
                         classes=num_outputs,
+                    )
+                case 'unet++' | 'unetplusplus':
+                    self.model = smp.UnetPlusPlus(
+                        encoder_name=backbone,
+                        encoder_weights='imagenet' if weights is True else None,
+                        in_channels=in_channels,
+                        classes=num_outputs,
+                        decoder_channels=[num_filters]+[num_filters := num_filters // 2 for _ in range(4)],
                     )
                 case _:
                     raise ValueError(
@@ -1116,6 +1141,20 @@ class PatchSegmentationTask(LightningModule):
         class_names = self.hparams.get("class_names") or [
             str(i) for i in range(num_classes)
         ]
+
+        if num_classes == 1:
+            metrics = MetricCollection(
+                {
+                    "mIoU": BinaryJaccardIndex(ignore_index=ignore_index),
+                    "F1_Score": BinaryF1Score(ignore_index=ignore_index),
+                    "Accuracy": BinaryAccuracy(ignore_index=ignore_index),
+                    "Pixel_Accuracy": BinaryAccuracy(ignore_index=ignore_index),
+                }
+            )
+            self.train_metrics = metrics.clone(prefix="train/")
+            self.val_metrics = metrics.clone(prefix="val/")
+            self.test_metrics = metrics.clone(prefix="test/")
+            return
         
         metrics = MetricCollection(
             {
