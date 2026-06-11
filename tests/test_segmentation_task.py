@@ -31,3 +31,22 @@ def test_patch_segmentation_task_supports_binary_metrics(monkeypatch):
     assert "train/F1_Score" in metric_names
     assert "train/Accuracy" in metric_names
     assert "train/Pixel_Accuracy" in metric_names
+
+
+def test_patch_segmentation_task_validation_accepts_3d_binary_targets(monkeypatch):
+    """validation_step should handle [N, H, W] targets for BCE binary segmentation."""
+    monkeypatch.setitem(tasks_module.CLF_MODEL_MAPPING, "dummyseg", DummySegModel)
+
+    task = PatchSegmentationTask(
+        num_classes=1,
+        in_channels=4,
+        model="dummyseg",
+        loss="bce",
+        task="binary",
+        ignore_index=0,
+    )
+
+    x = torch.randn(2, 4, 16, 16)
+    y = torch.randint(0, 2, (2, 16, 16), dtype=torch.long)
+
+    task.validation_step((x, y))

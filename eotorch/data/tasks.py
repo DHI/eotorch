@@ -1219,11 +1219,12 @@ class PatchSegmentationTask(LightningModule):
         """Run one training step and log aggregate/per-class training metrics."""
         x, y = batch
         y_hat = self(x)
+        y_loss, y_metrics = self._prepare_targets_for_loss_and_metrics(y_hat, y)
         batch_size = x.shape[0]
-        loss = self.criterion(y_hat, y)
+        loss = self.criterion(y_hat, y_loss)
         
         self.log("train_loss", loss, batch_size=batch_size, prog_bar=True, on_epoch=True)
-        computed = self.train_metrics(y_hat, y)
+        computed = self.train_metrics(y_hat, y_metrics)
         self.log_dict(computed, batch_size=batch_size)
 
         return loss
@@ -1234,11 +1235,26 @@ class PatchSegmentationTask(LightningModule):
 
         batch_size = x.shape[0]
         y_hat = self(x)
-        loss = self.criterion(y_hat, y)
+        y_loss, y_metrics = self._prepare_targets_for_loss_and_metrics(y_hat, y)
+        loss = self.criterion(y_hat, y_loss)
 
         self.log("val_loss", loss, batch_size=batch_size)
-        computed = self.val_metrics(y_hat, y)
+        computed = self.val_metrics(y_hat, y_metrics)
         self.log_dict(computed, batch_size=batch_size)
+
+    def _prepare_targets_for_loss_and_metrics(
+        self, y_hat: Tensor, y: Tensor
+    ) -> tuple[Tensor, Tensor]:
+        """Align target shape/dtype with binary logits while keeping metric targets integer."""
+        y_metrics = y
+        if y_hat.ndim == y_metrics.ndim + 1 and y_hat.shape[1] == 1:
+            y_metrics = y_metrics.unsqueeze(1)
+
+        y_loss = y_metrics
+        if isinstance(self.criterion, torch.nn.BCEWithLogitsLoss):
+            y_loss = y_loss.float()
+
+        return y_loss, y_metrics
 
     def predict_step(self, batch: Tensor) -> Tensor:
         """Predict class probabilities for an input batch."""
