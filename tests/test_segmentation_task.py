@@ -16,7 +16,7 @@ class DummySegModel(nn.Module):
 
 def test_patch_segmentation_task_supports_binary_metrics(monkeypatch):
     """PatchSegmentationTask should initialize metrics when num_classes is 1."""
-    monkeypatch.setitem(tasks_module.CLF_MODEL_MAPPING, "dummyseg", DummySegModel)
+    monkeypatch.setitem(tasks_module.SEG_MODEL_MAPPING, "dummyseg", DummySegModel)
 
     task = PatchSegmentationTask(
         num_classes=1,
@@ -35,7 +35,7 @@ def test_patch_segmentation_task_supports_binary_metrics(monkeypatch):
 
 def test_patch_segmentation_task_validation_accepts_3d_binary_targets(monkeypatch):
     """validation_step should handle [N, H, W] targets for BCE binary segmentation."""
-    monkeypatch.setitem(tasks_module.CLF_MODEL_MAPPING, "dummyseg", DummySegModel)
+    monkeypatch.setitem(tasks_module.SEG_MODEL_MAPPING, "dummyseg", DummySegModel)
 
     task = PatchSegmentationTask(
         num_classes=1,

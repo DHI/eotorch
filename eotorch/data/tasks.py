@@ -25,7 +25,7 @@ from torchmetrics.classification import (
 from torchmetrics.regression import MeanAbsoluteError, MeanSquaredError, R2Score
 from torchmetrics.wrappers import ClasswiseWrapper
 
-from eotorch.models import CLF_MODEL_MAPPING, REG_MODEL_MAPPING
+from eotorch.models import CLF_MODEL_MAPPING, REG_MODEL_MAPPING, SEG_MODEL_MAPPING
 from eotorch.utils import get_init_args
 
 if TYPE_CHECKING:
@@ -113,8 +113,8 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
         model: str = self.hparams["model"]
         weights = self.weights
 
-        if model.lower() in CLF_MODEL_MAPPING:
-            model_cls = CLF_MODEL_MAPPING[model]
+        if model.lower() in SEG_MODEL_MAPPING:
+            model_cls = SEG_MODEL_MAPPING[model]
 
             init_args = get_init_args(model_cls)
             for param in init_args:
@@ -981,8 +981,8 @@ class PatchSegmentationTask(LightningModule):
         backbone: str = self.hparams['backbone']
         weights = self.weights
 
-        if model.lower() in CLF_MODEL_MAPPING:
-            model_cls = CLF_MODEL_MAPPING[model]
+        if model.lower() in SEG_MODEL_MAPPING:
+            model_cls = SEG_MODEL_MAPPING[model]
 
             init_args = get_init_args(model_cls)
             for param in init_args:
@@ -992,6 +992,23 @@ class PatchSegmentationTask(LightningModule):
                     self.model_kwargs[param] = self.hparams[param]
 
             print(f"Initializing model {model} with kwargs {self.model_kwargs}")
+            self.model: nn.Module = model_cls(**self.model_kwargs)
+
+            if weights:
+                if isinstance(weights, (str, Path)):
+                    weights = torch.load(weights)
+                self.model.load_state_dict(weights)
+                print(f"Weights loaded successfully from {weights}")
+
+        elif model.lower() in SEG_MODEL_MAPPING:
+            model_cls = SEG_MODEL_MAPPING[model]
+
+            init_args = get_init_args(model_cls)
+            for param in init_args:
+                if param in self.hparams:
+                    self.model_kwargs[param] = self.hparams[param]
+
+            print(f"Initializing segmentation model {model} with kwargs {self.model_kwargs}")
             self.model: nn.Module = model_cls(**self.model_kwargs)
 
             if weights:
