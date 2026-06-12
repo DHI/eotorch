@@ -7,6 +7,7 @@ with SMP's UPerNet decoder for semantic segmentation tasks.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import segmentation_models_pytorch as smp
@@ -16,8 +17,7 @@ from transformers import AutoModel
 
 
 class DINOv3UPerNet(nn.Module):
-    """
-    Combines frozen DINOv3 from Hugging Face with trainable SMP UPerNet decoder.
+    """Combines frozen DINOv3 from Hugging Face with trainable SMP UPerNet decoder.
 
     Strategy:
     1. Extract frozen patch embeddings from DINOv3 (shape: [B, hidden_size, H', W']).
@@ -27,6 +27,9 @@ class DINOv3UPerNet(nn.Module):
     Args:
         num_classes: Number of output segmentation classes.
         dinov3_model_name: Hugging Face identifier (e.g., 'facebook/dinov3-vitl14-pretrained').
+            Short model IDs are also supported for known variants, including:
+            - 'dinov3-vitl16-pretrain-sat493m'
+            - 'dinov3-vit7b16-pretrain-sat493m'
         in_channels: Input channels (must match DINOv3 input, usually 3).
         decoder_channels: Decoder hidden channels (default: 256).
         freeze_backbone: If True, freeze DINOv3 weights (default: True).
@@ -41,10 +44,46 @@ class DINOv3UPerNet(nn.Module):
         >>> logits = model(x)  # [2, 3, 224, 224]
     """
 
+    _KNOWN_SHORT_MODEL_IDS: set[str] = {
+        "dinov3-vitl14-pretrained",
+        "dinov3-vitl16-pretrained",
+        "dinov3-base14-pretrained",
+        "dinov3-convnext-base-pretrained",
+        "dinov3-vitl16-pretrain-sat493m",
+        "dinov3-vit7b16-pretrain-sat493m",
+    }
+
+    @staticmethod
+    def _resolve_model_name(model_name: str) -> str:
+        """Resolve short DINOv3 IDs to fully qualified Hugging Face IDs."""
+        if "/" in model_name:
+            return model_name
+
+        if model_name in DINOv3UPerNet._KNOWN_SHORT_MODEL_IDS:
+            return f"facebook/{model_name}"
+
+        return model_name
+
+    @staticmethod
+    def _infer_patch_size(model_name: str) -> int:
+        """Infer patch size from model identifier, defaulting to 14."""
+        # Covers names like "vitl16", "vit7b16", "base14", etc.
+        match = re.search(r"(?:vit\w*|base)(14|16)", model_name)
+        if match:
+            return int(match.group(1))
+
+        # Fallback for arbitrary names that still include 14/16 tokens.
+        if "16" in model_name:
+            return 16
+        if "14" in model_name:
+            return 14
+
+        return 14
+
     def __init__(
         self,
         num_classes: int,
-        dinov3_model_name: str = "facebook/dinov3-vitl14-pretrained",
+        dinov3_model_name: str = "facebook/dinov3-vitl16-pretrain-sat493m",
         in_channels: int = 3,
         decoder_channels: int = 256,
         freeze_backbone: bool = True,
@@ -52,26 +91,20 @@ class DINOv3UPerNet(nn.Module):
     ) -> None:
         super().__init__()
         self.num_classes = num_classes
-        self.dinov3_model_name = dinov3_model_name
+        self.dinov3_model_name = self._resolve_model_name(dinov3_model_name)
         self.in_channels = in_channels
         self.decoder_channels = decoder_channels
         self.out_channels = num_classes
 
         # Load frozen DINOv3 backbone from Hugging Face
-        self.dinov3_backbone = AutoModel.from_pretrained(dinov3_model_name)
+        self.dinov3_backbone = AutoModel.from_pretrained(self.dinov3_model_name)
         self.hidden_size = self.dinov3_backbone.config.hidden_size
 
         if freeze_backbone:
             for param in self.dinov3_backbone.parameters():
                 param.requires_grad = False
 
-        # Parse patch size from model name
-        if "14" in dinov3_model_name:
-            self.patch_size = 14
-        elif "16" in dinov3_model_name:
-            self.patch_size = 16
-        else:
-            self.patch_size = 14
+        self.patch_size = self._infer_patch_size(self.dinov3_model_name)
 
         # Use SMP's UPerNet with ResNet50 encoder, but replace the encoder with DINOv3 features
         self.upernet = smp.UPerNet(
