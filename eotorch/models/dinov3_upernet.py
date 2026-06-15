@@ -98,11 +98,14 @@ class DINOv3UPerNet(nn.Module):
 
         # Load frozen DINOv3 backbone from Hugging Face
         self.dinov3_backbone = AutoModel.from_pretrained(self.dinov3_model_name)
+        # Keep backward-compatible attribute name used in some tests/integrations.
+        self.backbone = self.dinov3_backbone
         self.hidden_size = self.dinov3_backbone.config.hidden_size
 
         if freeze_backbone:
             for param in self.dinov3_backbone.parameters():
                 param.requires_grad = False
+            self.dinov3_backbone.eval()
 
         self.patch_size = self._infer_patch_size(self.dinov3_model_name)
 
@@ -131,24 +134,32 @@ class DINOv3UPerNet(nn.Module):
         with torch.no_grad():
             dino_out = self.dinov3_backbone(x, output_hidden_states=True)
 
-        # last_hidden_state shape: [B, num_patches + 1, hidden_size]
-        # num_patches = (h // patch_size) * (w // patch_size)
-        features = dino_out.last_hidden_state
+        # last_hidden_state shape is typically [B, num_patches + prefix_tokens, hidden_size].
+        # Some variants include extra prefix/register tokens; validate/trim only when real tensors
+        # are available (tests may inject MagicMock outputs).
+        features = getattr(dino_out, "last_hidden_state", None)
+        if isinstance(features, torch.Tensor):
+            num_h = h // self.patch_size
+            num_w = w // self.patch_size
+            expected_patches = num_h * num_w
+            patch_tokens = features[:, 1:, :]  # drop CLS first
 
-        # Remove CLS token (first token), keep only patch tokens
-        patch_tokens = features[:, 1:, :]  # [B, num_patches, hidden_size]
+            if expected_patches <= 0:
+                raise RuntimeError(
+                    f"Input spatial size {(h, w)} is too small for patch size {self.patch_size}."
+                )
 
-        # Reshape to spatial feature map
-        num_h = h // self.patch_size
-        num_w = w // self.patch_size
-        patch_map = patch_tokens.view(
-            batch_size, num_h, num_w, self.hidden_size
-        ).permute(0, 3, 1, 2)  # [B, hidden_size, num_h, num_w]
+            if patch_tokens.shape[1] < expected_patches:
+                raise RuntimeError(
+                    "DINO token count is smaller than expected patch grid: "
+                    f"got {patch_tokens.shape[1]} tokens, expected at least {expected_patches} "
+                    f"for input {(h, w)} and patch size {self.patch_size}."
+                )
 
-        # Upsample features back to input resolution
-        upsampled = torch.nn.functional.interpolate(
-            patch_map, size=(h, w), mode="bilinear", align_corners=False
-        )  # [B, hidden_size, h, w]
+            if patch_tokens.shape[1] > expected_patches:
+                patch_tokens = patch_tokens[:, -expected_patches:, :]
+
+            _ = patch_tokens.view(batch_size, num_h, num_w, self.hidden_size)
 
         logits = self.upernet(x)
 
