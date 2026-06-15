@@ -961,6 +961,7 @@ class PatchSegmentationTask(LightningModule):
         model_kwargs: dict[str, Any] = None,
         lr_scheduler: dict[str, Any] | None = None,
         class_names: list[str] | None = None,
+        loss_kwargs: dict[str, Any] = None,
     ) -> None:
         """Initialize model, optimization config, and metric collections."""
         super().__init__()
@@ -969,6 +970,7 @@ class PatchSegmentationTask(LightningModule):
         self.class_names = class_names
         self.model_kwargs = model_kwargs or {}
         self.lr_scheduler = lr_scheduler or {}
+        self.loss_kwargs = loss_kwargs or {}
 
         self.save_hyperparameters(ignore={"weights"})
 
@@ -1080,6 +1082,7 @@ class PatchSegmentationTask(LightningModule):
         """Configure the training loss function based on the selected loss name."""
         ignore_index: int | None = self.hparams["ignore_index"]
         class_weights: Tensor | None = self.hparams["class_weights"]
+        loss_kwargs = self.loss_kwargs if self.loss_kwargs else {}
         if class_weights is not None and not isinstance(class_weights, Tensor):
             class_weights = torch.tensor(class_weights, dtype=torch.float32)
 
@@ -1094,7 +1097,10 @@ class PatchSegmentationTask(LightningModule):
             case "bce":
                 from torch import nn
 
-                self.criterion = nn.BCEWithLogitsLoss()
+                self.criterion = nn.BCEWithLogitsLoss(
+                    weight=class_weights, 
+                    pos_weight=loss_kwargs.get('pos_weight')
+                )
             case "jaccard":
                 # JaccardLoss requires a list of classes to use instead of a class
                 # index to ignore.
@@ -1105,13 +1111,20 @@ class PatchSegmentationTask(LightningModule):
                 self.criterion = smp.losses.JaccardLoss(
                     mode=self.hparams["task"], classes=classes
                 )
+            case "tversky":
+                self.criterion = smp.losses.TverskyLoss(
+                    mode=self.hparams["task"],
+                    ignore_index=ignore_index,
+                    alpha=loss_kwargs.get('alpha', 0.3),
+                    beta=loss_kwargs.get('beta', 0.7),
+                )
             case "focal":
                 self.criterion = smp.losses.FocalLoss(
                     mode=self.hparams["task"],
                     ignore_index=ignore_index,
                     normalized=True,
-                    alpha=0.8,
-                    gamma=3.0,
+                    alpha=loss_kwargs.get('alpha', 0.8),
+                    gamma=loss_kwargs.get('gamma', 3.0),
                 )
             case "dice":
                 self.criterion = smp.losses.DiceLoss(
@@ -1119,6 +1132,16 @@ class PatchSegmentationTask(LightningModule):
                     ignore_index=ignore_index,
                     from_logits=True,
                 )
+            case "bce_dice":
+                from eotorch.models.loss import BCEDiceLoss
+                
+                self.criterion = BCEDiceLoss(
+                    bce_weight=loss_kwargs.get('bce_weight', 0.5),
+                    dice_weight=loss_kwargs.get('dice_weight', 0.5),
+                    pos_weight=loss_kwargs.get('pos_weight'),
+                    smooth=loss_kwargs.get('smooth', 1.0),
+                )
+                
             case _:
                 raise ValueError(f"Unknown loss: {self.hparams['loss']}")
 
