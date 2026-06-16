@@ -665,6 +665,7 @@ class RegressionTask(LightningModule):
         else:
             in_channels: int = self.hparams["in_channels"]
             num_outputs: int = self.hparams["num_outputs"]
+            num_filters: int = self.hparams["num_filters"]
 
             match model.lower():
                 case "unet":
