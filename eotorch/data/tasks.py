@@ -1153,6 +1153,19 @@ class PatchSegmentationTask(LightningModule):
                     pos_weight=loss_kwargs.get('pos_weight'),
                     smooth=loss_kwargs.get('smooth', 1.0),
                 )
+            case "ce_dice_boundary":
+                from eotorch.models.loss import MultiClassCEDiceBoundaryLoss
+
+                self.criterion = MultiClassCEDiceBoundaryLoss(
+                    num_classes=self.hparams["num_classes"],
+                    ce_weight=loss_kwargs.get('ce_weight', 0.5),
+                    dice_weight=loss_kwargs.get('dice_weight', 0.5),
+                    boundary_weight=loss_kwargs.get('boundary_weight', 0.3),
+                    region_weight=loss_kwargs.get('region_weight', 0.7),
+                    class_weights=class_weights,
+                    ignore_index=ignore_index,
+                    smooth=loss_kwargs.get('smooth', 1.0),
+                )
                 
             case _:
                 raise ValueError(f"Unknown loss: {self.hparams['loss']}")
