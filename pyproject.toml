@@ -83,6 +83,7 @@ torch = [
 torchvision = [
   { index = "pytorch-cu126", extra = "cuda126" },
 ]
+segmentation-models-pytorch = { git = "https://github.com/qubvel-org/segmentation_models.pytorch", rev = "main" }
 
 [[tool.uv.index]]
 name = "pytorch-cu126"
