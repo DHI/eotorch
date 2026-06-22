@@ -1110,12 +1110,15 @@ class PatchSegmentationTask(LightningModule):
                 ]
 
                 self.criterion = smp.losses.JaccardLoss(
-                    mode=self.hparams["task"], classes=classes
+                    mode=self.hparams["task"], 
+                    classes=classes, 
+                    class_weights=class_weights
                 )
             case "tversky":
                 self.criterion = smp.losses.TverskyLoss(
                     mode=self.hparams["task"],
                     ignore_index=ignore_index,
+                    class_weights=class_weights,
                     alpha=loss_kwargs.get('alpha', 0.3),
                     beta=loss_kwargs.get('beta', 0.7),
                 )
@@ -1124,6 +1127,7 @@ class PatchSegmentationTask(LightningModule):
                     mode=self.hparams["task"],
                     ignore_index=ignore_index,
                     normalized=True,
+                    class_weights=class_weights,
                     alpha=loss_kwargs.get('alpha', 0.8),
                     gamma=loss_kwargs.get('gamma', 3.0),
                 )
@@ -1132,6 +1136,7 @@ class PatchSegmentationTask(LightningModule):
                     mode=self.hparams["task"],
                     ignore_index=ignore_index,
                     from_logits=True,
+                    class_weights=class_weights,
                 )
             case "bce_dice":
                 from eotorch.models.loss import BCEDiceLoss
