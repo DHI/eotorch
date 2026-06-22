@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any, Callable
 import numpy as np
 import segmentation_models_pytorch as smp
 import torch
+from torch import Tensor
 from lightning import LightningModule
 from matplotlib import pyplot as plt
 from torchgeo.datasets import RGBBandsMissingError, unbind_samples
