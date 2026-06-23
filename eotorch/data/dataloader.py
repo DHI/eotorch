@@ -1,5 +1,6 @@
 from pathlib import Path
 from glob import glob
+from typing import Any, Callable
 
 import pandas as pd
 from lightning import LightningDataModule
@@ -34,8 +35,14 @@ def _load_patches(wildcard : str, patch_dir : str) -> pd.DataFrame:
 
 
 class DatasetFromPatches(Dataset):
-    def __init__(self, wildcard, patch_dir):
+    def __init__(
+        self,
+        wildcard: str,
+        patch_dir: str | Path,
+        transform: Callable[..., Any] | None = None,
+    ):
         self.patches = _load_patches(wildcard, patch_dir)
+        self.transform = transform
     
     def __len__(self):
         return len(self.patches)
@@ -44,6 +51,23 @@ class DatasetFromPatches(Dataset):
         with rst.open(self.patches.iloc[idx, 0]) as feature_src, rst.open(self.patches.iloc[idx, 1]) as label_src:
             img = feature_src.read()
             label = label_src.read(indexes=1)
+
+        if self.transform is not None:
+            try:
+                transformed = self.transform(image=img, mask=label)
+            except TypeError:
+                transformed = self.transform(img, label)
+
+            if isinstance(transformed, dict):
+                img = transformed.get('image', img)
+                label = transformed.get('mask', transformed.get('label', label))
+            elif isinstance(transformed, tuple) and len(transformed) == 2:
+                img, label = transformed
+            else:
+                raise ValueError(
+                    'Transform must return either (image, label) or a dict with image/mask keys.'
+                )
+
         return Tensor(img), Tensor(label).long()
     
 
@@ -53,10 +77,11 @@ class PatchDataModule(LightningDataModule):
         wildcard: str, 
         patch_dir: str | Path,
         batch_size: int = 8,
-        split : list = [0.8, 0.2]
+        split : list = [0.8, 0.2],
+        transform: Callable[..., Any] | None = None,
     ):
         super().__init__()
-        self.dataset = DatasetFromPatches(wildcard, patch_dir)
+        self.dataset = DatasetFromPatches(wildcard, patch_dir, transform=transform)
         self.batch_size = batch_size
         self.split = split
     
