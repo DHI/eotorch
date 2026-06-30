@@ -3,6 +3,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+def _to_pos_weight(pos_weight: float | torch.Tensor, reference: torch.Tensor) -> torch.Tensor:
+    weight = torch.as_tensor(pos_weight, device=reference.device, dtype=reference.dtype)
+    return weight.flatten()
+
+
 class GaussianNLL(nn.Module):
     """
     Gaussian negative log likelihood to fit the mean and variance to p(y|x)
@@ -103,9 +108,7 @@ class BCEDiceLoss(nn.Module):
         
         # BCE Loss
         if self.pos_weight is not None:
-            bce_loss = F.binary_cross_entropy_with_logits(
-                logits, targets.float(), pos_weight=torch.tensor([self.pos_weight], device=logits.device)
-            )
+            bce_loss = F.binary_cross_entropy_with_logits(logits, targets.float(), pos_weight=_to_pos_weight(self.pos_weight, logits))
         else:
             bce_loss = F.binary_cross_entropy_with_logits(logits, targets.float())
         
@@ -210,7 +213,7 @@ class BCEDiceBoundaryLoss(nn.Module):
             bce = F.binary_cross_entropy_with_logits(
                 logits,
                 targets,
-                pos_weight=torch.tensor([self.pos_weight], device=logits.device, dtype=logits.dtype),
+                pos_weight=_to_pos_weight(self.pos_weight, logits),
             )
         else:
             bce = F.binary_cross_entropy_with_logits(logits, targets)
