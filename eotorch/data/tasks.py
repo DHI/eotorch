@@ -1351,6 +1351,14 @@ class PatchSegmentationTask(LightningModule):
             preds += 1
         return preds
 
+    def predict_probability(self, batch: Tensor | np.ndarray) -> np.ndarray:
+        """Predict class probabilities for a tensor or ndarray batch."""
+        if isinstance(batch, np.ndarray):
+            batch = array_to_tensor(batch)
+        batch = batch.to(self.device)
+        probs = self.predict_step(batch)
+        return probs.cpu().numpy()
+
     def forward(self, x: Tensor) -> Tensor:
         """Forward pass through the segmentation backbone."""
         return self.model(x)
