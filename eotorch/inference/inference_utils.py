@@ -43,6 +43,8 @@ def crop_np_to_window(arr: np.ndarray, w_buffered: Window, w_unbuffered: Window)
     right = left + int(round(w_unbuffered.width))
     bottom = top + int(round(w_unbuffered.height))
 
+    if arr.ndim == 3:
+        return arr[:, top:bottom, left:right]
     return arr[top:bottom, left:right]
 
 

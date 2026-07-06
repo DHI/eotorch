@@ -1,3 +1,4 @@
+import itertools
 from pathlib import Path
 from typing import Callable, Generator
 
@@ -24,7 +25,7 @@ def predict_on_tif_generic(
     progress_bar: bool = True,
     overlap: int = 2,
     dtype : str = "uint8",
-    num_bands : int = 1,
+    num_bands : int | None = None,
     nodata_value : int = 0,
 ) -> Path:
     """
@@ -71,8 +72,8 @@ def predict_on_tif_generic(
         Overlap factor between patches (larger values increase overlap). Defaults to 2, which means 50% overlap.
     dtype : str
         Data type for the output TIF file. Defaults to "uint8".
-    num_bands : int
-        Number of bands in the output TIF file. Defaults to 1.
+    num_bands : int | None
+        Number of bands in the output TIF file. If None, it will be auto-detected from the first non-nodata prediction. Defaults to None.
     nodata_value : int
         Value to use for no-data pixels in the output TIF file. Defaults to 0.
 
@@ -88,7 +89,6 @@ def predict_on_tif_generic(
         meta = src_in.meta.copy()
         old_no_data = meta["nodata"]
 
-    meta.update({"dtype": dtype, "count": num_bands, "nodata": nodata_value})
     batch_size = batch_size if func_supports_batching else 1
 
     if out_file_path is None:
@@ -97,6 +97,28 @@ def predict_on_tif_generic(
         )
     out_file_path = Path(out_file_path)
     out_file_path.parent.mkdir(exist_ok=True, parents=True)
+
+    if data_and_window_generator is None:
+        data_and_window_generator = iu.patch_generator(
+            tif_file_path, patch_size, overlap, batch_size
+        )
+
+    # Auto-detect num_bands from first non-nodata prediction when not explicitly set
+    _raw_gen = iter(data_and_window_generator)
+    try:
+        _first_batch, _first_windows = next(_raw_gen)
+    except StopIteration:
+        return out_file_path
+    if not (_first_batch == old_no_data).all():
+        _peek_pred = iu.prediction_to_numpy(prediction_func(_first_batch))
+        _sample = _peek_pred[0]
+        if num_bands is None and _sample.ndim == 3:
+            num_bands = _sample.shape[0]
+        if dtype == "uint8" and _sample.dtype != np.uint8:
+            dtype = str(_sample.dtype)
+    data_and_window_generator = itertools.chain([(_first_batch, _first_windows)], _raw_gen)
+
+    meta.update({"dtype": dtype, "count": num_bands, "nodata": nodata_value})
 
     # roughly estimate how many batches we will have
     total_windows = int(
@@ -112,11 +134,6 @@ def predict_on_tif_generic(
             class_mapping=class_mapping,
             ax=ax,
             data_window_only=data_window_only,
-        )
-
-    if data_and_window_generator is None:
-        data_and_window_generator = iu.patch_generator(
-            tif_file_path, patch_size, overlap, batch_size
         )
 
     any_predictions_written = False
@@ -151,7 +168,10 @@ def predict_on_tif_generic(
                     window_arr = iu.crop_np_to_window(
                         class_pred, window, unbuffered_window
                     )
-                    dest.write_band(1, window_arr, window=unbuffered_window)
+                    if window_arr.ndim == 2:
+                        dest.write_band(1, window_arr, window=unbuffered_window)
+                    else:
+                        dest.write(window_arr, window=unbuffered_window)
                     if not any_predictions_written:
                         any_predictions_written = True
 
