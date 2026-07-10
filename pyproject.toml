@@ -25,10 +25,10 @@ dependencies = [
     "alive-progress>=3.2.0",
     "folium>=0.19.5",
     "geopandas>=1.0.1",
-    "numpy==2.2.3",
+    "numpy>=1.26",
     "segmentation-models-pytorch>=0.5.0",
     "torch>=2.0.0",
-    "torchgeo @ git+https://github.com/microsoft/torchgeo@fd6f9539d9b21760b9a40d8f858900145a82a616",
+    "torchgeo==0.9.0",
     "torchmetrics>=0.13.0",
     "transformers>=4.30.0",
 ]
@@ -40,7 +40,7 @@ authors = [
 ]
 description = "Geospatial deep learning built on top of TorchGeo and PyTorch Lightning"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = {file = "LICENSE"}
 classifiers = [
     "Programming Language :: Python :: 3",
