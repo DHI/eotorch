@@ -2,7 +2,7 @@ from copy import deepcopy
 from glob import glob
 from math import isclose
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union, cast
+from typing import Any, Dict, List, Optional, Sequence, Tuple, TypeVar, Union, cast
 
 import geopandas as gpd
 import pandas as pd
@@ -12,6 +12,8 @@ from shapely.geometry import Polygon, box
 from torch import Generator, default_generator, randperm
 from torchgeo.datasets import GeoDataset, IntersectionDataset, RasterDataset
 from torchgeo.datasets.splits import _fractions_to_lengths
+
+_DatasetT = TypeVar("_DatasetT", bound=GeoDataset)
 
 
 def _transform_bounds_to_crs(bounds, source_crs, target_crs):
@@ -141,8 +143,8 @@ def _build_split_indexes(
 
 
 def _build_split_datasets(
-    original_dataset: RasterDataset, new_indexes: List[gpd.GeoDataFrame]
-) -> List[RasterDataset]:
+    original_dataset: _DatasetT, new_indexes: List[gpd.GeoDataFrame]
+) -> list[_DatasetT]:
     """Builds the final list of split datasets using the provided indexes."""
     new_datasets = []
     for index in new_indexes:
@@ -160,13 +162,14 @@ def _build_split_datasets(
                 img_ds_new.paths = []
 
             # Create new label dataset index based on intersection with new image dataset bounds
-            img_bounds = img_ds_new.bounds
+            img_bounds = img_ds_new.bounds  # tuple of (x_slice, y_slice, t_slice)
 
             # For GeoPandas, we need to intersect with the image bounds
             if not label_ds_orig.index.empty:
                 # Create bounding box geometry for intersection
+                x_slice, y_slice, _ = img_bounds
                 img_bbox_geom = box(
-                    img_bounds.minx, img_bounds.miny, img_bounds.maxx, img_bounds.maxy
+                    x_slice.start, y_slice.start, x_slice.stop, y_slice.stop
                 )
 
                 # Find labels that intersect with the image bounds
@@ -216,13 +219,13 @@ def _build_split_datasets(
 
 
 def file_wise_split(
-    dataset: RasterDataset,
+    dataset: _DatasetT,
     val_img_files: Union[str, Path, List[str], List[Path], None] = None,
     test_img_files: Union[str, Path, List[str], List[Path], None] = None,
     val_img_glob: Union[str, Path] = None,
     test_img_glob: Union[str, Path] = None,
     ratios_or_counts: Optional[Sequence[float]] = None,
-) -> List[RasterDataset]:
+) -> list[_DatasetT]:
     """
     Splits a dataset based on image files, ensuring no file overlap between splits.
 
@@ -317,10 +320,10 @@ def file_wise_split(
 
 
 def random_bbox_assignment(
-    dataset: GeoDataset,
+    dataset: _DatasetT,
     lengths: Sequence[float],
     generator: Generator | None = default_generator,
-) -> list[GeoDataset]:
+) -> list[_DatasetT]:
     """
     Reimplementation of the random_bbox_assignment function from torchgeo, but with assurance that
     if a split percentage is provided, at least one bbox is assigned to each split.
@@ -409,11 +412,11 @@ def random_bbox_assignment(
 
 
 def aoi_split(
-    dataset: GeoDataset,
+    dataset: _DatasetT,
     aoi_files: str | Path | Sequence[Union[str, Path]],
     crs: str | Dict[str, Any] = "EPSG:4326",
     buffer_size_metres: int = 0,
-) -> List[GeoDataset]:
+) -> list[_DatasetT]:
     """Split a GeoDataset based on provided AOI files with cleaner implementation.
 
     Args:
