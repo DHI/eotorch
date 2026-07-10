@@ -1356,8 +1356,10 @@ class PatchSegmentationTask(LightningModule):
         if isinstance(batch, np.ndarray):
             batch = array_to_tensor(batch)
         batch = batch.to(self.device)
-        probs = self.predict_step(batch)
-        return probs.cpu().numpy()
+        probs = self.predict_step(batch).cpu().numpy()
+        if hasattr(self, "reduce_zero_label") and self.reduce_zero_label:
+            probs = probs[1:]
+        return probs
 
     def forward(self, x: Tensor) -> Tensor:
         """Forward pass through the segmentation backbone."""
