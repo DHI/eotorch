@@ -112,8 +112,8 @@ def predict_on_tif_generic(
     if not (_first_batch == old_no_data).all():
         _peek_pred = iu.prediction_to_numpy(prediction_func(_first_batch))
         _sample = _peek_pred[0]
-        if num_bands is None and _sample.ndim == 3:
-            num_bands = _sample.shape[0]
+        if num_bands is None:
+            num_bands = _sample.shape[0] if _sample.ndim == 3 else 1
         if dtype == "uint8" and _sample.dtype != np.uint8:
             dtype = str(_sample.dtype)
     data_and_window_generator = itertools.chain([(_first_batch, _first_windows)], _raw_gen)
