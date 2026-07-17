@@ -143,6 +143,7 @@ dev_data
 *.parquet
 
 notebooks/**
+!notebooks/regression.ipynb
 !notebooks/segmentation.ipynb
 *Zone.Identifier
 *.geojson
