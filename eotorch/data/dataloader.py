@@ -3,6 +3,7 @@ from glob import glob
 from typing import Any, Callable
 import warnings
 
+import numpy as np
 import pandas as pd
 from lightning import LightningDataModule
 from torch.utils.data import DataLoader, Dataset, random_split
@@ -66,7 +67,12 @@ class DatasetFromPatches(Dataset):
     ):
         self.patches = _load_patches(patch_dir, image_suffix=image_suffix, label_suffix=label_suffix)
         self.transform = transform
-    
+
+        self.patch_size = None
+        if len(self.patches) > 0:
+            with rst.open(self.patches.iloc[0, 0]) as feature_src:
+                self.patch_size = feature_src.width
+
     def __len__(self):
         return len(self.patches)
     
@@ -91,7 +97,13 @@ class DatasetFromPatches(Dataset):
                     'Transform must return either (image, label) or a dict with image/mask keys.'
                 )
 
-        return Tensor(img), Tensor(label).long()
+        label_tensor = Tensor(label)
+        if np.issubdtype(label.dtype, np.floating):
+            label_tensor = label_tensor.float()
+        else:
+            label_tensor = label_tensor.long()
+
+        return Tensor(img), label_tensor
     
 
 class PatchDataModule(LightningDataModule):
@@ -110,9 +122,22 @@ class PatchDataModule(LightningDataModule):
         self.val_dataset = DatasetFromPatches(val_patch_dir, transform=transform, image_suffix=image_suffix, label_suffix=label_suffix) if val_patch_dir is not None else None
         self.batch_size = batch_size
         self.val_fraction = val_fraction
+        self.patch_size = self.train_dataset.patch_size
         self._train_split = None
         self._val_split = None
-    
+
+        self.save_hyperparameters(
+            {
+                "train_patch_dir": str(train_patch_dir),
+                "val_patch_dir": str(val_patch_dir) if val_patch_dir is not None else None,
+                "batch_size": batch_size,
+                "patch_size": self.patch_size,
+                "val_fraction": val_fraction,
+                "image_suffix": image_suffix,
+                "label_suffix": label_suffix,
+            }
+        )
+
     def setup(self, stage=None):
         if self.val_dataset is not None:
             self._train_split = self.train_dataset
