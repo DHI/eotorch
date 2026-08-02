@@ -27,6 +27,7 @@ from torchmetrics.regression import MeanAbsoluteError, MeanSquaredError, R2Score
 from torchmetrics.wrappers import ClasswiseWrapper
 
 from eotorch.models import CLF_MODEL_MAPPING, REG_MODEL_MAPPING, SEG_MODEL_MAPPING
+from eotorch.models.smp_utils import decoder_channels_from_num_filters
 from eotorch.utils import get_init_args
 
 if TYPE_CHECKING:
@@ -617,7 +618,7 @@ class RegressionTask(LightningModule):
         in_channels: int,
         num_filters: int = 128,
         model: str = "deepresunet",
-        backbone: str = "resnet50",
+        backbone: str = "resnet34",
         weights: WeightsEnum | str | bool | None = None,
         num_outputs: int = 1,
         loss: str = "mse",
@@ -667,6 +668,7 @@ class RegressionTask(LightningModule):
             in_channels: int = self.hparams["in_channels"]
             num_outputs: int = self.hparams["num_outputs"]
             num_filters: int = self.hparams["num_filters"]
+            encoder_depth: int = self.model_kwargs.get("encoder_depth", 5)
 
             match model.lower():
                 case "unet":
@@ -675,6 +677,10 @@ class RegressionTask(LightningModule):
                         encoder_weights="imagenet" if weights is True else None,
                         in_channels=in_channels,
                         classes=num_outputs,
+                        encoder_depth=encoder_depth,
+                        decoder_channels=decoder_channels_from_num_filters(
+                            num_filters, encoder_depth
+                        ),
                     )
                 case 'unet++' | 'unetplusplus':
                     self.model = smp.UnetPlusPlus(
@@ -682,7 +688,19 @@ class RegressionTask(LightningModule):
                         encoder_weights='imagenet' if weights is True else None,
                         in_channels=in_channels,
                         classes=num_outputs,
-                        decoder_channels=[num_filters]+[num_filters := num_filters // 2 for _ in range(4)],
+                        encoder_depth=encoder_depth,
+                        decoder_channels=decoder_channels_from_num_filters(
+                            num_filters, encoder_depth
+                        ),
+                    )
+                case 'upernet':
+                    self.model = smp.UPerNet(
+                        encoder_name=backbone,
+                        encoder_weights='imagenet' if weights is True else None,
+                        in_channels=in_channels,
+                        classes=num_outputs,
+                        encoder_depth=encoder_depth,
+                        decoder_channels=num_filters,
                     )
                 case _:
                     raise ValueError(
@@ -1025,6 +1043,7 @@ class PatchSegmentationTask(LightningModule):
             in_channels: int = self.hparams['in_channels']
             num_classes: int = self.hparams['num_classes']
             num_filters: int = self.hparams['num_filters']
+            encoder_depth: int = self.model_kwargs.get('encoder_depth', 5)
 
             match model.lower():
                 case 'unet':
@@ -1033,6 +1052,10 @@ class PatchSegmentationTask(LightningModule):
                         encoder_weights='imagenet' if weights is True else None,
                         in_channels=in_channels,
                         classes=num_classes,
+                        encoder_depth=encoder_depth,
+                        decoder_channels=decoder_channels_from_num_filters(
+                            num_filters, encoder_depth
+                        ),
                     )
                 case 'unet++' | 'unetplusplus':
                     self.model = smp.UnetPlusPlus(
@@ -1040,7 +1063,10 @@ class PatchSegmentationTask(LightningModule):
                         encoder_weights='imagenet' if weights is True else None,
                         in_channels=in_channels,
                         classes=num_classes,
-                        decoder_channels=[num_filters]+[num_filters := num_filters // 2 for _ in range(4)],
+                        encoder_depth=encoder_depth,
+                        decoder_channels=decoder_channels_from_num_filters(
+                            num_filters, encoder_depth
+                        ),
                     )
                 case 'upernet':
                     self.model = smp.UPerNet(
@@ -1048,6 +1074,7 @@ class PatchSegmentationTask(LightningModule):
                         encoder_weights='imagenet' if weights is True else None,
                         in_channels=in_channels,
                         classes=num_classes,
+                        encoder_depth=encoder_depth,
                         decoder_channels=num_filters,
                     )
                 case 'segformer':
