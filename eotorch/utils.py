@@ -18,6 +18,8 @@ from shapely import MultiPolygon, Polygon
 from shapely.ops import transform
 from torchgeo.datasets.utils import BoundingBox
 
+from eotorch.io import read_vector
+
 
 class Region:
     def __init__(
@@ -102,7 +104,7 @@ class Region:
             ValueError: If the shapefile does not contain exactly one polygon
             ValueError: If the CRS is not provided and not in the shapefile
         """
-        df = gpd.read_file(path)
+        df = read_vector(path)
         if (crs is None) and (df.crs is None):
             raise ValueError("Either crs or crs in shapefile must be provided")
         if crs is None:

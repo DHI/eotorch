@@ -13,6 +13,8 @@ from torch import Generator, default_generator, randperm
 from torchgeo.datasets import GeoDataset, IntersectionDataset, RasterDataset
 from torchgeo.datasets.splits import _fractions_to_lengths
 
+from eotorch.io import read_vector
+
 
 def _transform_bounds_to_crs(bounds, source_crs, target_crs):
     """Transform bounding box coordinates from source CRS to target CRS.
@@ -444,7 +446,7 @@ def aoi_split(
             raise ValueError(f"AOI file not found: {file_path}")
 
         try:
-            gdf = gpd.read_file(file_path).to_crs(dataset.crs)
+            gdf = read_vector(file_path).to_crs(dataset.crs)
             gdf = gdf[gdf.geometry.type.isin(["Polygon", "MultiPolygon"])]
 
             if gdf.empty:
