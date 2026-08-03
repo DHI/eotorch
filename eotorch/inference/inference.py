@@ -11,6 +11,17 @@ from eotorch.inference import inference_utils as iu
 from eotorch.plot import plot_class_raster
 
 
+def _apply_transforms(batch: np.ndarray, transforms: Callable | list[Callable] | None):
+    if transforms is None:
+        return batch
+    if not isinstance(transforms, (list, tuple)):
+        transforms = [transforms]
+    for transform in transforms:
+        result = transform(image=batch)
+        batch = result["image"] if isinstance(result, dict) else result
+    return batch
+
+
 def predict_on_tif_generic(
     tif_file_path: str | Path,
     prediction_func: Callable,
@@ -27,6 +38,7 @@ def predict_on_tif_generic(
     dtype : str = "uint8",
     num_bands : int | None = None,
     nodata_value : int = 0,
+    transforms: Callable | list[Callable] | None = None,
 ) -> Path:
     """
     Predict segmentation classes on a TIF file using a custom prediction function.
@@ -76,6 +88,10 @@ def predict_on_tif_generic(
         Number of bands in the output TIF file. If None, it will be auto-detected from the first non-nodata prediction. Defaults to None.
     nodata_value : int
         Value to use for no-data pixels in the output TIF file. Defaults to 0.
+    transforms : Callable | list[Callable], optional
+        Transform (or list of transforms, applied in order) run on each batch after it is loaded but
+        before it is passed to prediction_func. E.g. an `eotorch.transforms.Normalize` instance to
+        rescale raw patch values using precomputed per-band mean/std. Defaults to None.
 
 
     Returns
@@ -110,7 +126,9 @@ def predict_on_tif_generic(
     except StopIteration:
         return out_file_path
     if not (_first_batch == old_no_data).all():
-        _peek_pred = iu.prediction_to_numpy(prediction_func(_first_batch))
+        _peek_pred = iu.prediction_to_numpy(
+            prediction_func(_apply_transforms(_first_batch, transforms))
+        )
         _sample = _peek_pred[0]
         if num_bands is None:
             num_bands = _sample.shape[0] if _sample.ndim == 3 else 1
@@ -153,7 +171,7 @@ def predict_on_tif_generic(
                 if (batch == old_no_data).all():
                     continue
 
-                pred = prediction_func(batch)
+                pred = prediction_func(_apply_transforms(batch, transforms))
 
                 pred = iu.prediction_to_numpy(pred)
 
