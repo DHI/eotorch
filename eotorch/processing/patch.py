@@ -122,7 +122,7 @@ def _write_patch(
     patch_size : int
         Patch width/height in pixels.
     """
-    feature_name = f'{img_stem}_{patch_index}_feature.tiff'
+    feature_name = f'{img_stem}_{patch_index}_image.tiff'
     label_name = f'{img_stem}_{patch_index}_label.tiff'
     
     x, y = slice_obj
@@ -143,6 +143,7 @@ def generate_patches_from_files(
     label_path: str | Path,
     out_dir: str | Path,
     patch_size: int = 128,
+    val_fraction: float = 0.2,
     n_random_offsets: int = 2,
     random_seed: int = 42,
     empty_img_threshold: float | None = 0.5,
@@ -153,11 +154,15 @@ def generate_patches_from_files(
     log_skipped_patches: bool = False,
 ) -> None:
     """
-    Generate and save patches from image and label files.
+    Generate and save training and validation patches from image and label files.
 
-    A non-overlapping grid of `patch_size` blocks is laid over the raster, and each
-    block is sampled `n_random_offsets` times with a random pixel offset, mirroring
-    the grid + random-offset sampling used by `generate_train_val_patches`.
+    A non-overlapping grid of `patch_size` blocks is laid over the raster. A fraction
+    of the blocks are reserved for validation and written grid-aligned (one patch per
+    block) to `out_dir / 'val'`. The remaining blocks are used for training: each is
+    sampled `n_random_offsets` times with a random pixel offset and written to
+    `out_dir / 'train'`, skipping any offset patch that would overlap a validation
+    block. This mirrors the grid + random-offset sampling used by
+    `generate_train_val_patches`.
 
     Parameters
     ----------
@@ -166,14 +171,17 @@ def generate_patches_from_files(
     label_path : str | Path
         Path to the label raster.
     out_dir : str | Path
-        Output directory where patch files are written.
+        Output directory. Training patches are written to `out_dir / 'train'`,
+        validation patches to `out_dir / 'val'`.
     patch_size : int, default=128
         Patch width/height in pixels.
+    val_fraction : float, default=0.2
+        Fraction of grid blocks reserved for validation.
     n_random_offsets : int, default=2
-        Number of randomly offset patches to generate per grid block.
-        Setting to 0 will generate one patch per block (grid-aligned).
+        Number of randomly offset patches to generate per training block.
+        Setting to 0 will generate one patch per training block (grid-aligned).
     random_seed : int, default=42
-        Seed for reproducibility of the random offsets.
+        Seed for reproducibility of the validation block selection and random offsets.
     empty_img_threshold : float | None, default=0.5
         Maximum allowed empty-image ratio before skipping a patch.
     empty_label_threshold : float | None, default=None
@@ -188,9 +196,12 @@ def generate_patches_from_files(
         Whether to print info logs with patch index and skip reason.
     """
     out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    train_dir = out_dir / 'train'
+    val_dir = out_dir / 'val'
+    train_dir.mkdir(parents=True, exist_ok=True)
+    val_dir.mkdir(parents=True, exist_ok=True)
 
-    n_random_offsets += 1  # Ensure at least one patch per block
+    n_random_offsets += 1  # Ensure at least one patch per training block
 
     with rst.open(img_path) as img_src, rst.open(label_path) as label_src:
         image = img_src.read()
@@ -207,19 +218,16 @@ def generate_patches_from_files(
     rng = random.Random(random_seed)
     img_stem = Path(img_path).stem
 
-    n = 0
-    candidates = [(br, bc) for br, bc in blocks for _ in range(n_random_offsets)]
-    iterator = tqdm(candidates) if show_progress else candidates
+    # Validation locations are selected first to avoid overlap with training patches.
+    # Only one validation patch per block is generated (grid-aligned).
+    n_val = max(1, round(len(blocks) * val_fraction))
+    val_block_list = rng.sample(blocks, n_val) if len(blocks) > n_val else blocks
+    val_locations = set(val_block_list)
+    train_block_list = [b for b in blocks if b not in val_locations]
 
-    for br, bc in iterator:
-        offset_r = rng.randint(0, patch_size)
-        offset_c = rng.randint(0, patch_size)
-
-        r = br + offset_r
-        c = bc + offset_c
-
+    def _skip_and_write(r: int, c: int, index: int, dest_dir: Path) -> bool:
         if r + patch_size > height or c + patch_size > width:
-            continue
+            return False
 
         s = (slice(r, r + patch_size), slice(c, c + patch_size))
 
@@ -241,10 +249,33 @@ def generate_patches_from_files(
                     tqdm.write(msg)
                 else:
                     print(msg)
+            return False
+
+        _write_patch(image, labels, s, index, img_stem, dest_dir, meta, patch_size)
+        return True
+
+    n_val_written = 0
+    val_iterator = tqdm(sorted(val_locations), desc='Validation') if show_progress else sorted(val_locations)
+    for vr, vc in val_iterator:
+        if _skip_and_write(vr, vc, n_val_written, val_dir):
+            n_val_written += 1
+
+    n_train_written = 0
+    candidates = [(br, bc) for br, bc in train_block_list for _ in range(n_random_offsets)]
+    train_iterator = tqdm(candidates, desc='Training') if show_progress else candidates
+
+    for br, bc in train_iterator:
+        offset_r = rng.randint(0, patch_size)
+        offset_c = rng.randint(0, patch_size)
+
+        r = br + offset_r
+        c = bc + offset_c
+
+        if _overlaps_any_val(r, c, val_locations, patch_size):
             continue
 
-        _write_patch(image, labels, s, n, img_stem, out_dir, meta, patch_size)
-        n += 1
+        if _skip_and_write(r, c, n_train_written, train_dir):
+            n_train_written += 1
 
 
 def meta_from_origin(
