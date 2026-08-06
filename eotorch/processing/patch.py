@@ -143,8 +143,8 @@ def generate_patches_from_files(
     label_path: str | Path,
     out_dir: str | Path,
     patch_size: int = 128,
-    stride: int = 1,
-    overlap: bool = True,
+    n_random_offsets: int = 2,
+    random_seed: int = 42,
     empty_img_threshold: float | None = 0.5,
     empty_label_threshold: float | None = None,
     value_threshold: float | int | None = None,
@@ -154,7 +154,11 @@ def generate_patches_from_files(
 ) -> None:
     """
     Generate and save patches from image and label files.
-    
+
+    A non-overlapping grid of `patch_size` blocks is laid over the raster, and each
+    block is sampled `n_random_offsets` times with a random pixel offset, mirroring
+    the grid + random-offset sampling used by `generate_train_val_patches`.
+
     Parameters
     ----------
     img_path : str | Path
@@ -165,10 +169,11 @@ def generate_patches_from_files(
         Output directory where patch files are written.
     patch_size : int, default=128
         Patch width/height in pixels.
-    stride : int, default=1
-        The stride for moving the patch window.
-    overlap : bool, default=True
-        Whether to allow overlapping patches.
+    n_random_offsets : int, default=2
+        Number of randomly offset patches to generate per grid block.
+        Setting to 0 will generate one patch per block (grid-aligned).
+    random_seed : int, default=42
+        Seed for reproducibility of the random offsets.
     empty_img_threshold : float | None, default=0.5
         Maximum allowed empty-image ratio before skipping a patch.
     empty_label_threshold : float | None, default=None
@@ -184,17 +189,40 @@ def generate_patches_from_files(
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    
+
+    n_random_offsets += 1  # Ensure at least one patch per block
+
     with rst.open(img_path) as img_src, rst.open(label_path) as label_src:
         image = img_src.read()
         labels = label_src.read(indexes=1)
-        shape = img_src.shape
+        height, width = img_src.shape
         meta = img_src.meta.copy()
-    
-    slices = discrete_patch(*shape, size=patch_size, stride=stride, overlap=overlap)
-    iterator = tqdm(enumerate(slices), total=len(slices)) if show_progress else enumerate(slices)
-    
-    for n, s in iterator:
+
+    blocks = [
+        (r, c)
+        for r in range(0, height - patch_size + 1, patch_size)
+        for c in range(0, width - patch_size + 1, patch_size)
+    ]
+
+    rng = random.Random(random_seed)
+    img_stem = Path(img_path).stem
+
+    n = 0
+    candidates = [(br, bc) for br, bc in blocks for _ in range(n_random_offsets)]
+    iterator = tqdm(candidates) if show_progress else candidates
+
+    for br, bc in iterator:
+        offset_r = rng.randint(0, patch_size)
+        offset_c = rng.randint(0, patch_size)
+
+        r = br + offset_r
+        c = bc + offset_c
+
+        if r + patch_size > height or c + patch_size > width:
+            continue
+
+        s = (slice(r, r + patch_size), slice(c, c + patch_size))
+
         should_skip, reason = _should_skip_patch(
             image,
             labels,
@@ -208,77 +236,15 @@ def generate_patches_from_files(
         )
         if should_skip:
             if log_skipped_patches:
-                msg = f"[INFO] Skipped patch {n} ({Path(img_path).stem}): {reason}"
+                msg = f"[INFO] Skipped patch at (row={r}, col={c}) ({img_stem}): {reason}"
                 if show_progress:
                     tqdm.write(msg)
                 else:
                     print(msg)
             continue
-        
-        _write_patch(image, labels, s, n, Path(img_path).stem, out_dir, meta, patch_size)
 
-
-def discrete_patch(
-    height: int,
-    width: int,
-    size: int = 256,
-    stride: int = 1,
-    overlap: bool = True,
-) -> list[tuple[slice, slice]]:
-    """
-    Generates discrete slices of a 2D array of a given dimension (size*size).
-
-    Parameters:
-        height (int): 
-            Height of array.
-        width (int): 
-            Width of array.
-        size (int, optional): 
-            Size of slices/subsets/patches. Defaults to 256.
-        stride (int, optional): 
-            The overlap between patches. The stride is defined as the number of 
-            windows that will pass over a subset, i.e. a `stride` of 1 will have no overlap,
-            while a stride of 2 will result in 50% overlap between two patches in one dimension
-            for half the slices. Defaults to 1.
-        overlap (bool, optional): 
-            Trims edges of an array if the height/width is not divisible by the size. 
-            Setting this to False with an array not equally divisible by `size` will result in 
-            irregular slices. Defaults to True.
-        offset (int, optional): 
-            Shifts the slices (offset, offset) `offset` pixels diagonally towards the bottom right. 
-            Defaults to 0.
-
-    Returns:
-        list[tuple[slice, slice]]:
-            Sequence of 2D row/column slice tuples.
-    """    
-    dims = []
-    for dim in (height, width):
-        dim_bounds = []
-        for b in range(0, dim, size // stride):
-            if (overlap and stride==1) or (stride>1):
-                bounds = (b, b+size)
-                bounds = (dim-size, dim) if bounds[1] > dim else bounds
-                try:
-                    if not bounds == dim_bounds[-1]:
-                        dim_bounds.append(bounds)
-                except IndexError:
-                    dim_bounds.append(bounds)
-            elif (b+(size//stride)) < dim:
-                bounds = (b, b+size)
-                bounds = (dim-size, dim) if bounds[1] > dim else bounds
-                dim_bounds.append(bounds)
-                
-        out_bounds = [(i,j) for i,j in dim_bounds[:-1]]
-        out_bounds.append(dim_bounds[-1])
-        dims.append(out_bounds)
-
-    slices = []
-    for width in dims[1]:
-        for height in dims[0]:
-            slices.append((slice(*height), slice(*width)))
-            
-    return slices
+        _write_patch(image, labels, s, n, img_stem, out_dir, meta, patch_size)
+        n += 1
 
 
 def meta_from_origin(
@@ -604,7 +570,7 @@ def _write_image_label_patch(
 
 
 def generate_train_val_patches(
-    vrt_path: str | Path,
+    src_path: str | Path,
     feature_shps: list[str | Path] | gpd.GeoDataFrame | list[gpd.GeoDataFrame] | gpd.GeoSeries | list[gpd.GeoSeries] | shapely.Geometry | list[shapely.Geometry],
     train_patch_dir: str | Path,
     val_patch_dir: str | Path,
@@ -625,8 +591,8 @@ def generate_train_val_patches(
 
     Parameters
     ----------
-    vrt_path : str | Path
-        Source raster / VRT (first 4 bands are extracted).
+    src_path : str | Path
+        Path to the source raster / VRT.
     feature_shps : list[str | Path] | gpd.GeoDataFrame | list[gpd.GeoDataFrame] | shapely.Geometry | list[shapely.Geometry]
         Shapefiles, GeoDataFrames, or geometries whose features determine which regions contain patches.
     train_patch_dir : str | Path
@@ -662,7 +628,7 @@ def generate_train_val_patches(
 
     n_random_offsets += 1  # Ensure at least one patch per training block
 
-    with rst.open(vrt_path) as src:
+    with rst.open(src_path) as src:
         crs = src.crs
 
     if not isinstance(feature_shps, (list, tuple)):
@@ -680,12 +646,12 @@ def generate_train_val_patches(
         geoms_by_class = _load_label_geoms(label_sources, class_map, crs)
 
     print('Building feature-overlapping block grid...')
-    blocks = get_feature_overlapping_blocks(vrt_path, features_union, patch_size)
+    blocks = get_feature_overlapping_blocks(src_path, features_union, patch_size)
     print(f'Feature-overlapping blocks: {len(blocks)}')
 
     rng = random.Random(random_seed)
 
-    with rst.open(vrt_path) as src:
+    with rst.open(src_path) as src:
         height, width = src.height, src.width
 
         # Validation locations are selected first to avoid overlap with training patches
