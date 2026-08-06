@@ -354,7 +354,8 @@ class CustomCacheRasterDataset(RasterDataset, SamplePlotMixin):
         """Retrieve image/mask and metadata indexed by query.
 
         Args:
-            query: (minx, maxx, miny, maxy, mint, maxt) coordinates to index
+            query: (minx, maxx, miny, maxy, mint, maxt) coordinates to index,
+                or a GeoSlice (tuple of x/y/t slices) as yielded by torchgeo samplers.
 
         Returns:
             sample of image/mask and metadata at that index
@@ -362,6 +363,10 @@ class CustomCacheRasterDataset(RasterDataset, SamplePlotMixin):
         Raises:
             IndexError: if query is not found in the index
         """
+        if not isinstance(query, BoundingBox):
+            x, y, t = self._disambiguate_slice(query)
+            query = BoundingBox(x.start, x.stop, y.start, y.stop, t.start, t.stop)
+
         interval = pd.Interval(query.mint, query.maxt)
         index = self.index.iloc[self.index.index.overlaps(interval)]
         index = index.cx[query.minx : query.maxx, query.miny : query.maxy]  # type: ignore[misc]
@@ -371,6 +376,12 @@ class CustomCacheRasterDataset(RasterDataset, SamplePlotMixin):
             raise IndexError(
                 f"query: {query} not found in index with bounds: {self.bounds}"
             )
+
+        geoslice = (
+            slice(query.minx, query.maxx, self.res[0]),
+            slice(query.miny, query.maxy, self.res[1]),
+            slice(query.mint, query.maxt),
+        )
 
         if self.separate_files:
             data_list: list[Tensor] = []
@@ -388,10 +399,10 @@ class CustomCacheRasterDataset(RasterDataset, SamplePlotMixin):
                             filename = filename[:start] + band + filename[end:]
                     filepath = os.path.join(directory, filename)
                     band_filepaths.append(filepath)
-                data_list.append(self._merge_files(band_filepaths, query))
+                data_list.append(self._merge_or_stack(band_filepaths, geoslice))
             data = torch.cat(data_list)
         else:
-            data = self._merge_files(filepaths, query, self.band_indexes)
+            data = self._merge_or_stack(filepaths, geoslice, self.band_indexes)
 
         sample = {"crs": self.crs, "bounds": query}
 
@@ -399,10 +410,8 @@ class CustomCacheRasterDataset(RasterDataset, SamplePlotMixin):
 
         if self.is_image:
             sample["image"] = data
-            sample["image"] = data
             sample["image_filepaths"] = filepaths
         else:
-            sample["mask"] = data.squeeze(0)
             sample["mask"] = data
             sample["mask_filepaths"] = filepaths
 
