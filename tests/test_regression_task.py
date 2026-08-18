@@ -136,6 +136,99 @@ def test_regression_predict_on_tif_file_requires_model_hparams(monkeypatch):
         )
 
 
+def test_regression_task_mask_nodata_filters_matching_pixels(monkeypatch):
+    """_mask_nodata should drop only the elements equal to nodata_value, elementwise."""
+    monkeypatch.setitem(tasks_module.REG_MODEL_MAPPING, "dummyreg", DummyRegModel)
+    task = RegressionTask(in_channels=1, num_outputs=1, model="dummyreg", nodata_value=-9999.0)
+
+    y_hat = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
+    y = torch.tensor([[1.5, -9999.0], [-9999.0, 3.5]])
+
+    masked = task._mask_nodata(y_hat, y)
+
+    assert masked is not None
+    y_hat_valid, y_valid = masked
+    assert torch.equal(y_hat_valid.sort().values, torch.tensor([1.0, 4.0]))
+    assert torch.equal(y_valid.sort().values, torch.tensor([1.5, 3.5]))
+
+
+def test_regression_task_mask_nodata_returns_none_when_all_nodata(monkeypatch):
+    """_mask_nodata should signal a fully-NoData batch by returning None."""
+    monkeypatch.setitem(tasks_module.REG_MODEL_MAPPING, "dummyreg", DummyRegModel)
+    task = RegressionTask(in_channels=1, num_outputs=1, model="dummyreg", nodata_value=-9999.0)
+
+    y_hat = torch.zeros(2, 2)
+    y = torch.full((2, 2), -9999.0)
+
+    assert task._mask_nodata(y_hat, y) is None
+
+
+def test_regression_task_mask_nodata_is_noop_when_disabled(monkeypatch):
+    """With nodata_value=None (default), _mask_nodata should pass tensors through unchanged."""
+    monkeypatch.setitem(tasks_module.REG_MODEL_MAPPING, "dummyreg", DummyRegModel)
+    task = RegressionTask(in_channels=1, num_outputs=1, model="dummyreg")
+
+    y_hat = torch.tensor([[1.0, 2.0]])
+    y = torch.tensor([[-9999.0, 3.5]])
+
+    masked = task._mask_nodata(y_hat, y)
+
+    assert masked is not None
+    y_hat_valid, y_valid = masked
+    assert torch.equal(y_hat_valid, y_hat)
+    assert torch.equal(y_valid, y)
+
+
+def test_regression_task_masks_nodata_pixels_from_loss_and_metrics(monkeypatch):
+    """training_step's loss should only reflect non-NoData pixels."""
+    monkeypatch.setitem(tasks_module.REG_MODEL_MAPPING, "dummyreg", DummyRegModel)
+
+    task = RegressionTask(
+        in_channels=1,
+        num_outputs=1,
+        model="dummyreg",
+        loss="mse",
+        nodata_value=-9999.0,
+    )
+    # Deterministic "model": identity-like passthrough of the single input channel.
+    with torch.no_grad():
+        task.model.conv.weight.fill_(1.0)
+        task.model.conv.bias.fill_(0.0)
+
+    x = torch.tensor([[[[1.0, 2.0], [3.0, 4.0]]]])
+    y = torch.tensor([[[1.5, 2.5], [-9999.0, -9999.0]]])
+    batch = {"image": x, "mask": y}
+
+    loss = task.training_step(batch, batch_idx=0)
+
+    assert isinstance(loss, torch.Tensor)
+    expected_loss = torch.nn.functional.mse_loss(
+        torch.tensor([1.0, 2.0]), torch.tensor([1.5, 2.5])
+    )
+    assert torch.allclose(loss, expected_loss)
+
+
+def test_regression_task_skips_batch_when_fully_nodata(monkeypatch):
+    """A batch with only NoData targets should be skipped, not crash."""
+    monkeypatch.setitem(tasks_module.REG_MODEL_MAPPING, "dummyreg", DummyRegModel)
+
+    task = RegressionTask(
+        in_channels=3,
+        num_outputs=1,
+        model="dummyreg",
+        loss="mse",
+        nodata_value=-9999.0,
+    )
+
+    x = torch.randn(2, 3, 8, 8)
+    y = torch.full((2, 8, 8), -9999.0)
+    batch = {"image": x, "mask": y}
+
+    assert task.training_step(batch, batch_idx=0) is None
+    assert task.validation_step(batch, batch_idx=0) is None
+    assert task.test_step(batch, batch_idx=0) is None
+
+
 def test_regression_task_supports_smp_unet(monkeypatch):
     """RegressionTask should support SMP UNet fallback and freeze flags."""
     called = {}

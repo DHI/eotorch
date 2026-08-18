@@ -37,6 +37,11 @@ if TYPE_CHECKING:
 
 
 class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
+    """Task based on TorchGeo's SemanticSegmentationTask, with support for custom models.
+
+    Still has access to all the architectures and backbones from TorchGeo.
+    """
+
     def __init__(
         self,
         num_classes: int,
@@ -51,13 +56,11 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
         lr: float = 1e-3,
         freeze_backbone: bool = False,
         freeze_decoder: bool = False,
-        model_kwargs: dict[str, Any] = None,
-        lr_scheduler: dict[str, Any] = None,
+        model_kwargs: dict[str, Any] | None = None,
+        lr_scheduler: dict[str, Any] | None = None,
         class_names: list[str] | None = None,
-    ):
-        """
-        Task based on TorchGeo's SemanticSegmentationTask, but with the ability to use custom models.
-        We still have access to all the architectures and backbones from TorchGeo.
+    ) -> None:
+        """Initialize model, optimization config, and metric collections.
 
         Args:
             num_classes: Number of output classes for segmentation.
@@ -90,7 +93,6 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
                 * CosineAnnealingLR:
                     lr_scheduler = {"type": "CosineAnnealingLR", "T_max": 100, "eta_min": 1e-6}
             class_names: List of class names for metric labeling. If None, uses numeric indices.
-
         """
         self.model_kwargs = model_kwargs or {}
         self.lr_scheduler = lr_scheduler or {}
@@ -112,6 +114,7 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
         )
 
     def configure_models(self) -> None:
+        """Instantiate the model from the local registry, falling back to TorchGeo's built-ins."""
         model: str = self.hparams["model"]
         weights = self.weights
 
@@ -177,7 +180,8 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
                     from_logits=True,
                 )
 
-    def configure_optimizers(self):
+    def configure_optimizers(self) -> dict[str, Any]:
+        """Build optimizer and scheduler configuration for Lightning."""
         optimizer = torch.optim.AdamW(
             self.parameters(),
             lr=self.hparams["lr"],
@@ -369,7 +373,7 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
         self.test_metrics.reset()
 
     def validation_step(
-        self, batch: Any, batch_idx: int = None, dataloader_idx: int = 0
+        self, batch: Any, batch_idx: int | None = None, dataloader_idx: int = 0
     ) -> None:
         """Compute the validation loss and additional metrics.
 
@@ -501,6 +505,7 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
             # return y_hat.cpu().numpy()
 
     def predict_class(self, batch: Tensor | np.ndarray) -> np.ndarray:
+        """Predict class indices for a tensor or ndarray batch."""
         if isinstance(batch, np.ndarray):
             batch = array_to_tensor(batch)
         batch = batch.to(self.device)
@@ -517,13 +522,13 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
         checkpoint_path: str | Path,
         func_supports_batching: bool = True,
         batch_size: int = 8,
-        out_file_path: str | Path = None,
+        out_file_path: str | Path | None = None,
         show_results: bool = False,
-        ax: plt.Axes = None,
+        ax: plt.Axes | None = None,
         progress_bar: bool = True,
-        patch_size: int = None,
-        class_mapping: dict[int, str] = None,
-    ):
+        patch_size: int | None = None,
+        class_mapping: dict[int, str] | None = None,
+    ) -> Path | str:
         """
         Use a trained model to predict segmentation classes on a TIF file
 
@@ -531,10 +536,8 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
         ----------
         tif_file_path : str | Path
             Path to the input TIF file.
-        weights_path : str | Path
-            Path to the model weights used for prediction.
-        overlap : int
-            Overlap factor between patches (larger values increase overlap).
+        checkpoint_path : str | Path
+            Path to the model checkpoint used for prediction.
         func_supports_batching : bool
             Whether the prediction_func supports batched processing.
         batch_size : int
@@ -545,6 +548,8 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
             If True, display the prediction output in a notebook environment.
         ax : plt.Axes, optional
             Matplotlib Axes object for plotting if show_results is True.
+        progress_bar : bool
+            If True, display a progress bar while predicting.
         patch_size : int
             Integer size of the patch to use for prediction. Will be read from the checkpoint by default. Should only
             be set if the checkpoint does not contain the patch size.
@@ -622,13 +627,34 @@ class RegressionTask(LightningModule):
         weights: WeightsEnum | str | bool | None = None,
         num_outputs: int = 1,
         loss: str = "mse",
+        nodata_value: float | None = None,
         lr: float = 1e-3,
         freeze_backbone: bool = False,
         freeze_decoder: bool = False,
-        model_kwargs: dict[str, Any] = None,
+        model_kwargs: dict[str, Any] | None = None,
         lr_scheduler: dict[str, Any] | None = None,
     ):
-        """Initialize model, optimization config, and metric collections."""
+        """Initialize model, optimization config, and metric collections.
+
+        Args:
+            in_channels: Number of input channels.
+            num_filters: Number of filters in the model.
+            model: Model architecture to use (e.g., 'deepresunet', 'unet').
+            backbone: Backbone network for encoder-decoder architectures.
+            weights: Pretrained weights to load.
+            num_outputs: Number of output regression targets.
+            loss: Loss function ('mse', 'mae', 'huber', 'smoothl1').
+            nodata_value: Target value marking pixels to exclude from the loss and
+                metrics (e.g. -9999 for sparse regression labels). If None, all
+                pixels are used.
+            lr: Learning rate.
+            freeze_backbone: Whether to freeze the backbone.
+            freeze_decoder: Whether to freeze the decoder.
+            model_kwargs: Additional keyword arguments for model initialization.
+            lr_scheduler: Scheduler config with a "type" key naming a
+                torch.optim.lr_scheduler class, plus its kwargs (e.g. "monitor").
+                Defaults to ReduceLROnPlateau(patience=10, min_lr=1e-6, factor=0.2).
+        """
         super().__init__()
         self.weights = weights
         self.model_kwargs = model_kwargs or {}
@@ -795,7 +821,23 @@ class RegressionTask(LightningModule):
 
         return x, y
 
-    def training_step(self, batch: Any, batch_idx: int) -> Tensor:
+    def _mask_nodata(self, y_hat: Tensor, y: Tensor) -> tuple[Tensor, Tensor] | None:
+        """Drop NoData target pixels from predictions and targets before loss/metrics.
+
+        Returns None if every pixel in the batch is NoData, signaling callers to
+        skip the batch entirely.
+        """
+        nodata_value = self.hparams["nodata_value"]
+        if nodata_value is None:
+            return y_hat, y
+
+        valid_mask = y != nodata_value
+        if not valid_mask.any():
+            return None
+
+        return y_hat[valid_mask], y[valid_mask]
+
+    def training_step(self, batch: Any, batch_idx: int) -> Tensor | None:
         """Run one training step and log train metrics."""
         x, y = self._extract_inputs_and_targets(batch)
 
@@ -803,6 +845,12 @@ class RegressionTask(LightningModule):
         y_hat = self(x)
         if y_hat.ndim != y.ndim:
             y = y.unsqueeze(dim=1)
+
+        masked = self._mask_nodata(y_hat, y)
+        if masked is None:
+            return None
+        y_hat, y = masked
+
         loss = self.criterion(y_hat, y)
 
         self.log("train_loss", loss, batch_size=batch_size, prog_bar=True, on_epoch=True)
@@ -819,6 +867,12 @@ class RegressionTask(LightningModule):
         y_hat = self(x)
         if y_hat.ndim != y.ndim:
             y = y.unsqueeze(dim=1)
+
+        masked = self._mask_nodata(y_hat, y)
+        if masked is None:
+            return
+        y_hat, y = masked
+
         loss = self.criterion(y_hat, y)
 
         self.log("val_loss", loss, batch_size=batch_size)
@@ -833,6 +887,12 @@ class RegressionTask(LightningModule):
         y_hat = self(x)
         if y_hat.ndim != y.ndim:
             y = y.unsqueeze(dim=1)
+
+        masked = self._mask_nodata(y_hat, y)
+        if masked is None:
+            return
+        y_hat, y = masked
+
         loss = self.criterion(y_hat, y)
 
         self.log("test_loss", loss, batch_size=batch_size)
@@ -868,7 +928,7 @@ class RegressionTask(LightningModule):
         batch_size: int = 8,
         out_file_path: str | Path | None = None,
         show_results: bool = False,
-        ax: plt.Axes = None,
+        ax: plt.Axes | None = None,
         progress_bar: bool = True,
         patch_size: int | None = None,
     ) -> Path | str:
@@ -914,6 +974,7 @@ class RegressionTask(LightningModule):
             "model",
             "backbone",
             "loss",
+            "nodata_value",
             "lr",
             "lr_scheduler",
             "freeze_backbone",
@@ -978,12 +1039,36 @@ class PatchSegmentationTask(LightningModule):
         lr: float = 1e-3,
         freeze_backbone: bool = False,
         freeze_decoder: bool = False,
-        model_kwargs: dict[str, Any] = None,
+        model_kwargs: dict[str, Any] | None = None,
         lr_scheduler: dict[str, Any] | None = None,
         class_names: list[str] | None = None,
-        loss_kwargs: dict[str, Any] = None,
+        loss_kwargs: dict[str, Any] | None = None,
     ) -> None:
-        """Initialize model, optimization config, and metric collections."""
+        """Initialize model, optimization config, and metric collections.
+
+        Args:
+            num_classes: Number of output classes for segmentation.
+            in_channels: Number of input channels.
+            num_filters: Number of filters in the model.
+            model: Model architecture to use (e.g., 'deepresunet', 'unet').
+            backbone: Backbone network for encoder-decoder architectures.
+            loss: Loss function (e.g. 'dice', 'ce', 'bce', 'jaccard', 'tversky',
+                'focal', 'bce_dice', 'bce_dice_boundary', 'ce_dice_boundary').
+            task: TorchGeo/smp task mode passed to the loss ('binary', 'multiclass', 'multilabel').
+            class_weights: Optional weights for each class in the loss.
+            weights: Pretrained weights to load.
+            ignore_index: Label index to ignore in loss and metrics.
+            lr: Learning rate.
+            freeze_backbone: Whether to freeze the backbone.
+            freeze_decoder: Whether to freeze the decoder.
+            model_kwargs: Additional keyword arguments for model initialization.
+            lr_scheduler: Scheduler config with a "type" key naming a
+                torch.optim.lr_scheduler class, plus its kwargs (e.g. "monitor").
+                Defaults to ReduceLROnPlateau(patience=10, min_lr=1e-6, factor=0.2).
+            class_names: List of class names for metric labeling. If None, uses numeric indices.
+            loss_kwargs: Extra keyword arguments forwarded to the selected loss
+                (e.g. alpha/beta for tversky, bce_weight/dice_weight for bce_dice).
+        """
         super().__init__()
         self.weights = weights
         self.task = task
@@ -999,6 +1084,7 @@ class PatchSegmentationTask(LightningModule):
         self.configure_metrics()
 
     def configure_models(self) -> None:
+        """Instantiate the model from the local registry, falling back to smp architectures."""
         model: str = self.hparams["model"]
         backbone: str = self.hparams['backbone']
         weights = self.weights
