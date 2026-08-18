@@ -1053,7 +1053,8 @@ class PatchSegmentationTask(LightningModule):
             model: Model architecture to use (e.g., 'deepresunet', 'unet').
             backbone: Backbone network for encoder-decoder architectures.
             loss: Loss function (e.g. 'dice', 'ce', 'bce', 'jaccard', 'tversky',
-                'focal', 'bce_dice', 'bce_dice_boundary', 'ce_dice_boundary').
+                'focal', 'bce_dice', 'bce_dice_boundary', 'ce_dice_boundary',
+                'ce_dice_boundary_distance').
             task: TorchGeo/smp task mode passed to the loss ('binary', 'multiclass', 'multilabel').
             class_weights: Optional weights for each class in the loss.
             weights: Pretrained weights to load.
@@ -1285,7 +1286,22 @@ class PatchSegmentationTask(LightningModule):
                     ignore_index=ignore_index,
                     smooth=loss_kwargs.get('smooth', 1.0),
                 )
-                
+
+            case "ce_dice_boundary_distance":
+                from eotorch.models.loss import MultiClassCEDiceBoundaryDistanceLoss
+
+                self.criterion = MultiClassCEDiceBoundaryDistanceLoss(
+                    num_classes=self.hparams["num_classes"],
+                    ce_weight=loss_kwargs.get('ce_weight', 0.5),
+                    dice_weight=loss_kwargs.get('dice_weight', 0.5),
+                    boundary_weight=loss_kwargs.get('boundary_weight', 0.3),
+                    region_weight=loss_kwargs.get('region_weight', 0.7),
+                    max_distance=loss_kwargs.get('max_distance', 24.0),
+                    class_weights=class_weights,
+                    ignore_index=ignore_index,
+                    smooth=loss_kwargs.get('smooth', 1.0),
+                )
+
             case _:
                 raise ValueError(f"Unknown loss: {self.hparams['loss']}")
 

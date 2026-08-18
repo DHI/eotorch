@@ -1,6 +1,8 @@
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from scipy.ndimage import distance_transform_edt
 
 
 def _to_pos_weight(pos_weight: float | torch.Tensor, reference: torch.Tensor) -> torch.Tensor:
@@ -352,5 +354,214 @@ class MultiClassCEDiceBoundaryLoss(nn.Module):
         pred_grad = self._gradient_magnitude_per_channel(probs)
         target_grad = self._gradient_magnitude_per_channel(target_one_hot)
         boundary_loss = F.l1_loss(pred_grad, target_grad)
+
+        return self.region_weight * region_loss + self.boundary_weight * boundary_loss
+
+
+def _signed_distance_map(mask: torch.Tensor, max_distance: float) -> torch.Tensor:
+    """Signed Euclidean distance transform of a single [H, W] boolean mask.
+
+    Negative inside the mask, positive outside, zero at the boundary; clamped to
+    [-max_distance, max_distance] and normalized by max_distance so it stays O(1),
+    comparable in scale to CE/Dice. A uniform mask (no boundary present) has no
+    positional signal to give and returns zeros.
+    """
+    mask_np = mask.detach().cpu().numpy().astype(bool)
+    if mask_np.all() or not mask_np.any():
+        return torch.zeros(mask.shape, dtype=torch.float32, device=mask.device)
+
+    signed = distance_transform_edt(~mask_np) - distance_transform_edt(mask_np)
+    signed = np.clip(signed, -max_distance, max_distance) / max_distance
+    return torch.as_tensor(signed, dtype=torch.float32, device=mask.device)
+
+
+class BoundaryDistanceLoss(nn.Module):
+    """
+    Kervadec-style boundary distance loss for multiclass segmentation.
+
+    Yi, H.; Kervadec, H.; et al.: "Boundary loss for highly unbalanced segmentation."
+    MIDL 2019.
+
+    Unlike a gradient-magnitude boundary term (see MultiClassCEDiceBoundaryLoss),
+    which only rewards an edge of similar sharpness *somewhere* with no positional
+    signal, this term is directly informative about *where* the boundary should be:
+    predicted probability mass far outside the true region for a class costs
+    proportionally more than probability mass placed just past the edge.
+
+    Per-class signed distance maps are derived only from the target mask and are
+    therefore treated as constants (computed under torch.no_grad()); only the
+    predicted probabilities carry gradient.
+
+    Args:
+        num_classes: Number of classes.
+        max_distance: Distance (in pixels) at which the signed distance map
+            saturates. Bounds the term's magnitude and concentrates gradient signal
+            near the boundary, the region that matters for this loss.
+        ignore_index: Optional ignore index, excluded from the mean.
+        from_logits: Whether model output is logits.
+    """
+
+    def __init__(
+        self,
+        num_classes: int,
+        max_distance: float = 24.0,
+        ignore_index: int | None = None,
+        from_logits: bool = True,
+    ) -> None:
+        super().__init__()
+        assert num_classes > 1, "BoundaryDistanceLoss requires num_classes > 1"
+        self.num_classes = num_classes
+        self.max_distance = max_distance
+        self.ignore_index = ignore_index
+        self.from_logits = from_logits
+
+    @torch.no_grad()
+    def _distance_maps(self, targets: torch.Tensor) -> torch.Tensor:
+        """Per-sample, per-class signed distance maps for a [N, H, W] long target."""
+        n, h, w = targets.shape
+        maps = torch.zeros(
+            (n, self.num_classes, h, w), dtype=torch.float32, device=targets.device
+        )
+        for i in range(n):
+            for c in range(self.num_classes):
+                maps[i, c] = _signed_distance_map(targets[i] == c, self.max_distance)
+        return maps
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        if targets.ndim == logits.ndim and targets.shape[1] == 1:
+            targets = targets.squeeze(1)
+        targets = targets.long()
+
+        if self.ignore_index is not None:
+            valid_mask = targets != self.ignore_index
+            safe_targets = targets.clone()
+            safe_targets[~valid_mask] = 0
+        else:
+            valid_mask = torch.ones_like(targets, dtype=torch.bool)
+            safe_targets = targets
+
+        distance_maps = self._distance_maps(safe_targets)
+        probs = F.softmax(logits, dim=1) if self.from_logits else logits
+
+        valid_mask_f = valid_mask.unsqueeze(1).float()
+        weighted = probs * distance_maps * valid_mask_f
+        denom = (valid_mask_f.sum() * self.num_classes).clamp(min=1.0)
+        return weighted.sum() / denom
+
+
+class MultiClassCEDiceBoundaryDistanceLoss(nn.Module):
+    """
+    Boundary-aware combined loss for multiclass segmentation using a distance-based
+    boundary term instead of gradient-magnitude matching:
+    CE + multiclass Dice + boundary distance term.
+
+    Final loss:
+        L = region_weight * (ce_weight * CE + dice_weight * Dice) + boundary_weight * BoundaryDistance
+
+    A like-for-like drop-in for MultiClassCEDiceBoundaryLoss (same constructor
+    shape, plus max_distance), so the two can be compared directly: this term
+    rewards predicted probability mass by its distance to the true boundary, rather
+    than by matching edge sharpness with no positional signal.
+
+    Args:
+        num_classes: Number of classes.
+        ce_weight: Cross-entropy weight inside region term.
+        dice_weight: Dice weight inside region term.
+        boundary_weight: Boundary term weight in final loss.
+        region_weight: Region term weight in final loss.
+        max_distance: Distance (in pixels) at which the signed distance map
+            saturates (see BoundaryDistanceLoss).
+        class_weights: Optional class weights for CE.
+        ignore_index: Optional ignore index for CE/Dice/boundary.
+        smooth: Dice smoothing constant.
+        from_logits: Whether model output is logits.
+    """
+
+    def __init__(
+        self,
+        num_classes: int,
+        ce_weight: float = 0.5,
+        dice_weight: float = 0.5,
+        boundary_weight: float = 0.3,
+        region_weight: float = 0.7,
+        max_distance: float = 24.0,
+        class_weights: torch.Tensor | None = None,
+        ignore_index: int | None = None,
+        smooth: float = 1.0,
+        from_logits: bool = True,
+    ) -> None:
+        super().__init__()
+        assert num_classes > 1, "MultiClassCEDiceBoundaryDistanceLoss requires num_classes > 1"
+        assert 0 <= ce_weight <= 1, "ce_weight must be in [0, 1]"
+        assert 0 <= dice_weight <= 1, "dice_weight must be in [0, 1]"
+        assert abs((ce_weight + dice_weight) - 1.0) < 1e-6, "ce_weight + dice_weight must sum to 1"
+        assert 0 <= boundary_weight <= 1, "boundary_weight must be in [0, 1]"
+        assert 0 <= region_weight <= 1, "region_weight must be in [0, 1]"
+        assert abs((boundary_weight + region_weight) - 1.0) < 1e-6, (
+            "boundary_weight + region_weight must sum to 1"
+        )
+
+        self.num_classes = num_classes
+        self.ce_weight = ce_weight
+        self.dice_weight = dice_weight
+        self.boundary_weight = boundary_weight
+        self.region_weight = region_weight
+        self.class_weights = class_weights
+        self.ignore_index = ignore_index
+        self.smooth = smooth
+        self.from_logits = from_logits
+        self.boundary_loss = BoundaryDistanceLoss(
+            num_classes=num_classes,
+            max_distance=max_distance,
+            ignore_index=ignore_index,
+            from_logits=from_logits,
+        )
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        if targets.ndim == logits.ndim and targets.shape[1] == 1:
+            targets = targets.squeeze(1)
+
+        targets = targets.long()
+
+        # CE term
+        ce = F.cross_entropy(
+            logits,
+            targets,
+            weight=self.class_weights,
+            ignore_index=self.ignore_index if self.ignore_index is not None else -100,
+        )
+
+        probs = F.softmax(logits, dim=1) if self.from_logits else logits
+
+        # One-hot targets for Dice
+        valid_mask = None
+        if self.ignore_index is not None:
+            valid_mask = (targets != self.ignore_index)
+            safe_targets = targets.clone()
+            safe_targets[~valid_mask] = 0
+        else:
+            safe_targets = targets
+
+        target_one_hot = F.one_hot(safe_targets, num_classes=self.num_classes).permute(0, 3, 1, 2).float()
+
+        dice_probs = probs
+        dice_targets = target_one_hot
+        if valid_mask is not None:
+            valid_mask_f = valid_mask.unsqueeze(1).float()
+            dice_probs = dice_probs * valid_mask_f
+            dice_targets = dice_targets * valid_mask_f
+
+        # Multiclass Dice (macro over classes)
+        probs_flat = dice_probs.reshape(dice_probs.shape[0], dice_probs.shape[1], -1)
+        targets_flat = dice_targets.reshape(dice_targets.shape[0], dice_targets.shape[1], -1)
+        intersection = (probs_flat * targets_flat).sum(dim=2)
+        union = probs_flat.sum(dim=2) + targets_flat.sum(dim=2)
+        dice_per_class = 1.0 - (2.0 * intersection + self.smooth) / (union + self.smooth)
+        dice = dice_per_class.mean()
+
+        region_loss = self.ce_weight * ce + self.dice_weight * dice
+
+        # Boundary term: penalize predicted probability mass by distance to the true boundary
+        boundary_loss = self.boundary_loss(logits, targets)
 
         return self.region_weight * region_loss + self.boundary_weight * boundary_loss
