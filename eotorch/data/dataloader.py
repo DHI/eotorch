@@ -108,7 +108,7 @@ class DatasetFromPatches(Dataset):
 
 class PatchDataModule(LightningDataModule):
     def __init__(
-        self, 
+        self,
         train_patch_dir: str | Path,
         val_patch_dir: str | Path | None = None,
         batch_size: int = 8,
@@ -116,6 +116,9 @@ class PatchDataModule(LightningDataModule):
         transform: Callable[..., Any] | None = None,
         image_suffix: str = "feature",
         label_suffix: str = "label",
+        num_workers: int = 0,
+        persistent_workers: bool = True,
+        pin_memory: bool = True,
     ):
         super().__init__()
         self.train_dataset = DatasetFromPatches(train_patch_dir, transform=transform, image_suffix=image_suffix, label_suffix=label_suffix)
@@ -123,6 +126,9 @@ class PatchDataModule(LightningDataModule):
         self.batch_size = batch_size
         self.val_fraction = val_fraction
         self.patch_size = self.train_dataset.patch_size
+        self.num_workers = num_workers
+        self.persistent_workers = persistent_workers and num_workers > 0
+        self.pin_memory = pin_memory
         self._train_split = None
         self._val_split = None
 
@@ -135,6 +141,9 @@ class PatchDataModule(LightningDataModule):
                 "val_fraction": val_fraction,
                 "image_suffix": image_suffix,
                 "label_suffix": label_suffix,
+                "num_workers": num_workers,
+                "persistent_workers": self.persistent_workers,
+                "pin_memory": pin_memory,
             }
         )
 
@@ -155,12 +164,31 @@ class PatchDataModule(LightningDataModule):
     
     def train_dataloader(self):
         dataset = self._train_split or self.train_dataset
-        return DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
-    
+        return DataLoader(
+            dataset,
+            batch_size=self.batch_size,
+            shuffle=True,
+            num_workers=self.num_workers,
+            persistent_workers=self.persistent_workers,
+            pin_memory=self.pin_memory,
+        )
+
     def val_dataloader(self):
         dataset = self._val_split or self.val_dataset
-        return DataLoader(dataset, batch_size=self.batch_size)
-    
+        return DataLoader(
+            dataset,
+            batch_size=self.batch_size,
+            num_workers=self.num_workers,
+            persistent_workers=self.persistent_workers,
+            pin_memory=self.pin_memory,
+        )
+
     def predict_dataloader(self):
         dataset = self._val_split or self.val_dataset or self.train_dataset
-        return DataLoader(dataset, batch_size=self.batch_size)
+        return DataLoader(
+            dataset,
+            batch_size=self.batch_size,
+            num_workers=self.num_workers,
+            persistent_workers=self.persistent_workers,
+            pin_memory=self.pin_memory,
+        )
