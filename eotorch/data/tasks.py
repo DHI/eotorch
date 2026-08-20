@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -1305,6 +1306,8 @@ class PatchSegmentationTask(LightningModule):
             case _:
                 raise ValueError(f"Unknown loss: {self.hparams['loss']}")
 
+        self._loss_accepts_distance_maps = 'distance_maps' in inspect.signature(self.criterion.forward).parameters
+
     def configure_optimizers(self) -> dict[str, Any]:
         """Build optimizer and scheduler configuration for Lightning."""
         optimizer = torch.optim.AdamW(self.parameters(), lr=self.hparams["lr"], weight_decay=1e-4)
@@ -1415,32 +1418,56 @@ class PatchSegmentationTask(LightningModule):
         self.test_metrics = metrics.clone(prefix="test/")
 
 
-    def training_step(self, batch: tuple[Tensor, Tensor], batch_idx: int) -> Tensor:
+    def training_step(self, batch: tuple[Tensor, ...], batch_idx: int) -> Tensor:
         """Run one training step and log aggregate/per-class training metrics."""
-        x, y = batch
+        x, y, distance_maps = self._unpack_batch(batch)
         y_hat = self(x)
         y_loss, y_metrics = self._prepare_targets_for_loss_and_metrics(y_hat, y)
         batch_size = x.shape[0]
-        loss = self.criterion(y_hat, y_loss)
-        
+        loss = self._compute_loss(y_hat, y_loss, distance_maps)
+
         self.log("train_loss", loss, batch_size=batch_size, prog_bar=True, on_epoch=True)
         computed = self.train_metrics(y_hat, y_metrics)
         self.log_dict(computed, batch_size=batch_size)
 
         return loss
 
-    def validation_step(self, batch: tuple[Tensor, Tensor]) -> None:
+    def validation_step(self, batch: tuple[Tensor, ...]) -> None:
         """Run one validation step and log aggregate/per-class validation metrics."""
-        x, y = batch
+        x, y, distance_maps = self._unpack_batch(batch)
 
         batch_size = x.shape[0]
         y_hat = self(x)
         y_loss, y_metrics = self._prepare_targets_for_loss_and_metrics(y_hat, y)
-        loss = self.criterion(y_hat, y_loss)
+        loss = self._compute_loss(y_hat, y_loss, distance_maps)
 
         self.log("val_loss", loss, batch_size=batch_size)
         computed = self.val_metrics(y_hat, y_metrics)
         self.log_dict(computed, batch_size=batch_size)
+
+    @staticmethod
+    def _unpack_batch(batch: tuple[Tensor, ...]) -> tuple[Tensor, Tensor, Tensor | None]:
+        """Support both (image, label) and (image, label, distance_map) batches.
+
+        `DatasetFromPatches` returns the 3-tuple form only when constructed
+        with `distance_suffix` set, i.e. when precomputed distance maps
+        (see `pei.patch.precompute_distance_maps`) are available on disk.
+        """
+        if len(batch) == 3:
+            return batch
+        x, y = batch
+        return x, y, None
+
+    def _compute_loss(self, y_hat: Tensor, y_loss: Tensor, distance_maps: Tensor | None) -> Tensor:
+        """Forward precomputed distance maps to the loss when both are available.
+
+        Falls back to the loss recomputing them on the fly (see
+        `BoundaryDistanceLoss`) when no precomputed maps were loaded, or the
+        configured loss doesn't take a `distance_maps` argument at all.
+        """
+        if distance_maps is not None and self._loss_accepts_distance_maps:
+            return self.criterion(y_hat, y_loss, distance_maps=distance_maps)
+        return self.criterion(y_hat, y_loss)
 
     def _prepare_targets_for_loss_and_metrics(
         self, y_hat: Tensor, y: Tensor

@@ -11,19 +11,29 @@ from torch import Tensor
 import rasterio as rst
 
 
-def _load_patches(patch_dir: str | Path, image_suffix: str = "feature", label_suffix: str = "label") -> pd.DataFrame:
+def _load_patches(
+    patch_dir: str | Path,
+    image_suffix: str = "feature",
+    label_suffix: str = "label",
+    distance_suffix: str | None = None,
+) -> pd.DataFrame:
     """
-    Create a dataframe of feature/label patch paths in a patch directory.
+    Create a dataframe of feature/label(/distance) patch paths in a patch directory.
 
     Parameters:
         patch_dir (str | Path): Path to the directory containing patches.
         image_suffix (str): Suffix for feature patch files. Defaults to "feature".
         label_suffix (str): Suffix for label patch files. Defaults to "label".
+        distance_suffix (str | None): Suffix for precomputed distance-map patch
+            files (matched as ``*_{distance_suffix}.npy``), e.g. as written by
+            `pei.patch.precompute_distance_maps`. If None, no distance column
+            is added.
 
     Returns:
         pd.DataFrame:
-            Dataframe with feature and label path columns.
-    """    
+            Dataframe with feature and label path columns, plus a distance
+            column when `distance_suffix` is given.
+    """
     patch_path = Path(patch_dir)
     feature_paths = glob(str(patch_path / f'*_{image_suffix}.tiff'))
     label_paths = glob(str(patch_path / f'*_{label_suffix}.tiff'))
@@ -40,7 +50,8 @@ def _load_patches(patch_dir: str | Path, image_suffix: str = "feature", label_su
     patch_keys = sorted(feature_map.keys() & label_map.keys())
     if not patch_keys:
         warnings.warn(f'No patches found in {patch_path}', UserWarning, stacklevel=2)
-        return pd.DataFrame(columns=['feature', 'label'])
+        columns = ['feature', 'label'] + (['distance'] if distance_suffix else [])
+        return pd.DataFrame(columns=columns)
 
     if len(patch_keys) != len(feature_map) or len(patch_keys) != len(label_map):
         warnings.warn(
@@ -49,12 +60,27 @@ def _load_patches(patch_dir: str | Path, image_suffix: str = "feature", label_su
             stacklevel=2,
         )
 
-    return pd.DataFrame(
-        {
-            'feature': [feature_map[key] for key in patch_keys],
-            'label': [label_map[key] for key in patch_keys],
+    data = {
+        'feature': [feature_map[key] for key in patch_keys],
+        'label': [label_map[key] for key in patch_keys],
+    }
+
+    if distance_suffix is not None:
+        distance_paths = glob(str(patch_path / f'*_{distance_suffix}.npy'))
+        distance_map = {
+            Path(path).name.removesuffix(f'_{distance_suffix}.npy'): path
+            for path in distance_paths
         }
-    )
+        missing = [key for key in patch_keys if key not in distance_map]
+        if missing:
+            raise FileNotFoundError(
+                f"Missing precomputed distance maps for {len(missing)} patch(es) in {patch_path} "
+                f"(expected '<key>_{distance_suffix}.npy'). Run the distance-map precompute step "
+                "(e.g. pei.patch.precompute_distance_maps) first, or omit distance_suffix."
+            )
+        data['distance'] = [distance_map[key] for key in patch_keys]
+
+    return pd.DataFrame(data)
 
 
 class DatasetFromPatches(Dataset):
@@ -64,20 +90,25 @@ class DatasetFromPatches(Dataset):
         transform: Callable[..., Any] | None = None,
         image_suffix: str = "feature",
         label_suffix: str = "label",
+        distance_suffix: str | None = None,
     ):
-        self.patches = _load_patches(patch_dir, image_suffix=image_suffix, label_suffix=label_suffix)
+        self.patches = _load_patches(
+            patch_dir, image_suffix=image_suffix, label_suffix=label_suffix, distance_suffix=distance_suffix
+        )
         self.transform = transform
+        self.distance_suffix = distance_suffix
 
         self.patch_size = None
         if len(self.patches) > 0:
-            with rst.open(self.patches.iloc[0, 0]) as feature_src:
+            with rst.open(self.patches.iloc[0]['feature']) as feature_src:
                 self.patch_size = feature_src.width
 
     def __len__(self):
         return len(self.patches)
-    
+
     def __getitem__(self, idx):
-        with rst.open(self.patches.iloc[idx, 0]) as feature_src, rst.open(self.patches.iloc[idx, 1]) as label_src:
+        row = self.patches.iloc[idx]
+        with rst.open(row['feature']) as feature_src, rst.open(row['label']) as label_src:
             img = feature_src.read()
             label = label_src.read(indexes=1)
 
@@ -103,6 +134,10 @@ class DatasetFromPatches(Dataset):
         else:
             label_tensor = label_tensor.long()
 
+        if self.distance_suffix is not None:
+            distance_map = np.load(row['distance'])
+            return Tensor(img), label_tensor, Tensor(distance_map)
+
         return Tensor(img), label_tensor
     
 
@@ -116,13 +151,18 @@ class PatchDataModule(LightningDataModule):
         transform: Callable[..., Any] | None = None,
         image_suffix: str = "feature",
         label_suffix: str = "label",
+        distance_suffix: str | None = None,
         num_workers: int = 0,
         persistent_workers: bool = True,
         pin_memory: bool = True,
     ):
         super().__init__()
-        self.train_dataset = DatasetFromPatches(train_patch_dir, transform=transform, image_suffix=image_suffix, label_suffix=label_suffix)
-        self.val_dataset = DatasetFromPatches(val_patch_dir, transform=transform, image_suffix=image_suffix, label_suffix=label_suffix) if val_patch_dir is not None else None
+        self.train_dataset = DatasetFromPatches(
+            train_patch_dir, transform=transform, image_suffix=image_suffix, label_suffix=label_suffix, distance_suffix=distance_suffix
+        )
+        self.val_dataset = DatasetFromPatches(
+            val_patch_dir, transform=transform, image_suffix=image_suffix, label_suffix=label_suffix, distance_suffix=distance_suffix
+        ) if val_patch_dir is not None else None
         self.batch_size = batch_size
         self.val_fraction = val_fraction
         self.patch_size = self.train_dataset.patch_size
@@ -141,6 +181,7 @@ class PatchDataModule(LightningDataModule):
                 "val_fraction": val_fraction,
                 "image_suffix": image_suffix,
                 "label_suffix": label_suffix,
+                "distance_suffix": distance_suffix,
                 "num_workers": num_workers,
                 "persistent_workers": self.persistent_workers,
                 "pin_memory": pin_memory,

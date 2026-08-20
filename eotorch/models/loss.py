@@ -358,21 +358,86 @@ class MultiClassCEDiceBoundaryLoss(nn.Module):
         return self.region_weight * region_loss + self.boundary_weight * boundary_loss
 
 
-def _signed_distance_map(mask: torch.Tensor, max_distance: float) -> torch.Tensor:
-    """Signed Euclidean distance transform of a single [H, W] boolean mask.
+def _class_boundary_distance_np(
+    labels: np.ndarray,
+    c: int,
+    max_distance: float,
+    ignore_index: int | None = None,
+) -> np.ndarray:
+    """Signed Euclidean distance to the boundary of class `c`, for a single [H, W] label array.
 
-    Negative inside the mask, positive outside, zero at the boundary; clamped to
+    Negative inside class `c`, positive outside, zero at the boundary; clamped to
     [-max_distance, max_distance] and normalized by max_distance so it stays O(1),
-    comparable in scale to CE/Dice. A uniform mask (no boundary present) has no
-    positional signal to give and returns zeros.
-    """
-    mask_np = mask.detach().cpu().numpy().astype(bool)
-    if mask_np.all() or not mask_np.any():
-        return torch.zeros(mask.shape, dtype=torch.float32, device=mask.device)
+    comparable in scale to CE/Dice.
 
-    signed = distance_transform_edt(~mask_np) - distance_transform_edt(mask_np)
+    Without `ignore_index`, this is a plain one-vs-rest signed distance transform:
+    "outside" is simply every non-`c` pixel. With `ignore_index` set, "outside" is
+    narrowed to pixels that are validly some *other* real class (not `c`, not
+    `ignore_index`) — otherwise, wherever `ignore_index` pixels (e.g. no-data /
+    unlabeled background) sit closer to a class-`c` region than any genuinely
+    different class does, the *inside* distance would reflect proximity to that
+    no-data region rather than the real inter-class boundary. This matters in
+    particular when patches are sampled from a buffered region around the true
+    boundary, which puts unlabeled background pixels directly adjacent to real
+    classes throughout the dataset, not just as a rare edge case.
+
+    The *outside* distance doesn't need this narrowing: it's already exactly
+    "distance to the nearest class-`c` pixel" for any querying pixel, regardless
+    of what other classes (or no-data) happen to be nearby.
+
+    A degenerate mask (`c` absent, or no distinguishable "other" class present)
+    has no positional signal to give and returns zeros.
+    """
+    mask_c = labels == c
+    other = ~mask_c if ignore_index is None else (labels != c) & (labels != ignore_index)
+    if not mask_c.any() or not other.any():
+        return np.zeros(labels.shape, dtype=np.float32)
+
+    dist_to_c = distance_transform_edt(~mask_c)
+    dist_to_other = distance_transform_edt(~other)
+    signed = np.where(mask_c, -dist_to_other, dist_to_c)
     signed = np.clip(signed, -max_distance, max_distance) / max_distance
-    return torch.as_tensor(signed, dtype=torch.float32, device=mask.device)
+    return signed.astype(np.float32)
+
+
+def compute_class_distance_maps(
+    labels: np.ndarray,
+    num_classes: int,
+    max_distance: float,
+    ignore_index: int | None = None,
+) -> np.ndarray:
+    """Per-class signed distance maps for a single [H, W] integer label array.
+
+    Pure numpy/scipy, no torch or GPU involved — intended for precomputing
+    distance maps once (e.g. alongside label patches on disk) instead of
+    recomputing them from scratch on every training step, since the result
+    only depends on the label, not on model predictions. Precomputed maps can
+    be fed back in via `BoundaryDistanceLoss`/`MultiClassCEDiceBoundaryDistanceLoss`'s
+    `distance_maps` argument to skip the redundant recomputation entirely.
+
+    `ignore_index`'s own channel is left all-zero (never used, since
+    `BoundaryDistanceLoss` masks out `ignore_index` pixels entirely) and is
+    also excluded from what counts as "outside" for every other class's inside
+    distance — see `_class_boundary_distance_np` for why that matters.
+
+    Args:
+        labels: Integer class-index array, shape (H, W).
+        num_classes: Number of classes; output has one map per class.
+        max_distance: Distance (in pixels) at which the signed distance map
+            saturates (see `_class_boundary_distance_np`).
+        ignore_index: Optional class value to exclude from boundary geometry
+            entirely (e.g. no-data / unlabeled background), matching the
+            `ignore_index` passed to the loss this feeds into.
+
+    Returns:
+        np.ndarray: float32 array of shape (num_classes, H, W).
+    """
+    maps = np.zeros((num_classes, *labels.shape), dtype=np.float32)
+    for c in range(num_classes):
+        if c == ignore_index:
+            continue
+        maps[c] = _class_boundary_distance_np(labels, c, max_distance, ignore_index=ignore_index)
+    return maps
 
 
 class BoundaryDistanceLoss(nn.Module):
@@ -417,30 +482,53 @@ class BoundaryDistanceLoss(nn.Module):
 
     @torch.no_grad()
     def _distance_maps(self, targets: torch.Tensor) -> torch.Tensor:
-        """Per-sample, per-class signed distance maps for a [N, H, W] long target."""
-        n, h, w = targets.shape
-        maps = torch.zeros(
-            (n, self.num_classes, h, w), dtype=torch.float32, device=targets.device
-        )
-        for i in range(n):
-            for c in range(self.num_classes):
-                maps[i, c] = _signed_distance_map(targets[i] == c, self.max_distance)
-        return maps
+        """Per-sample, per-class signed distance maps for a [N, H, W] long target.
 
-    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        Delegates to `compute_class_distance_maps` with this loss's own
+        `ignore_index`, so the on-the-fly path computes the exact same
+        geometry as a precomputed `distance_maps` argument would (see
+        `compute_class_distance_maps` for why `ignore_index` needs to be
+        excluded from boundary geometry, not just masked out afterward).
+        """
+        n, h, w = targets.shape
+        targets_np = targets.detach().cpu().numpy()
+        maps = np.stack([
+            compute_class_distance_maps(targets_np[i], self.num_classes, self.max_distance, ignore_index=self.ignore_index)
+            for i in range(n)
+        ])
+        return torch.as_tensor(maps, dtype=torch.float32, device=targets.device)
+
+    def forward(
+        self,
+        logits: torch.Tensor,
+        targets: torch.Tensor,
+        distance_maps: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """
+        Args:
+            logits: Model output, [N, num_classes, H, W].
+            targets: Ground-truth class indices, [N, H, W] (or [N, 1, H, W]).
+            distance_maps: Optional precomputed per-class signed distance maps,
+                [N, num_classes, H, W] (see `compute_class_distance_maps`). When
+                given, the on-the-fly `scipy.ndimage.distance_transform_edt`
+                computation is skipped entirely — use this to avoid recomputing
+                the same maps every step when they only depend on `targets`,
+                which doesn't change across epochs for a fixed dataset.
+        """
         if targets.ndim == logits.ndim and targets.shape[1] == 1:
             targets = targets.squeeze(1)
         targets = targets.long()
 
         if self.ignore_index is not None:
             valid_mask = targets != self.ignore_index
-            safe_targets = targets.clone()
-            safe_targets[~valid_mask] = 0
         else:
             valid_mask = torch.ones_like(targets, dtype=torch.bool)
-            safe_targets = targets
 
-        distance_maps = self._distance_maps(safe_targets)
+        if distance_maps is None:
+            distance_maps = self._distance_maps(targets)
+        else:
+            distance_maps = distance_maps.to(device=logits.device, dtype=torch.float32)
+
         probs = F.softmax(logits, dim=1) if self.from_logits else logits
 
         valid_mask_f = valid_mask.unsqueeze(1).float()
@@ -517,7 +605,21 @@ class MultiClassCEDiceBoundaryDistanceLoss(nn.Module):
             from_logits=from_logits,
         )
 
-    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        logits: torch.Tensor,
+        targets: torch.Tensor,
+        distance_maps: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """
+        Args:
+            logits: Model output, [N, num_classes, H, W].
+            targets: Ground-truth class indices, [N, H, W] (or [N, 1, H, W]).
+            distance_maps: Optional precomputed per-class signed distance maps
+                forwarded to the boundary term (see `BoundaryDistanceLoss.forward`
+                and `compute_class_distance_maps`), skipping its on-the-fly
+                `scipy.ndimage.distance_transform_edt` computation.
+        """
         if targets.ndim == logits.ndim and targets.shape[1] == 1:
             targets = targets.squeeze(1)
 
@@ -562,6 +664,6 @@ class MultiClassCEDiceBoundaryDistanceLoss(nn.Module):
         region_loss = self.ce_weight * ce + self.dice_weight * dice
 
         # Boundary term: penalize predicted probability mass by distance to the true boundary
-        boundary_loss = self.boundary_loss(logits, targets)
+        boundary_loss = self.boundary_loss(logits, targets, distance_maps=distance_maps)
 
         return self.region_weight * region_loss + self.boundary_weight * boundary_loss
