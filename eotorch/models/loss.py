@@ -15,6 +15,10 @@ class GaussianNLL(nn.Module):
     Gaussian negative log likelihood to fit the mean and variance to p(y|x)
     Note: We estimate the heteroscedastic variance. Hence, we include the var_i of sample i in the sum
     over all samples N. Furthermore, the constant log term is discarded.
+
+    Args:
+        reduction: "mean" returns a scalar averaged over all elements; "none"
+            returns the elementwise loss with no reduction. Defaults to "mean".
     """
     def __init__(self, reduction : str = 'mean'):
         super().__init__()
@@ -25,18 +29,18 @@ class GaussianNLL(nn.Module):
         """
         The exponential activation is applied already within the network to directly output variances.
 
-        Parameters:
-            mean (torch.Tensor): 
+        Args:
+            mean (torch.Tensor):
                 Predicted mean values.
-            variance (torch.Tensor): 
+            variance (torch.Tensor):
                 Predicted variance.
-            target (torch.Tensor): 
+            target (torch.Tensor):
                 Ground truth labels.
 
         Returns:
-            torch.Tensor: 
+            torch.Tensor:
                 Gaussian negative log likelihood
-        """       
+        """
         variance = variance + self.eps
         if self.reduction == 'mean':
             return torch.mean(0.5 / variance * (mean - target)**2 + 0.5 * torch.log(variance))
@@ -48,17 +52,15 @@ class BCEDiceLoss(nn.Module):
     """
     Combined BCE and Dice loss optimized for edge detection and imbalanced binary segmentation.
     
-    This loss combines the pixel-level precision of binary cross-entropy with the 
-    region-level overlap insensitivity of Dice loss, making it well-suited for 
+    This loss combines the pixel-level precision of binary cross-entropy with the
+    region-level overlap insensitivity of Dice loss, making it well-suited for
     detecting thin structures (e.g., edges) in highly imbalanced datasets.
-    
-    Reference: Combines approaches from:
-    - He et al. (2020): "Rethinking the U-Net architecture for multimodal biomedical image segmentation"
-    - Lin et al. (2017): "Focal Loss for Dense Object Detection"
-    
+
     Args:
-        bce_weight (float): Weight for BCE component (default: 0.5). Range [0, 1].
-        dice_weight (float): Weight for Dice component (default: 0.5). Range [0, 1].
+        bce_weight (float): Weight for BCE component (default: 0.5). Range [0, 1];
+            bce_weight + dice_weight must sum to 1.
+        dice_weight (float): Weight for Dice component (default: 0.5). Range [0, 1];
+            bce_weight + dice_weight must sum to 1.
         pos_weight (float or None): Weight for positive class in BCE. Useful for imbalanced datasets.
             For 99.9% negatives / 0.1% positives, use ~999. Default: None.
         smooth (float): Smoothing constant for Dice to avoid division by zero. Default: 1.0.
@@ -142,17 +144,19 @@ class BCEDiceBoundaryLoss(nn.Module):
     Boundary-aware combined loss for binary segmentation:
     BCE + Dice + boundary alignment term.
 
-    This follows the practical recipe:
-        L = lambda_region * (w_bce * BCE + w_dice * Dice) + lambda_boundary * L_boundary
+    Final loss:
+        L = region_weight * (bce_weight * BCE + dice_weight * Dice) + boundary_weight * Boundary
 
     The boundary term compares image-gradient magnitudes of prediction probabilities
     and targets, which emphasizes contour quality without requiring explicit contour extraction.
 
     Args:
-        bce_weight: BCE weight within the region term.
-        dice_weight: Dice weight within the region term.
+        bce_weight: BCE weight within the region term. bce_weight + dice_weight must sum to 1.
+        dice_weight: Dice weight within the region term. bce_weight + dice_weight must sum to 1.
         boundary_weight: Weight of boundary term in the final combined loss.
+            boundary_weight + region_weight must sum to 1.
         region_weight: Weight of region (BCE+Dice) term in the final combined loss.
+            boundary_weight + region_weight must sum to 1.
         pos_weight: Optional positive-class weighting for BCE.
         smooth: Dice smoothing constant.
         from_logits: Whether model output is logits.
@@ -205,6 +209,14 @@ class BCEDiceBoundaryLoss(nn.Module):
         return torch.sqrt(gx * gx + gy * gy + 1e-8)
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            logits: Model output [B, 1, H, W].
+            targets: Ground truth [B, 1, H, W] or [B, H, W] (will be unsqueezed).
+
+        Returns:
+            Combined region + boundary loss scalar.
+        """
         if targets.ndim == logits.ndim - 1:
             targets = targets.unsqueeze(1)
 
@@ -246,10 +258,12 @@ class MultiClassCEDiceBoundaryLoss(nn.Module):
 
     Args:
         num_classes: Number of classes.
-        ce_weight: Cross-entropy weight inside region term.
-        dice_weight: Dice weight inside region term.
+        ce_weight: Cross-entropy weight inside region term. ce_weight + dice_weight must sum to 1.
+        dice_weight: Dice weight inside region term. ce_weight + dice_weight must sum to 1.
         boundary_weight: Boundary term weight in final loss.
+            boundary_weight + region_weight must sum to 1.
         region_weight: Region term weight in final loss.
+            boundary_weight + region_weight must sum to 1.
         class_weights: Optional class weights for CE.
         ignore_index: Optional ignore index for CE/Dice.
         smooth: Dice smoothing constant.
@@ -309,6 +323,14 @@ class MultiClassCEDiceBoundaryLoss(nn.Module):
         return torch.sqrt(gx * gx + gy * gy + 1e-8)
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            logits: Model output, [N, num_classes, H, W].
+            targets: Ground-truth class indices, [N, H, W] (or [N, 1, H, W]).
+
+        Returns:
+            Combined region + boundary loss scalar.
+        """
         if targets.ndim == logits.ndim and targets.shape[1] == 1:
             targets = targets.squeeze(1)
 
@@ -444,8 +466,8 @@ class BoundaryDistanceLoss(nn.Module):
     """
     Kervadec-style boundary distance loss for multiclass segmentation.
 
-    Yi, H.; Kervadec, H.; et al.: "Boundary loss for highly unbalanced segmentation."
-    MIDL 2019.
+    Kervadec, H.; Bouchtiba, J.; Desrosiers, C.; Granger, E.; Dolz, J.; Ben Ayed, I.:
+    "Boundary loss for highly unbalanced segmentation." MIDL 2019.
 
     Unlike a gradient-magnitude boundary term (see MultiClassCEDiceBoundaryLoss),
     which only rewards an edge of similar sharpness *somewhere* with no positional
@@ -514,6 +536,9 @@ class BoundaryDistanceLoss(nn.Module):
                 computation is skipped entirely — use this to avoid recomputing
                 the same maps every step when they only depend on `targets`,
                 which doesn't change across epochs for a fixed dataset.
+
+        Returns:
+            Boundary distance loss scalar.
         """
         if targets.ndim == logits.ndim and targets.shape[1] == 1:
             targets = targets.squeeze(1)
@@ -553,10 +578,12 @@ class MultiClassCEDiceBoundaryDistanceLoss(nn.Module):
 
     Args:
         num_classes: Number of classes.
-        ce_weight: Cross-entropy weight inside region term.
-        dice_weight: Dice weight inside region term.
+        ce_weight: Cross-entropy weight inside region term. ce_weight + dice_weight must sum to 1.
+        dice_weight: Dice weight inside region term. ce_weight + dice_weight must sum to 1.
         boundary_weight: Boundary term weight in final loss.
+            boundary_weight + region_weight must sum to 1.
         region_weight: Region term weight in final loss.
+            boundary_weight + region_weight must sum to 1.
         max_distance: Distance (in pixels) at which the signed distance map
             saturates (see BoundaryDistanceLoss).
         class_weights: Optional class weights for CE.
@@ -619,6 +646,9 @@ class MultiClassCEDiceBoundaryDistanceLoss(nn.Module):
                 forwarded to the boundary term (see `BoundaryDistanceLoss.forward`
                 and `compute_class_distance_maps`), skipping its on-the-fly
                 `scipy.ndimage.distance_transform_edt` computation.
+
+        Returns:
+            Combined region + boundary distance loss scalar.
         """
         if targets.ndim == logits.ndim and targets.shape[1] == 1:
             targets = targets.squeeze(1)

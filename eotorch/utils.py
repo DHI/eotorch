@@ -41,6 +41,20 @@ class Region:
         dissolve: bool = True,
         **kwargs,
     ):
+        """Build a Region from a variety of source types, dispatching to the matching `from_*` method.
+
+        Args:
+            source: A Region (returned as-is), a JSON string, a path to a
+                .shp/.json/.geojson/.tif(f) file, a dict (see `from_dict`), a
+                single Polygon, or a list of Polygons.
+            crs: CRS of the source, when applicable (shapefile, geojson, polygon(s)).
+            name: Name of the region.
+            dissolve: Whether to dissolve multiple polygons into one, when applicable.
+            **kwargs: Forwarded to the matching `from_*` constructor.
+
+        Returns:
+            Region: The region object.
+        """
         if isinstance(source, Region):
             return source
         if isinstance(source, str):
@@ -87,7 +101,9 @@ class Region:
         **kwargs,
     ):
         """
-        Create a region from a shapefile. The shapefile must contain exactly one polygon.
+        Create a region from a shapefile. A single-row shapefile becomes a single
+        polygon region; multiple rows are combined via `from_multiple_polygons`
+        (optionally dissolved into one geometry).
         If the CRS is not provided, it will be attempted to be read from the shapefile.
         If the CRS is not provided and not in the shapefile, a ValueError will be raised.
 
@@ -101,7 +117,6 @@ class Region:
             Region: The region object
 
         Raises:
-            ValueError: If the shapefile does not contain exactly one polygon
             ValueError: If the CRS is not provided and not in the shapefile
         """
         df = read_vector(path)
@@ -412,9 +427,6 @@ class Region:
             raster_path (str | Path): The path to the raster file
             out_path (str | Path, optional): The path to save the cropped raster. Setting out_path to None
             will overwrite the original raster. Defaults to None.
-
-        Returns:
-            str: The path to the cropped raster
         """
 
         from rasterio.mask import mask
@@ -443,6 +455,7 @@ class Region:
                 dest.write(out_image)
 
     def to_crs(self, crs: str | pyproj.CRS) -> "Region":
+        """Returns a new region with its polygon reprojected to `crs`."""
         if isinstance(crs, str):
             crs = pyproj.CRS(crs)
 
@@ -497,6 +510,7 @@ class Region:
         map=None,
         **kwargs,
     ):
+        """Draw this region's geometry (and/or its bounds) on a folium map, creating one if not given."""
         import folium
 
         map = map or folium.Map()
@@ -532,6 +546,7 @@ class Region:
         blue_band_idx: int = 1,
         map=None,
     ):
+        """Overlay a TIF's RGB composite on a folium map of this region."""
         import folium
         import matplotlib.pyplot as plt
 
@@ -648,6 +663,9 @@ def slice_image(
         offset (int, optional):
             Shifts the slices (offset, offset) `offset` pixels diagonally towards the bottom right.
             Defaults to 0.
+        as_windows (bool, optional):
+            If True, return `rasterio.windows.Window` objects instead of `slice` tuples.
+            Defaults to False.
 
     Returns:
         Sequence[slice]:

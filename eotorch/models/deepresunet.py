@@ -77,7 +77,7 @@ class DeepResUNet(nn.Module):
     """
     A fully convolutional neural network for segmentation and regression tasks.
 
-    DeepResUNet is adapated from the architecture proposed in:
+    DeepResUNet is adapted from the architecture proposed in:
     Yi, Y.; Zhang, Z.; Zhang, W.; Zhang, C.; Li, W.; Zhao, T.: Semantic Segmentation of Urban Buildings from VHR Remote
     Sensing Imagery Using a Deep Convolutional Neural Network.
     Remote Sens. 2019, 11, 1774. https://doi.org/10.3390/rs11151774.
@@ -96,7 +96,7 @@ class DeepResUNet(nn.Module):
             are doubled after each encoder block and halved again after each decoder block.
             Defaults to True.
         norm_momentum (float, optional):
-            Momentum for normalization layers. Defaults to 0.1.
+            Momentum for normalization layers. Defaults to 0.01.
     """
 
     def __init__(

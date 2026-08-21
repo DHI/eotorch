@@ -421,9 +421,9 @@ def aoi_split(
     Args:
         dataset: Dataset to be split
         aoi_files: Single filepath or sequence of filepaths to shapefile or .geojson files
-        crs: The CRS of the input AOIs (e.g., "EPSG:4326" for lat/lon). If None,
-             assumes AOIs are in the same CRS as the dataset. Default is "EPSG:4326".
-        buffer_size: Size of buffer in meters to apply around AOIs. Default is 0.
+        crs: Currently unused by the implementation (AOI files are always reprojected
+             to the dataset's own CRS via `to_crs(dataset.crs)`). Default is "EPSG:4326".
+        buffer_size_metres: Size of buffer in meters to apply around AOIs. Default is 0.
 
     Returns:
         A list of datasets where the first is the remainder (training dataset),

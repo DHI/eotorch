@@ -330,7 +330,7 @@ class SamplePlotMixin:
 
 class CustomCacheRasterDataset(RasterDataset, SamplePlotMixin):
     """
-    Implementing RasterDatset with customisable cache size, as it is hardcoded to 128 in torchgeo's RasterDataset.
+    Implementing RasterDataset with customisable cache size, as it is hardcoded to 128 in torchgeo's RasterDataset.
     """
 
     def __init__(
@@ -430,15 +430,10 @@ class CustomCacheRasterDataset(RasterDataset, SamplePlotMixin):
         """
         Create a new CustomCacheRasterDataset that is the union of this dataset and another.
 
-        The two datasets must have compatible configurations for resolution, selected bands,
-        definition of all bands, is_image status, and separate_files status.
-        The CRS can differ; the new dataset will adopt the CRS of the left operand ('self').
-        The 'other' dataset's index will be transformed to 'self.crs' using GeoDataset's
-        built-in CRS transformation logic if their CRSs differ.
-
-        The new dataset inherits transforms and cache_size from 'self'.
-        The index of the new dataset is a combination of the indices from 'self' and
-        the (potentially transformed) index from 'other'.
+        The two datasets must have matching bands, all_bands, is_image, and separate_files
+        attributes. CRS and resolution may differ: 'other' is deep-copied and reprojected/
+        resampled to 'self's CRS and resolution before its index is merged into the result,
+        which otherwise inherits transforms and cache_size from 'self'.
 
         Args:
             other: Another CustomCacheRasterDataset instance to union with.
@@ -587,9 +582,18 @@ class PlottableClassificationDataset(CustomCacheRasterDataset):
         cache_size: int = 20,
         reduce_zero_label: bool = True,
     ) -> None:
+        """A `CustomCacheRasterDataset` for label rasters that also knows how to plot itself.
+
+        Args:
+            paths: Path(s) to the label raster file(s), or a directory containing them.
+            crs: Coordinate reference system to use. Defaults to the CRS of the first file.
+            res: Resolution to use. Defaults to the resolution of the first file.
+            bands: Bands to return. Defaults to all bands.
+            transforms: A function/transform to apply to samples after retrieval.
+            cache_size: Size of the LRU cache for opened raster files.
+            reduce_zero_label: Subtract 1 from all labels. Useful when labels start
+                from 1 instead of the expected 0. Defaults to True.
         """
-        reduce_zero_label (bool): Subtract 1 from all labels. Useful when labels start from 1 instead of the
-        expected 0. Defaults to True."""
 
         super().__init__(paths, crs, res, bands, transforms, cache_size)
         self.reduce_zero_label = reduce_zero_label
@@ -964,10 +968,10 @@ class ClassificationRasterDataset(
 
     @property
     def crs(self) -> CRS:
-        """:term:`coordinate reference system (CRS)` of both datasets.
+        """Coordinate reference system (CRS) of both datasets.
 
         Returns:
-            The :term:`coordinate reference system (CRS)`.
+            The coordinate reference system (CRS).
         """
         return self.index.crs
         # return self._crs
@@ -1047,7 +1051,7 @@ class RegressionRasterDataset(
 
     def __or__(self, other: RegressionRasterDataset) -> RegressionRasterDataset:
         """
-        Overload the | operator to create a new ClassificationRasterDataset from two ClassificationRasterDataset.
+        Overload the | operator to create a new RegressionRasterDataset from two RegressionRasterDataset.
         """
         if not isinstance(other, RegressionRasterDataset):
             raise TypeError(
@@ -1071,10 +1075,10 @@ class RegressionRasterDataset(
 
     @property
     def crs(self) -> CRS:
-        """:term:`coordinate reference system (CRS)` of both datasets.
+        """Coordinate reference system (CRS) of both datasets.
 
         Returns:
-            The :term:`coordinate reference system (CRS)`.
+            The coordinate reference system (CRS).
         """
         return self.index.crs
         # return self._crs
@@ -1128,13 +1132,12 @@ def get_segmentation_dataset(
         label_glob (str): Glob pattern for the label files. Defaults to "*.tif". Modify if not all .tif files in the directory should be used.
         image_filename_regex (str): Regular expression to extract metadata from image filenames.
                                     See https://torchgeo.readthedocs.io/en/stable/tutorials/custom_raster_dataset.html#filename_regex
-        date_format (str): Date format to extract metadata from image filenames. Should be specified if image_filename_regex is used.
-                            See https://torchgeo.readthedocs.io/en/stable/tutorials/custom_raster_dataset.html#date_format
-                            Example for matching files from the same year, when the filenames have the format "image_YYYY_3.tif" and "label_YYYY_whatever.tif":
-                                image_filename_regex=r'.*_(?P<date>\d{4})_.*',
-                                label_filename_regex=r'.*_(?P<date>\d{4})_.*',
-                                date_format='%Y'
+        image_date_format (str): Date format to extract date metadata from image filenames, matching
+                            a `date` group in image_filename_regex (e.g. r'.*_(?P<date>\d{4})_.*' with
+                            image_date_format='%Y'). See torchgeo's custom_raster_dataset tutorial for details.
         label_filename_regex (str): Regular expression to extract metadata from label filenames.
+        label_date_format (str): Date format for the `date` group in label_filename_regex, analogous
+                            to image_date_format.
         all_image_bands (tuple): All bands in the image files.
         rgb_bands (tuple): Bands to use for RGB visualization.
         sensor_name (str): Name of the sensor to use. Overrides all_image_bands and res. For valid sensor names, see BAND_INDEX in eotorch.bandindex.py.
@@ -1237,7 +1240,7 @@ def get_regression_dataset(
     image_separate_files: bool = False,
 ) -> PlottableImageDataset | RegressionRasterDataset:
     r"""
-    Create a segmentation dataset from images and labels. Labels are optional.
+    Create a regression dataset from images and labels. Labels are optional.
 
     Args:
         images_dir (str or Path): Path to the directory containing the images.
@@ -1246,18 +1249,18 @@ def get_regression_dataset(
         label_glob (str): Glob pattern for the label files. Defaults to "*.tif". Modify if not all .tif files in the directory should be used.
         image_filename_regex (str): Regular expression to extract metadata from image filenames.
                                     See https://torchgeo.readthedocs.io/en/stable/tutorials/custom_raster_dataset.html#filename_regex
-        date_format (str): Date format to extract metadata from image filenames. Should be specified if image_filename_regex is used.
-                            See https://torchgeo.readthedocs.io/en/stable/tutorials/custom_raster_dataset.html#date_format
-                            Example for matching files from the same year, when the filenames have the format "image_YYYY_3.tif" and "label_YYYY_whatever.tif":
-                                image_filename_regex=r'.*_(?P<date>\d{4})_.*',
-                                label_filename_regex=r'.*_(?P<date>\d{4})_.*',
-                                date_format='%Y'
+        image_date_format (str): Date format to extract date metadata from image filenames, matching
+                            a `date` group in image_filename_regex (e.g. r'.*_(?P<date>\d{4})_.*' with
+                            image_date_format='%Y'). See torchgeo's custom_raster_dataset tutorial for details.
         label_filename_regex (str): Regular expression to extract metadata from label filenames.
+        label_date_format (str): Date format for the `date` group in label_filename_regex, analogous
+                            to image_date_format.
         all_image_bands (tuple): All bands in the image files.
         rgb_bands (tuple): Bands to use for RGB visualization.
         sensor_name (str): Name of the sensor to use. Overrides all_image_bands and res. For valid sensor names, see BAND_INDEX in eotorch.bandindex.py.
         crs (CRS): Coordinate reference system of the data.
         res (float): Resolution of the data.
+        nodata_value (float): Value in the label rasters marking pixels to exclude. Defaults to 0.
         bands_to_return (tuple): Bands to return from the dataset.
         image_transforms (callable): Transforms to apply to the images.
         label_transforms (callable): Transforms to apply to the labels.

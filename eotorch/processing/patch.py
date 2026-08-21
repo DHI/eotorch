@@ -47,16 +47,17 @@ def _should_skip_patch(
         Raster metadata containing at least the nodata value.
     value_threshold : float | int | None
         Skip patch when all label values are less than or equal to this threshold.
-    empty_label_threshold : float | None
-        Skip patch when empty label ratio (label == 0) exceeds this threshold.
     empty_img_threshold : float | None
         Skip patch when empty image ratio (all bands == nodata) exceeds this threshold.
+    empty_label_threshold : float | None
+        Skip patch when empty label ratio (label == 0) exceeds this threshold.
     frac_empty_patches : float
         Fraction of empty patches to retain even if they exceed the empty_threshold.
-    
-    Returns:
-        tuple[bool, str | None]:
-            (should_skip, reason). `reason` is populated only when skipped.
+
+    Returns
+    -------
+    tuple[bool, str | None]
+        (should_skip, reason). `reason` is populated only when skipped.
     """
     def _dice_roll(prob: float) -> bool:
         return ~(np.random.random(1) <= prob)[0]
@@ -289,24 +290,26 @@ def meta_from_origin(
     """
     Generates new metadata of a patch from origin coordinates.
 
-    Parameters:
-        image (np.ndarray): 
-            Input image features.
-        x (float): 
-            x-coordinate of corner pixel.
-        y (float): 
-            y-coordinate of corner pixel.
-        meta (dict[str, Any]): 
-            Original metadata.
-        patch_size (int): 
-            Patch width/height in pixels.
-        dtype (str | np.dtype[Any] | None, optional): 
-            dtype of the output. If None, infers the dtype from the metadata. Defaults to None.
+    Parameters
+    ----------
+    image : np.ndarray
+        Input image features.
+    x : float
+        x-coordinate of corner pixel.
+    y : float
+        y-coordinate of corner pixel.
+    meta : dict[str, Any]
+        Original metadata.
+    patch_size : int
+        Patch width/height in pixels.
+    dtype : str | np.dtype[Any] | None, optional
+        dtype of the output. If None, infers the dtype from the metadata. Defaults to None.
 
-    Returns:
-        dict[str, Any]: 
-            Patch metadata.
-    """      
+    Returns
+    -------
+    dict[str, Any]
+        Patch metadata.
+    """
     x_size = meta['transform'][0]
     y_size = -meta['transform'][4] if meta['transform'][4] < 0 else meta['transform'][4]
     origin = meta['transform'][2]+(y*y_size), meta['transform'][5]-(x*x_size)
@@ -333,11 +336,12 @@ def clear_patches(wildcard: str, patch_dir: str | Path) -> None:
     """
     Deletes existing patches matching the scene name.
 
-    Parameters:
-        wildcard (str):
-            Glob wildcard used to match patch files.
-        patch_dir (str | Path):
-            Patch directory.
+    Parameters
+    ----------
+    wildcard : str
+        Glob wildcard used to match patch files.
+    patch_dir : str | Path
+        Patch directory.
     """
     img_paths = glob(os.path.join(patch_dir, f'{wildcard}'))
     for img_path in img_paths:

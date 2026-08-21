@@ -26,7 +26,7 @@ def _load_patches(
         label_suffix (str): Suffix for label patch files. Defaults to "label".
         distance_suffix (str | None): Suffix for precomputed distance-map patch
             files (matched as ``*_{distance_suffix}.npy``), e.g. as written by
-            `pei.patch.precompute_distance_maps`. If None, no distance column
+            an external distance-map precompute step. If None, no distance column
             is added.
 
     Returns:
@@ -76,7 +76,7 @@ def _load_patches(
             raise FileNotFoundError(
                 f"Missing precomputed distance maps for {len(missing)} patch(es) in {patch_path} "
                 f"(expected '<key>_{distance_suffix}.npy'). Run the distance-map precompute step "
-                "(e.g. pei.patch.precompute_distance_maps) first, or omit distance_suffix."
+                "first, or omit distance_suffix."
             )
         data['distance'] = [distance_map[key] for key in patch_keys]
 
@@ -84,6 +84,8 @@ def _load_patches(
 
 
 class DatasetFromPatches(Dataset):
+    """Torch dataset over feature/label (and optionally distance-map) patch files on disk."""
+
     def __init__(
         self,
         patch_dir: str | Path,
@@ -92,6 +94,7 @@ class DatasetFromPatches(Dataset):
         label_suffix: str = "label",
         distance_suffix: str | None = None,
     ):
+        """Index the patches in `patch_dir` and infer patch size from the first feature file."""
         self.patches = _load_patches(
             patch_dir, image_suffix=image_suffix, label_suffix=label_suffix, distance_suffix=distance_suffix
         )
@@ -104,9 +107,11 @@ class DatasetFromPatches(Dataset):
                 self.patch_size = feature_src.width
 
     def __len__(self):
+        """Number of indexed patches."""
         return len(self.patches)
 
     def __getitem__(self, idx):
+        """Load and transform one patch, returning (image, label) or (image, label, distance_map)."""
         row = self.patches.iloc[idx]
         with rst.open(row['feature']) as feature_src, rst.open(row['label']) as label_src:
             img = feature_src.read()
@@ -142,6 +147,8 @@ class DatasetFromPatches(Dataset):
     
 
 class PatchDataModule(LightningDataModule):
+    """Lightning DataModule wrapping train/val `DatasetFromPatches` with an optional random val split."""
+
     def __init__(
         self,
         train_patch_dir: str | Path,
@@ -189,6 +196,7 @@ class PatchDataModule(LightningDataModule):
         )
 
     def setup(self, stage=None):
+        """Assign train/val splits: the provided val_dataset if given, else a random split of train_dataset."""
         if self.val_dataset is not None:
             self._train_split = self.train_dataset
             self._val_split = self.val_dataset
@@ -204,6 +212,7 @@ class PatchDataModule(LightningDataModule):
         self._train_split, self._val_split = random_split(self.train_dataset, [train_size, val_size])
     
     def train_dataloader(self):
+        """DataLoader over the training split, shuffled."""
         dataset = self._train_split or self.train_dataset
         return DataLoader(
             dataset,
@@ -215,6 +224,7 @@ class PatchDataModule(LightningDataModule):
         )
 
     def val_dataloader(self):
+        """DataLoader over the validation split."""
         dataset = self._val_split or self.val_dataset
         return DataLoader(
             dataset,
@@ -225,6 +235,7 @@ class PatchDataModule(LightningDataModule):
         )
 
     def predict_dataloader(self):
+        """DataLoader used for prediction: val split if available, else the training data."""
         dataset = self._val_split or self.val_dataset or self.train_dataset
         return DataLoader(
             dataset,

@@ -77,22 +77,9 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
             freeze_backbone: Whether to freeze the backbone.
             freeze_decoder: Whether to freeze the decoder.
             model_kwargs: Additional keyword arguments for model initialization.
-            lr_scheduler: The learning rate scheduler configuration. If None, a default scheduler will be used.
-                The default scheduler is ReduceLROnPlateau with the following parameters:
-                * mode: "min"
-                * factor: 0.2
-                * patience: 10
-                * min_lr: 1e-6
-                * monitor: "val_loss"
-
-                The way to specify the default scheduler would be:
-                lr_scheduler = {"type": "ReduceLROnPlateau", "mode": "min", "factor": 0.2, "patience": 10, "min_lr": 1e-6, "monitor": "val_loss"}
-
-                For available schedulers, see https://pytorch.org/docs/stable/optim.html#how-to-adjust-learning-rate
-
-                Some examples of other schedulers:
-                * CosineAnnealingLR:
-                    lr_scheduler = {"type": "CosineAnnealingLR", "T_max": 100, "eta_min": 1e-6}
+            lr_scheduler: Scheduler config with a "type" key naming a
+                torch.optim.lr_scheduler class, plus its kwargs (e.g. "monitor").
+                Defaults to ReduceLROnPlateau(patience=10, min_lr=1e-6, factor=0.2).
             class_names: List of class names for metric labeling. If None, uses numeric indices.
         """
         self.model_kwargs = model_kwargs or {}
@@ -217,17 +204,9 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
     def configure_metrics(self) -> None:
         """Initialize the performance metrics.
 
-        Uses metric naming consistent with TerraTorch for easier comparison:
-        * mIoU: Mean Intersection over Union (macro average)
-        * F1_Score: Macro-averaged F1 score
-        * Accuracy: Macro-averaged accuracy
-        * Pixel_Accuracy: Micro-averaged accuracy (per-pixel)
-        * IoU_<class>: Per-class IoU using ClasswiseWrapper
-        * Class_Accuracy_<class>: Per-class accuracy using ClasswiseWrapper
-
-        .. note::
-           * 'Micro' averaging gives equal weight to each pixel
-           * 'Macro' averaging gives equal weight to each class
+        Uses metric naming consistent with TerraTorch: macro-averaged mIoU/F1_Score/Accuracy,
+        micro-averaged (per-pixel) Pixel_Accuracy, and per-class IoU/Class_Accuracy/Class_F1
+        via ClasswiseWrapper.
         """
         num_classes = self.hparams["num_classes"]
         ignore_index = self.hparams["ignore_index"]
@@ -530,38 +509,25 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
         patch_size: int | None = None,
         class_mapping: dict[int, str] | None = None,
     ) -> Path | str:
-        """
-        Use a trained model to predict segmentation classes on a TIF file
+        """Use a trained model to predict segmentation classes on a TIF file.
 
-        Parameters
-        ----------
-        tif_file_path : str | Path
-            Path to the input TIF file.
-        checkpoint_path : str | Path
-            Path to the model checkpoint used for prediction.
-        func_supports_batching : bool
-            Whether the prediction_func supports batched processing.
-        batch_size : int
-            The batch size used for prediction (ignored if func_supports_batching is False).
-        out_file_path : str | Path, optional
-            Output path for saving the results. Writes to a "predictions" subfolder if None.
-        show_results : bool
-            If True, display the prediction output in a notebook environment.
-        ax : plt.Axes, optional
-            Matplotlib Axes object for plotting if show_results is True.
-        progress_bar : bool
-            If True, display a progress bar while predicting.
-        patch_size : int
-            Integer size of the patch to use for prediction. Will be read from the checkpoint by default. Should only
-            be set if the checkpoint does not contain the patch size.
-        class_mapping : dict[int, str], optional
-            Mapping from predicted class indices to class names for visualization. Used for plotting only.
-            Will be read from the checkpoint if by default. Should only be set if the checkpoint does not contain the class mapping.
+        Args:
+            tif_file_path: Path to the input TIF file.
+            checkpoint_path: Path to the model checkpoint used for prediction.
+            func_supports_batching: Whether the prediction_func supports batched processing.
+            batch_size: Batch size used for prediction (ignored if func_supports_batching is False).
+            out_file_path: Output path for saving the results. Writes to a "predictions" subfolder if None.
+            show_results: If True, display the prediction output in a notebook environment.
+            ax: Matplotlib Axes to plot on if show_results is True.
+            progress_bar: If True, display a progress bar while predicting.
+            patch_size: Patch size to use for prediction. Read from the checkpoint by
+                default; only set this if the checkpoint doesn't contain it.
+            class_mapping: Mapping from predicted class indices to class names, used
+                only for plotting. Read from the checkpoint by default; only set this
+                if the checkpoint doesn't contain it.
 
-        Returns
-        -------
-        Path
-            The path to the produced TIF file or plot visualization (when show_results=True).
+        Returns:
+            Path to the produced TIF file, or the plot's path when show_results=True.
         """
         from eotorch.inference.inference import predict_on_tif_generic
 
@@ -1023,7 +989,7 @@ class RegressionTask(LightningModule):
 
 
 class PatchSegmentationTask(LightningModule):
-    """Lightning module for semantic segmentation with DeepResUNet backbone."""
+    """Lightning module for patch-based semantic segmentation tasks."""
 
     def __init__(
         self,
@@ -1451,7 +1417,7 @@ class PatchSegmentationTask(LightningModule):
 
         `DatasetFromPatches` returns the 3-tuple form only when constructed
         with `distance_suffix` set, i.e. when precomputed distance maps
-        (see `pei.patch.precompute_distance_maps`) are available on disk.
+        (written by an external distance-map precompute step) are available on disk.
         """
         if len(batch) == 3:
             return batch

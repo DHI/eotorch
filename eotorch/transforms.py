@@ -7,11 +7,11 @@ import torch.nn as nn
 class Normalize(nn.Module):
     """Normalize patch image bands using precomputed per-band mean/std.
 
-    Patches produced by :func:`pei.patch.generate_train_val_patches` are
-    scaled to ``[0, 1]``. This rescales them to zero mean / unit variance
+    Patches produced by :func:`eotorch.processing.patch.generate_train_val_patches`
+    are scaled to ``[0, 1]``. This rescales them to zero mean / unit variance
     (roughly ``[-1, 1]`` for a dataset without heavy outliers) using the
     dataset's own per-band statistics, as expected by DINOv3. Get ``mean``
-    and ``std`` from :func:`pei.patch.compute_patch_stats`.
+    and ``std`` from :func:`eotorch.processing.patch.compute_patch_stats`.
 
     Compatible with ``eotorch.data.PatchDataModule``'s ``transform`` hook,
     which calls ``transform(image=img, mask=label)`` per-sample with ``img``
