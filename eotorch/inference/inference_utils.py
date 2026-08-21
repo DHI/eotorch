@@ -48,6 +48,39 @@ def crop_np_to_window(arr: np.ndarray, w_buffered: Window, w_unbuffered: Window)
     return arr[top:bottom, left:right]
 
 
+def blend_weight_2d(patch_size: int, min_weight: float = 1e-3) -> np.ndarray:
+    """2-D Hann-window taper for weighted overlap-add tile blending.
+
+    Peaks at the patch center and tapers toward (but never exactly to) zero
+    at its edges, so overlapping patches' predictions can be combined as a
+    weighted average that favors each patch's more reliable center over its
+    edges -- which are biased by that patch's own zero-padded convolution
+    boundary, since each patch is run through the model independently. A hard
+    crop-and-tile instead keeps a fixed "trusted" region per patch and abuts
+    them edge-to-edge; wherever two patches' independently-computed kept
+    regions don't quite agree, that shows up as a visible seam. Blending
+    smooths that disagreement out instead.
+
+    Parameters
+    ----------
+    patch_size : int
+        Side length of the (square) patch.
+    min_weight : float, optional
+        Floor applied to the raw Hann window (which reaches exactly 0 at its
+        endpoints), so a pixel touched by only one patch -- e.g. right at the
+        image border, where there's no neighboring patch to compensate -- still
+        gets a strictly positive weight and doesn't produce a division by zero
+        when normalizing the accumulated weighted sum.
+
+    Returns
+    -------
+    np.ndarray
+        float32 array of shape (patch_size, patch_size).
+    """
+    taper = np.clip(np.hanning(patch_size), min_weight, None)
+    return np.outer(taper, taper).astype(np.float32)
+
+
 def buffered_to_unbuffered(
     window: Window,
     buffer: int,
@@ -62,7 +95,8 @@ def buffered_to_unbuffered(
     ----------
         window: buffered window
         buffer: buffer size
-        patch_size: patch size
+        img_height: height of the original image
+        img_width: width of the original image
 
     Returns
     ----------
@@ -167,7 +201,19 @@ def eotorch_patch_generator(
     Similar to the patch_generator function, but uses the exact same way of loading the image data
     as we do during training with eotorch.
 
-    Yields batches of image data and their corresponding windows.
+    Parameters
+    ----------
+        tif_file_path: path to the tif file to predict on
+        checkpoint_path: path to a SemanticSegmentationTask checkpoint; its
+            datamodule_hyper_parameters determine dataset args (bands, CRS, res,
+            class_mapping, etc.) and patch_size
+        batch_size: number of patches per yielded batch
+
+    Yields
+    ----------
+        batch: image tensor batch, loaded and transformed exactly as during training
+        windows: list of rasterio windows, indicating the location of each patch
+                in the original tif file
     """
     import torch
 
@@ -248,6 +294,7 @@ def patch_generator(
         tif_file_path: path to tif file
         patch_size: size of the patches to use for prediction
         overlap: overlap between patches, 2 means 50% overlap
+        batch_size: number of patches to accumulate before yielding a batch
 
     Yields
     ----------

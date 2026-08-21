@@ -39,15 +39,12 @@ def predict_on_tif_generic(
     num_bands : int | None = None,
     nodata_value : int = 0,
     transforms: Callable | list[Callable] | None = None,
+    blend: bool = False,
 ) -> Path:
     """
     Predict segmentation classes on a TIF file using a custom prediction function.
-    Also allows for a custom data_and_window_generator to be passed in, which can be used
-    to generate patches and windows for the input data. This is useful for cases where
-    the input data is not a simple TIF file, or when you want to use a custom patching strategy.
-    The function will use the provided data_and_window_generator to generate batches of data and windows,
-    and then apply the prediction function to each batch. The results will be written to a new TIF file.
-    By default,
+    Optionally accepts a custom data_and_window_generator for non-default patching
+    strategies; the results are written to a new TIF file.
 
     Parameters
     ----------
@@ -92,6 +89,19 @@ def predict_on_tif_generic(
         Transform (or list of transforms, applied in order) run on each batch after it is loaded but
         before it is passed to prediction_func. E.g. an `eotorch.transforms.Normalize` instance to
         rescale raw patch values using precomputed per-band mean/std. Defaults to None.
+    blend : bool
+        If True, stitch overlapping patch predictions with a weighted
+        overlap-add (Hann-window taper, heaviest at each patch's center --
+        see `inference_utils.blend_weight_2d`) instead of the default hard
+        crop-and-tile. Removes visible seams that a hard crop leaves wherever
+        two independently-predicted patches' kept centers don't quite agree
+        at the boundary between them, typically from each patch's own
+        zero-padded convolution edges biasing its border predictions. Only
+        meaningful for continuous outputs (e.g. class probabilities, not hard
+        class indices). Accumulates the entire output raster in memory
+        (float32, `num_bands` x height x width) rather than streaming it to
+        disk window-by-window, so consider the raster's size before enabling
+        this for very large rasters. Defaults to False.
 
 
     Returns
@@ -155,6 +165,25 @@ def predict_on_tif_generic(
         )
 
     any_predictions_written = False
+
+    if blend:
+        height, width = meta["height"], meta["width"]
+        weight_2d = iu.blend_weight_2d(patch_size)
+        accum = np.zeros((num_bands, height, width), dtype=np.float32)
+        weight_accum = np.zeros((height, width), dtype=np.float32)
+
+    def _write_blended(dest):
+        blended = np.divide(
+            accum,
+            weight_accum[None, :, :],
+            out=np.full_like(accum, nodata_value, dtype=np.float32),
+            where=weight_accum[None, :, :] > 0,
+        ).astype(dtype)
+        if blended.shape[0] == 1:
+            dest.write_band(1, blended[0])
+        else:
+            dest.write(blended)
+
     try:
         with rst.open(out_file_path, "w", **meta) as dest:
             for batch, windows in (
@@ -177,23 +206,38 @@ def predict_on_tif_generic(
 
                 for i, window in enumerate(windows):
                     class_pred = pred[i]
-                    unbuffered_window = iu.buffered_to_unbuffered(
-                        window,
-                        buffer=int(patch_size * (1 / (2 * overlap))),
-                        img_height=meta["height"],
-                        img_width=meta["width"],
-                    )
-                    window_arr = iu.crop_np_to_window(
-                        class_pred, window, unbuffered_window
-                    )
-                    if window_arr.ndim == 2:
-                        dest.write_band(1, window_arr, window=unbuffered_window)
+
+                    if blend:
+                        row_off, col_off = int(window.row_off), int(window.col_off)
+                        patch_pred = class_pred if class_pred.ndim == 3 else class_pred[None]
+                        accum[:, row_off:row_off + patch_size, col_off:col_off + patch_size] += (
+                            patch_pred * weight_2d
+                        )
+                        weight_accum[row_off:row_off + patch_size, col_off:col_off + patch_size] += weight_2d
                     else:
-                        dest.write(window_arr, window=unbuffered_window)
+                        unbuffered_window = iu.buffered_to_unbuffered(
+                            window,
+                            buffer=int(patch_size * (1 / (2 * overlap))),
+                            img_height=meta["height"],
+                            img_width=meta["width"],
+                        )
+                        window_arr = iu.crop_np_to_window(
+                            class_pred, window, unbuffered_window
+                        )
+                        if window_arr.ndim == 2:
+                            dest.write_band(1, window_arr, window=unbuffered_window)
+                        else:
+                            dest.write(window_arr, window=unbuffered_window)
                     if not any_predictions_written:
                         any_predictions_written = True
 
+            if blend and any_predictions_written:
+                _write_blended(dest)
+
     except KeyboardInterrupt:
+        if blend and any_predictions_written:
+            with rst.open(out_file_path, "w", **meta) as dest:
+                _write_blended(dest)
         if show_results and any_predictions_written:
             print(
                 "Inference interrupted. Showing predictions that have been generated so far."
