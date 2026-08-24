@@ -40,6 +40,8 @@ def predict_on_tif_generic(
     nodata_value : int = 0,
     transforms: Callable | list[Callable] | None = None,
     blend: bool = False,
+    compress: str | None = None,
+    creation_options: dict | None = None,
 ) -> Path:
     """
     Predict segmentation classes on a TIF file using a custom prediction function.
@@ -102,6 +104,18 @@ def predict_on_tif_generic(
         (float32, `num_bands` x height x width) rather than streaming it to
         disk window-by-window, so consider the raster's size before enabling
         this for very large rasters. Defaults to False.
+    compress : str | None, optional
+        GDAL compression method for the output TIF (e.g. "deflate", "lzw", "zstd").
+        `tif_file_path`'s own compression, if any, is not otherwise reflected in the
+        output -- the output profile is built from `.meta`, which never carries
+        compression/tiling settings regardless of the input file's own. Defaults to
+        None (uncompressed).
+    creation_options : dict | None, optional
+        Additional GDAL creation options for the output TIF (e.g. `{"predictor": 3,
+        "tiled": True, "blockxsize": 256, "blockysize": 256}` -- predictor 3 is the
+        floating-point predictor, appropriate when `dtype` is float32/float64; use 2
+        for an integer `dtype`). Merged in after `compress`, so a `"compress"` key here
+        overrides the `compress` argument. Defaults to None.
 
 
     Returns
@@ -146,7 +160,15 @@ def predict_on_tif_generic(
             dtype = str(_sample.dtype)
     data_and_window_generator = itertools.chain([(_first_batch, _first_windows)], _raw_gen)
 
-    meta.update({"dtype": dtype, "count": num_bands, "nodata": nodata_value})
+    # Output is always written as GTiff regardless of the input file's own driver --
+    # e.g. a lightweight VRT window used as `tif_file_path` for its metadata only
+    # (real patch data supplied via a custom `data_and_window_generator`) reports
+    # driver='VRT', which is not a valid target for the plain dst.write() calls below.
+    meta.update({"dtype": dtype, "count": num_bands, "nodata": nodata_value, "driver": "GTiff"})
+    if compress is not None:
+        meta["compress"] = compress
+    if creation_options:
+        meta.update(creation_options)
 
     # roughly estimate how many batches we will have
     total_windows = int(
