@@ -122,8 +122,9 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
             if weights:
                 if isinstance(weights, (str, Path)):
                     weights = torch.load(weights)
-                self.model.load_state_dict(weights)
-                print(f"Weights loaded successfully from {weights}")
+                if isinstance(weights, dict):
+                    self.model.load_state_dict(weights)
+                    print(f"Weights loaded successfully from {weights}")
 
         else:
             super().configure_models()
@@ -654,8 +655,9 @@ class RegressionTask(LightningModule):
             if weights:
                 if isinstance(weights, (str, Path)):
                     weights = torch.load(weights)
-                self.model.load_state_dict(weights)
-                print(f"Weights loaded successfully from {weights}")
+                if isinstance(weights, dict):
+                    self.model.load_state_dict(weights)
+                    print(f"Weights loaded successfully from {weights}")
 
         else:
             in_channels: int = self.hparams["in_channels"]
@@ -1073,8 +1075,9 @@ class PatchSegmentationTask(LightningModule):
             if weights:
                 if isinstance(weights, (str, Path)):
                     weights = torch.load(weights)
-                self.model.load_state_dict(weights)
-                print(f"Weights loaded successfully from {weights}")
+                if isinstance(weights, dict):
+                    self.model.load_state_dict(weights)
+                    print(f"Weights loaded successfully from {weights}")
 
         elif model.lower() in SEG_MODEL_MAPPING:
             model_cls = SEG_MODEL_MAPPING[model]
@@ -1090,8 +1093,9 @@ class PatchSegmentationTask(LightningModule):
             if weights:
                 if isinstance(weights, (str, Path)):
                     weights = torch.load(weights)
-                self.model.load_state_dict(weights)
-                print(f"Weights loaded successfully from {weights}")
+                if isinstance(weights, dict):
+                    self.model.load_state_dict(weights)
+                    print(f"Weights loaded successfully from {weights}")
 
         else:
             in_channels: int = self.hparams['in_channels']
