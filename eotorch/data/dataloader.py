@@ -117,15 +117,29 @@ class DatasetFromPatches(Dataset):
             img = feature_src.read()
             label = label_src.read(indexes=1)
 
+        distance_map = np.load(row['distance']) if self.distance_suffix is not None else None
+
         if self.transform is not None:
-            try:
-                transformed = self.transform(image=img, mask=label)
-            except TypeError:
-                transformed = self.transform(img, label)
+            if distance_map is not None:
+                # Precomputed distance maps are static per patch on disk, so any
+                # transform that moves the label geometry (e.g. flip/rotation)
+                # must be given the chance to move the distance map the same way,
+                # or the two desync. Fall back to the distance-less call for
+                # transforms that don't accept it.
+                try:
+                    transformed = self.transform(image=img, mask=label, distance=distance_map)
+                except TypeError:
+                    transformed = self.transform(image=img, mask=label)
+            else:
+                try:
+                    transformed = self.transform(image=img, mask=label)
+                except TypeError:
+                    transformed = self.transform(img, label)
 
             if isinstance(transformed, dict):
                 img = transformed.get('image', img)
                 label = transformed.get('mask', transformed.get('label', label))
+                distance_map = transformed.get('distance', distance_map)
             elif isinstance(transformed, tuple) and len(transformed) == 2:
                 img, label = transformed
             else:
@@ -133,14 +147,17 @@ class DatasetFromPatches(Dataset):
                     'Transform must return either (image, label) or a dict with image/mask keys.'
                 )
 
-        label_tensor = Tensor(label)
-        if np.issubdtype(label.dtype, np.floating):
-            label_tensor = label_tensor.float()
+        if isinstance(label, Tensor):
+            # A dict-returning transform (e.g. one that also augments the mask)
+            # hands back an already-typed tensor; trust its dtype rather than
+            # inspecting it as a numpy dtype.
+            label_tensor = label
+        elif np.issubdtype(label.dtype, np.floating):
+            label_tensor = Tensor(label).float()
         else:
-            label_tensor = label_tensor.long()
+            label_tensor = Tensor(label).long()
 
         if self.distance_suffix is not None:
-            distance_map = np.load(row['distance'])
             return Tensor(img), label_tensor, Tensor(distance_map)
 
         return Tensor(img), label_tensor
