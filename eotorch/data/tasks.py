@@ -471,19 +471,22 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
         Returns:
             Output predicted probabilities.
         """
-        # x = batch["image"]
+        was_training = self.training
+        self.eval()
+        try:
+            with torch.inference_mode():
+                y_hat: Tensor = self(batch)
 
-        with torch.inference_mode():
-            y_hat: Tensor = self(batch)
+                match self.hparams["task"]:
+                    case "binary" | "multilabel":
+                        y_hat = y_hat.sigmoid()
+                    case "multiclass":
+                        y_hat = y_hat.softmax(dim=1)
 
-            match self.hparams["task"]:
-                case "binary" | "multilabel":
-                    y_hat = y_hat.sigmoid()
-                case "multiclass":
-                    y_hat = y_hat.softmax(dim=1)
-
-            return y_hat
-            # return y_hat.cpu().numpy()
+                return y_hat
+                # return y_hat.cpu().numpy()
+        finally:
+            self.train(was_training)
 
     def predict_class(self, batch: Tensor | np.ndarray) -> np.ndarray:
         """Predict class indices for a tensor or ndarray batch."""
@@ -870,8 +873,13 @@ class RegressionTask(LightningModule):
 
     def predict_step(self, batch: Tensor) -> Tensor:
         """Override to return raw values instead of probabilities."""
-        with torch.inference_mode():
-            y = self(batch)
+        was_training = self.training
+        self.eval()
+        try:
+            with torch.inference_mode():
+                y = self(batch)
+        finally:
+            self.train(was_training)
         # predict_on_tif_generic expects (B, H, W) so each patch is 2D.
         if y.ndim == 4 and y.shape[1] == 1:
             y = y[:, 0, :, :]
@@ -1455,16 +1463,21 @@ class PatchSegmentationTask(LightningModule):
 
     def predict_step(self, batch: Tensor) -> Tensor:
         """Predict class probabilities for an input batch."""
-        with torch.inference_mode():
-            y_hat: Tensor = self(batch)
+        was_training = self.training
+        self.eval()
+        try:
+            with torch.inference_mode():
+                y_hat: Tensor = self(batch)
 
-            match self.hparams["task"]:
-                case "binary" | "multilabel":
-                    y_hat = y_hat.sigmoid()
-                case "multiclass":
-                    y_hat = y_hat.softmax(dim=1)
+                match self.hparams["task"]:
+                    case "binary" | "multilabel":
+                        y_hat = y_hat.sigmoid()
+                    case "multiclass":
+                        y_hat = y_hat.softmax(dim=1)
 
-            return y_hat
+                return y_hat
+        finally:
+            self.train(was_training)
 
     def predict_class(self, batch: Tensor | np.ndarray) -> np.ndarray:
         """Predict class indices for a tensor or ndarray batch."""
