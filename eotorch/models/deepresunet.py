@@ -40,12 +40,14 @@ class Decoder(nn.Module):
         self,
         in_channels: int,
         out_channels: int,
+        skip_channels: int | None = None,
         norm_momentum: float = 0.1,
     ):
         super().__init__()
+        skip_channels = in_channels if skip_channels is None else skip_channels
         self.upsample = nn.UpsamplingNearest2d(scale_factor=2)
         self.conv = Conv2d(
-            2 * in_channels,
+            in_channels + skip_channels,
             out_channels,
             kernel_size=(1, 1),
             padding="valid",
@@ -94,7 +96,8 @@ class DeepResUNet(nn.Module):
         static_filters (bool, optional):
             Keep the number of filters consistent for each layer. If False, the number of filters
             are doubled after each encoder block and halved again after each decoder block.
-            Defaults to True.
+            In that case num_filters is the width at the bottleneck, and the full-resolution
+            layers use num_filters // 8. Defaults to True.
         norm_momentum (float, optional):
             Momentum for normalization layers. Defaults to 0.01.
     """
@@ -148,18 +151,30 @@ class DeepResUNet(nn.Module):
             norm_momentum=norm_momentum,
         )
 
-        # Decoder
+        # Decoder (each skip carries the encoder width at that resolution)
         self.decoder1 = Decoder(
-            self.num_filters[3], self.num_filters[3], norm_momentum=norm_momentum
+            self.num_filters[3],
+            self.num_filters[3],
+            skip_channels=self.num_filters[3],
+            norm_momentum=norm_momentum,
         )
         self.decoder2 = Decoder(
-            self.num_filters[3], self.num_filters[2], norm_momentum=norm_momentum
+            self.num_filters[3],
+            self.num_filters[2],
+            skip_channels=self.num_filters[2],
+            norm_momentum=norm_momentum,
         )
         self.decoder3 = Decoder(
-            self.num_filters[2], self.num_filters[1], norm_momentum=norm_momentum
+            self.num_filters[2],
+            self.num_filters[1],
+            skip_channels=self.num_filters[1],
+            norm_momentum=norm_momentum,
         )
         self.decoder4 = Decoder(
-            self.num_filters[1], self.num_filters[0], norm_momentum=norm_momentum
+            self.num_filters[1],
+            self.num_filters[0],
+            skip_channels=self.num_filters[0],
+            norm_momentum=norm_momentum,
         )
 
         self.output = nn.Conv2d(
