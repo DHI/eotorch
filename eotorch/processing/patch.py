@@ -1,3 +1,4 @@
+import math
 import os
 import random
 from glob import glob
@@ -10,8 +11,11 @@ import pandas as pd
 import rasterio as rst
 import shapely
 from alive_progress import alive_bar
+from rasterio.enums import Resampling
 from rasterio.features import rasterize
 from rasterio.transform import from_origin
+from rasterio.warp import reproject, transform_bounds
+from rasterio.windows import Window
 from shapely.geometry import box as shapely_box
 from tqdm import tqdm
 
@@ -100,6 +104,7 @@ def _write_patch(
     out_dir: Path,
     meta: dict[str, Any],
     patch_size: int,
+    label_nodata: float | int | None = None,
 ) -> None:
     """
     Write a single patch pair (feature and label) to disk.
@@ -122,6 +127,8 @@ def _write_patch(
         Source image metadata used to derive output metadata.
     patch_size : int
         Patch width/height in pixels.
+    label_nodata : float | int | None, optional
+        Nodata value written to the label patch. Defaults to None.
     """
     feature_name = f'{img_stem}_{patch_index}_image.tiff'
     label_name = f'{img_stem}_{patch_index}_label.tiff'
@@ -135,8 +142,93 @@ def _write_patch(
     
     # Write label patch
     out_meta = meta_from_origin(labels, x.start, y.start, meta, patch_size, dtype=labels.dtype)
+    out_meta['nodata'] = label_nodata
     with rst.open(out_dir / label_name, 'w', **out_meta) as dst:
         dst.write(labels[slice_obj], 1)
+
+
+def _read_aligned_image_and_labels(
+    img_path: str | Path,
+    label_path: str | Path,
+    resampling: Resampling,
+) -> tuple[np.ndarray, np.ndarray, dict[str, Any], float | int | None]:
+    """
+    Read an image and a label raster aligned to the image grid over their overlap.
+
+    The image is cropped to the whole pixels that fall inside the label raster's
+    extent, and the labels are reprojected onto that cropped image grid. Image pixels
+    without label coverage are filled with the label nodata value, or 0 if the label
+    raster has none. When both rasters already share a CRS, transform and shape, the
+    labels are read as-is.
+
+    Parameters
+    ----------
+    img_path : str | Path
+        Path to the image raster, which defines the output grid.
+    label_path : str | Path
+        Path to the label raster. May differ in CRS, resolution and extent.
+    resampling : Resampling
+        Resampling method used to warp the labels onto the image grid.
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray, dict[str, Any], float | int | None]
+        Cropped image (bands, height, width), aligned labels (height, width),
+        image metadata updated to the cropped extent, and the label nodata value.
+
+    Raises
+    ------
+    ValueError
+        If the two rasters do not overlap.
+    """
+    with rst.open(img_path) as img_src, rst.open(label_path) as label_src:
+        meta = img_src.meta.copy()
+
+        if (
+            img_src.crs == label_src.crs
+            and img_src.transform == label_src.transform
+            and img_src.shape == label_src.shape
+        ):
+            return img_src.read(), label_src.read(indexes=1), meta, label_src.nodata
+
+        lbl_left, lbl_bottom, lbl_right, lbl_top = transform_bounds(
+            label_src.crs, img_src.crs, *label_src.bounds, densify_pts=21
+        )
+        left = max(img_src.bounds.left, lbl_left)
+        bottom = max(img_src.bounds.bottom, lbl_bottom)
+        right = min(img_src.bounds.right, lbl_right)
+        top = min(img_src.bounds.top, lbl_top)
+        if left >= right or bottom >= top:
+            raise ValueError(f'{img_path} and {label_path} do not overlap.')
+
+        win = rst.windows.from_bounds(left, bottom, right, top, transform=img_src.transform)
+        eps = 1e-6 # absorbs float error on shared edges
+        row_start = max(0, math.ceil(win.row_off - eps))
+        col_start = max(0, math.ceil(win.col_off - eps))
+        row_stop = min(img_src.height, math.floor(win.row_off + win.height + eps))
+        col_stop = min(img_src.width, math.floor(win.col_off + win.width + eps))
+        if row_stop <= row_start or col_stop <= col_start:
+            raise ValueError(f'{img_path} and {label_path} overlap by less than one image pixel.')
+        window = Window(col_start, row_start, col_stop - col_start, row_stop - row_start)
+
+        image = img_src.read(window=window)
+        transform = img_src.window_transform(window)
+
+        label_nodata = label_src.nodata
+        fill = label_nodata if label_nodata is not None else 0
+        labels = np.full((window.height, window.width), fill, dtype=label_src.dtypes[0])
+        reproject(
+            source=rst.band(label_src, 1),
+            destination=labels,
+            src_nodata=label_nodata,
+            dst_transform=transform,
+            dst_crs=img_src.crs,
+            dst_nodata=fill,
+            resampling=resampling,
+        )
+
+    meta.update({'height': window.height, 'width': window.width, 'transform': transform})
+    return image, labels, meta, label_nodata
 
 
 def generate_patches_from_files(
@@ -153,17 +245,21 @@ def generate_patches_from_files(
     frac_empty_patches: float = 0,
     show_progress: bool = True,
     log_skipped_patches: bool = False,
+    resampling: Resampling | str = Resampling.nearest,
 ) -> None:
     """
     Generate and save training and validation patches from image and label files.
+
+    The image and label rasters may differ in extent, resolution and CRS. The image
+    defines the output grid: it is cropped to the area covered by the labels, and the
+    labels are reprojected onto it using `resampling`.
 
     A non-overlapping grid of `patch_size` blocks is laid over the raster. A fraction
     of the blocks are reserved for validation and written grid-aligned (one patch per
     block) to `out_dir / 'val'`. The remaining blocks are used for training: each is
     sampled `n_random_offsets` times with a random pixel offset and written to
     `out_dir / 'train'`, skipping any offset patch that would overlap a validation
-    block. This mirrors the grid + random-offset sampling used by
-    `generate_train_val_patches`.
+    block.
 
     Parameters
     ----------
@@ -195,7 +291,15 @@ def generate_patches_from_files(
         Whether to display a progress bar while writing patches.
     log_skipped_patches : bool, default=False
         Whether to print info logs with patch index and skip reason.
+    resampling : Resampling | str, default=Resampling.nearest
+        Resampling method used to align the labels to the image grid, as a
+        `rasterio.enums.Resampling` member or its name (e.g. 'nearest', 'bilinear',
+        'mode'). Only used when the rasters do not already share a grid. Keep
+        'nearest' or 'mode' for categorical labels.
     """
+    if isinstance(resampling, str):
+        resampling = Resampling[resampling]
+
     out_dir = Path(out_dir)
     train_dir = out_dir / 'train'
     val_dir = out_dir / 'val'
@@ -204,11 +308,10 @@ def generate_patches_from_files(
 
     n_random_offsets += 1  # Ensure at least one patch per training block
 
-    with rst.open(img_path) as img_src, rst.open(label_path) as label_src:
-        image = img_src.read()
-        labels = label_src.read(indexes=1)
-        height, width = img_src.shape
-        meta = img_src.meta.copy()
+    image, labels, meta, label_nodata = _read_aligned_image_and_labels(
+        img_path, label_path, resampling
+    )
+    height, width = labels.shape
 
     blocks = [
         (r, c)
@@ -252,7 +355,9 @@ def generate_patches_from_files(
                     print(msg)
             return False
 
-        _write_patch(image, labels, s, index, img_stem, dest_dir, meta, patch_size)
+        _write_patch(
+            image, labels, s, index, img_stem, dest_dir, meta, patch_size, label_nodata
+        )
         return True
 
     n_val_written = 0
@@ -713,19 +818,16 @@ def generate_train_val_patches(
         with alive_bar(target_count, title='Training ', unit=' patches') as bar:
             for br, bc in train_block_list:
                 for _ in range(n_random_offsets):
-                    # Random offset within the block
                     offset_r = rng.randint(0, patch_size)
                     offset_c = rng.randint(0, patch_size)
 
                     r = br + offset_r
                     c = bc + offset_c
 
-                    # Check bounds
                     if r + patch_size > height or c + patch_size > width:
                         bar()
                         continue
 
-                    # Check if patch overlaps any validation block
                     if _overlaps_any_val(r, c, val_locations, patch_size):
                         bar()
                         continue
