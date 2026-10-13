@@ -145,6 +145,7 @@ dev_data
 notebooks/**
 !notebooks/regression.ipynb
 !notebooks/segmentation.ipynb
+!notebooks/patch_segmentation.ipynb
 *Zone.Identifier
 *.geojson
 *instructions.md
