@@ -328,6 +328,23 @@ class SamplePlotMixin:
         )
 
 
+def _bbox_to_tensor(bbox: BoundingBox) -> torch.Tensor:
+    """Tensor ``[minx, maxx, miny, maxy, mint, maxt]`` for a sample's ``"bounds"`` entry.
+
+    Lightning can't move frozen dataclasses such as ``BoundingBox`` between devices, so
+    samples carry their bounds as a tensor, with times as POSIX timestamps. float64 keeps
+    projected coordinates exact.
+    """
+
+    def _timestamp(t: Any) -> float:
+        return t.timestamp() if hasattr(t, "timestamp") else float(t)
+
+    return torch.tensor(
+        [bbox.minx, bbox.maxx, bbox.miny, bbox.maxy, _timestamp(bbox.mint), _timestamp(bbox.maxt)],
+        dtype=torch.float64,
+    )
+
+
 class CustomCacheRasterDataset(RasterDataset, SamplePlotMixin):
     """
     Implementing RasterDataset with customisable cache size, as it is hardcoded to 128 in torchgeo's RasterDataset.
@@ -404,7 +421,7 @@ class CustomCacheRasterDataset(RasterDataset, SamplePlotMixin):
         else:
             data = self._merge_or_stack(filepaths, geoslice, self.band_indexes)
 
-        sample = {"crs": self.crs, "bounds": query}
+        sample = {"crs": self.crs, "bounds": _bbox_to_tensor(query)}
 
         data = data.to(self.dtype)
 
@@ -838,7 +855,8 @@ class ClassificationRasterDataset(
         ] = concat_samples,
         transforms: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ) -> None:
-        super().__init__(dataset1, dataset2, collate_fn, transforms)
+        # Keyword arguments: torchgeo>=0.8 inserted `spatial_only` before `collate_fn`
+        super().__init__(dataset1, dataset2, collate_fn=collate_fn, transforms=transforms)
 
         # rename index columns resulting from merge, for more clarity
         if "filepath_1" in self.index.columns:

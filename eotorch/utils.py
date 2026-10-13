@@ -780,7 +780,7 @@ def torchgeo_bb_to_shapely(
     Parameters:
         bbox (list, tuple, or BoundingBox):
             The bounding box to convert.
-            - If a list: should be in the format [minx, maxx, miny, maxy] (torchgeo format)
+            - If a list or tensor: should be in the format [minx, maxx, miny, maxy] (torchgeo format)
             - If a tuple: should be in the format (minx, miny, maxx, maxy) (geopandas bounds format)
             - If a BoundingBox object: should have the attributes minx, maxx, miny, maxy.
             May contain more than 4 values (e.g. mint, maxt).
@@ -798,6 +798,10 @@ def torchgeo_bb_to_shapely(
 
     if isinstance(bbox_crs, str):
         bbox_crs = pyproj.CRS(bbox_crs)
+
+    # Sample bounds are tensors in the torchgeo list format
+    if hasattr(bbox, "tolist") and not isinstance(bbox, np.ndarray):
+        bbox = bbox.tolist()
 
     # Create a shapely polygon from the bbox coordinates
     if isinstance(bbox, (list, tuple, np.ndarray)):

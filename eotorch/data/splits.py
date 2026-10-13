@@ -161,15 +161,12 @@ def _build_split_datasets(
             else:
                 img_ds_new.paths = []
 
-            # Create new label dataset index based on intersection with new image dataset bounds
-            img_bounds = img_ds_new.bounds
-
             # For GeoPandas, we need to intersect with the image bounds
             if not label_ds_orig.index.empty:
-                # Create bounding box geometry for intersection
-                img_bbox_geom = box(
-                    img_bounds.minx, img_bounds.miny, img_bounds.maxx, img_bounds.maxy
-                )
+                # Create bounding box geometry for intersection.
+                # total_bounds is (minx, miny, maxx, maxy); GeoDataset.bounds is a tuple of
+                # slices in torchgeo>=0.8 and has no minx/maxx attributes.
+                img_bbox_geom = box(*img_ds_new.index.total_bounds)
 
                 # Find labels that intersect with the image bounds
                 label_intersections = label_ds_orig.index[
