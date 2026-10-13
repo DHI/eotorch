@@ -256,10 +256,10 @@ def generate_patches_from_files(
 
     A non-overlapping grid of `patch_size` blocks is laid over the raster. A fraction
     of the blocks are reserved for validation and written grid-aligned (one patch per
-    block) to `out_dir / 'val'`. The remaining blocks are used for training: each is
-    sampled `n_random_offsets` times with a random pixel offset and written to
-    `out_dir / 'train'`, skipping any offset patch that would overlap a validation
-    block.
+    block) to `out_dir / 'val'`. The remaining blocks are used for training: each
+    yields one grid-aligned patch plus `n_random_offsets` patches shifted by up to half
+    a patch, written to `out_dir / 'train'`, skipping any shifted patch that would
+    overlap a validation block or fall outside the raster.
 
     Parameters
     ----------
@@ -275,8 +275,9 @@ def generate_patches_from_files(
     val_fraction : float, default=0.2
         Fraction of grid blocks reserved for validation.
     n_random_offsets : int, default=2
-        Number of randomly offset patches to generate per training block.
-        Setting to 0 will generate one patch per training block (grid-aligned).
+        Number of randomly offset patches to generate per training block, in addition
+        to its grid-aligned patch. Setting to 0 will generate one grid-aligned patch
+        per training block.
     random_seed : int, default=42
         Seed for reproducibility of the validation block selection and random offsets.
     empty_img_threshold : float | None, default=0.5
@@ -306,8 +307,6 @@ def generate_patches_from_files(
     train_dir.mkdir(parents=True, exist_ok=True)
     val_dir.mkdir(parents=True, exist_ok=True)
 
-    n_random_offsets += 1  # Ensure at least one patch per training block
-
     image, labels, meta, label_nodata = _read_aligned_image_and_labels(
         img_path, label_path, resampling
     )
@@ -330,7 +329,7 @@ def generate_patches_from_files(
     train_block_list = [b for b in blocks if b not in val_locations]
 
     def _skip_and_write(r: int, c: int, index: int, dest_dir: Path) -> bool:
-        if r + patch_size > height or c + patch_size > width:
+        if r < 0 or c < 0 or r + patch_size > height or c + patch_size > width:
             return False
 
         s = (slice(r, r + patch_size), slice(c, c + patch_size))
@@ -367,16 +366,14 @@ def generate_patches_from_files(
             n_val_written += 1
 
     n_train_written = 0
-    candidates = [(br, bc) for br, bc in train_block_list for _ in range(n_random_offsets)]
+    candidates = [
+        (br + offset_r, bc + offset_c)
+        for br, bc in train_block_list
+        for offset_r, offset_c in _training_offsets(rng, n_random_offsets, patch_size)
+    ]
     train_iterator = tqdm(candidates, desc='Training') if show_progress else candidates
 
-    for br, bc in train_iterator:
-        offset_r = rng.randint(0, patch_size)
-        offset_c = rng.randint(0, patch_size)
-
-        r = br + offset_r
-        c = bc + offset_c
-
+    for r, c in train_iterator:
         if _overlaps_any_val(r, c, val_locations, patch_size):
             continue
 
@@ -458,7 +455,9 @@ def get_feature_overlapping_blocks(
     features_union: shapely.Geometry,
     patch_size: int,
 ) -> list[tuple[int, int]]:
-    """Return block origins on a non-overlapping grid that intersect a geometry.
+    """Return block origins on a non-overlapping grid that overlap a geometry.
+
+    Blocks that only touch the geometry along an edge or corner are excluded.
 
     Parameters
     ----------
@@ -478,19 +477,90 @@ def get_feature_overlapping_blocks(
         height, width = src.height, src.width
         tf = src.transform
 
-    x_res, y_res = tf.a, abs(tf.e)
-
-    def block_box(r, c):
-        west = tf.c + c * x_res
-        north = tf.f - r * y_res
-        return shapely_box(west, north - patch_size * y_res, west + patch_size * x_res, north)
-
     blocks = []
     for r in range(0, height - patch_size + 1, patch_size):
         for c in range(0, width - patch_size + 1, patch_size):
-            if features_union.intersects(block_box(r, c)):
+            block = _patch_box(tf, r, c, patch_size)
+            # Blocks that only share an edge with a feature contain none of it
+            if features_union.intersects(block) and not features_union.touches(block):
                 blocks.append((r, c))
     return blocks
+
+
+def _patch_box(tf: rst.Affine, r: int, c: int, patch_size: int) -> shapely.Geometry:
+    """Return the footprint of the patch at pixel (r, c) as a box in raster CRS coordinates."""
+    x_res, y_res = tf.a, abs(tf.e)
+    west = tf.c + c * x_res
+    north = tf.f - r * y_res
+    return shapely_box(west, north - patch_size * y_res, west + patch_size * x_res, north)
+
+
+_MAX_OFFSET_ATTEMPTS = 20
+
+
+def _sample_offset_patch(
+    rng: random.Random,
+    br: int,
+    bc: int,
+    patch_size: int,
+    block_features: shapely.Geometry,
+    tf: rst.Affine,
+    height: int,
+    width: int,
+    val_locations: set[tuple[int, int]],
+    min_feature_coverage: float,
+) -> tuple[int, int] | None:
+    """Draw a random offset patch for the block at (br, bc) that keeps its features in view.
+
+    Offsets of at most half a patch in each direction are drawn until the patch lies
+    inside the raster, doesn't overlap a validation block, intersects `block_features`
+    and contains at least `min_feature_coverage` of their area.
+
+    Returns
+    -------
+    tuple[int, int] | None
+        Patch origin (row, col), or None if no offset qualified within
+        `_MAX_OFFSET_ATTEMPTS` draws.
+    """
+    half = patch_size // 2
+    feature_area = block_features.area
+
+    for _ in range(_MAX_OFFSET_ATTEMPTS):
+        r = br + rng.randint(-half, half)
+        c = bc + rng.randint(-half, half)
+
+        if r < 0 or c < 0 or r + patch_size > height or c + patch_size > width:
+            continue
+        if _overlaps_any_val(r, c, val_locations, patch_size):
+            continue
+
+        patch_box = _patch_box(tf, r, c, patch_size)
+        if not block_features.intersects(patch_box):
+            continue
+        covered = block_features.intersection(patch_box).area
+        if feature_area > 0 and covered < min_feature_coverage * feature_area * (1 - 1e-9):
+            continue
+
+        return r, c
+
+    return None
+
+
+def _training_offsets(
+    rng: random.Random,
+    n_random_offsets: int,
+    patch_size: int,
+) -> list[tuple[int, int]]:
+    """Pixel offsets (row, col) of the training patches sampled from one block.
+
+    The first offset is always (0, 0), i.e. the grid-aligned block itself, followed by
+    `n_random_offsets` random offsets of at most half a patch in each direction, so
+    every patch still covers part of the block it was sampled from.
+    """
+    half = patch_size // 2
+    return [(0, 0)] + [
+        (rng.randint(-half, half), rng.randint(-half, half)) for _ in range(n_random_offsets)
+    ]
 
 
 def _overlaps_any_val(
@@ -722,12 +792,20 @@ def generate_train_val_patches(
     limits: dict[int, tuple[float, float]] | tuple[float, float] | None = None,
     label_sources: str | Path | list[str | Path] | gpd.GeoDataFrame | list[gpd.GeoDataFrame] | None = None,
     class_map: dict[str, int] | None = None,
+    min_feature_coverage: float = 0.5,
 ) -> None:
-    """Generate random training and validation image patches within feature regions.
+    """Generate training and validation image patches within feature regions.
 
-    Patches are randomly sampled from locations that intersect features. Validation
-    patches are grid-aligned (one per block). Training patches are randomly positioned
-    to ensure diversity while avoiding overlap with validation patches.
+    A non-overlapping grid of `patch_size` blocks is laid over the raster, keeping only
+    the blocks that intersect the features. A fraction of these blocks is reserved for
+    validation, with one grid-aligned patch per block. Each remaining block yields one
+    grid-aligned training patch plus up to `n_random_offsets` patches shifted by up to
+    half a patch, for diversity.
+
+    A shifted patch must stay inside the raster, must not overlap a validation block,
+    and must contain at least `min_feature_coverage` of the feature area inside its
+    block, so that small features aren't shifted out of view. Offsets are redrawn until
+    one qualifies, giving up after a fixed number of attempts.
 
     Parameters
     ----------
@@ -744,8 +822,9 @@ def generate_train_val_patches(
     val_fraction : float, optional
         Fraction of blocks reserved for validation.
     n_random_offsets : int, optional
-        Number of randomly offset patches to generate per training block.
-        Setting to 0 will generate one patch per block (grid-aligned).
+        Number of randomly offset patches to generate per training block, in addition
+        to its grid-aligned patch. Setting to 0 will generate one grid-aligned patch
+        per block.
     indexes : list[int], optional
         List of band indexes to read from the source raster. Defaults to [1, 2, 3, 4].
     random_seed : int, optional
@@ -760,13 +839,16 @@ def generate_train_val_patches(
     class_map : dict[str, int] | None, optional
         Mapping of class names to raster values (e.g., {'water': 1, 'land': 2}).
         Required if label_sources is provided.
+    min_feature_coverage : float, optional
+        Minimum fraction (0-1) of the feature area inside a training block that each of
+        its shifted patches must contain. 1 keeps all of it in view; 0 only requires the
+        patch to touch the features. Line or point features, which have no area, only
+        need to intersect the patch. Defaults to 0.5.
     """
     train_patch_dir = Path(train_patch_dir)
     val_patch_dir = Path(val_patch_dir)
     train_patch_dir.mkdir(parents=True, exist_ok=True)
     val_patch_dir.mkdir(parents=True, exist_ok=True)
-
-    n_random_offsets += 1  # Ensure at least one patch per training block
 
     with rst.open(src_path) as src:
         crs = src.crs
@@ -780,6 +862,7 @@ def generate_train_val_patches(
     if isinstance(feature_shps[0], (shapely.Geometry, gpd.GeoSeries)):
         features = feature_shps
     features_union = shapely.unary_union(features)
+    shapely.prepare(features_union)  # speeds up the many intersects() checks below
 
     geoms_by_class = None
     if label_sources is not None and class_map is not None:
@@ -803,7 +886,7 @@ def generate_train_val_patches(
 
         print(f'Train blocks: {len(train_block_list)},  Val blocks: {len(val_locations)}')
 
-        target_count = len(train_block_list) * n_random_offsets  # Target number of training patches to generate
+        target_count = len(train_block_list) * (n_random_offsets + 1)  # Target number of training patches to generate
 
         val_written = 0
         with alive_bar(len(val_locations), title='Validation', unit=' patches') as bar:
@@ -817,26 +900,27 @@ def generate_train_val_patches(
         train_written = 0
         with alive_bar(target_count, title='Training ', unit=' patches') as bar:
             for br, bc in train_block_list:
+                block_features = features_union.intersection(_patch_box(src.transform, br, bc, patch_size))
+
+                locations = [(br, bc)]  # grid-aligned patch
                 for _ in range(n_random_offsets):
-                    offset_r = rng.randint(0, patch_size)
-                    offset_c = rng.randint(0, patch_size)
+                    location = _sample_offset_patch(
+                        rng, br, bc, patch_size, block_features, src.transform,
+                        height, width, val_locations, min_feature_coverage,
+                    )
+                    if location is not None:
+                        locations.append(location)
 
-                    r = br + offset_r
-                    c = bc + offset_c
-
-                    if r + patch_size > height or c + patch_size > width:
-                        bar()
-                        continue
-
-                    if _overlaps_any_val(r, c, val_locations, patch_size):
-                        bar()
-                        continue
-
+                for r, c in locations:
                     img_path = train_patch_dir / f'train_{train_written:05d}_image.tiff'
                     lbl_path = train_patch_dir / f'train_{train_written:05d}_label.tiff' if geoms_by_class else None
                     if _write_image_label_patch(src, r, c, patch_size, img_path, lbl_path, geoms_by_class, limits, indexes=indexes):
                         train_written += 1
                     bar()
+
+                n_unplaced = n_random_offsets + 1 - len(locations)
+                if n_unplaced:
+                    bar(n_unplaced)
 
     print(f'Done — {train_written} training patches, {val_written} validation patches.')
 
