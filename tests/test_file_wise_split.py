@@ -1,14 +1,27 @@
 from pathlib import Path
 
+import pandas as pd
 import pytest
+import torch
 from torchgeo.datasets import RasterDataset
 
 from eotorch.data.geodatasets import (
-    LabelledRasterDataset,
-    PlottabeLabelDataset,
+    ClassificationRasterDataset,
+    PlottableClassificationDataset,
     PlottableImageDataset,
 )
 from eotorch.data.splits import file_wise_split
+
+
+# Subclasses, so the class attributes don't leak into other test modules
+class ImageDataset(PlottableImageDataset):
+    filename_glob = "image_*.tif"
+    all_bands = ["red", "green", "blue"]
+    rgb_bands = ["red", "green", "blue"]
+
+
+class LabelDataset(PlottableClassificationDataset):
+    filename_glob = "label_*.tif"
 
 
 @pytest.fixture(scope="module")
@@ -44,19 +57,13 @@ def test_split_raster_dataset_ratios(dataset_files):
 
 
 def test_split_intersection_dataset_ratios(dataset_files):
-    PlottableImageDataset.filename_glob = "image_*.tif"
-    PlottableImageDataset.all_bands = ["red", "green", "blue"]
-    PlottableImageDataset.rgb_bands = ["red", "green", "blue"]
-
-    PlottabeLabelDataset.filename_glob = "label_*.tif"
-
     data_dir = dataset_files[0][0].parent
 
-    img_ds = PlottableImageDataset(paths=str(data_dir))
-    lbl_ds = PlottabeLabelDataset(paths=str(data_dir))
+    img_ds = ImageDataset(paths=str(data_dir))
+    lbl_ds = LabelDataset(paths=str(data_dir))
 
-    # Create LabelledRasterDataset
-    ds = LabelledRasterDataset(img_ds, lbl_ds)
+    # Create ClassificationRasterDataset
+    ds = ClassificationRasterDataset(img_ds, lbl_ds)
 
     # This is expected to fail before the fix
     splits = file_wise_split(ds, ratios_or_counts=[0.5, 0.5])
@@ -98,3 +105,46 @@ def test_split_explicit_files(dataset_files):
 
     # Check train (remainder)
     assert len(splits[0]) == 2
+
+
+def test_split_intersection_dataset_explicit_files(dataset_files):
+    data_dir = dataset_files[0][0].parent
+    img_ds = ImageDataset(paths=str(data_dir))
+    lbl_ds = LabelDataset(paths=str(data_dir))
+    ds = ClassificationRasterDataset(img_ds, lbl_ds)
+
+    val_file = Path(dataset_files[0][0]).resolve()
+    train_ds, val_ds = file_wise_split(ds, val_img_files=[str(val_file)])
+
+    assert [Path(p).resolve() for p in val_ds.datasets[0].paths] == [val_file]
+    assert val_file not in [Path(p).resolve() for p in train_ds.datasets[0].paths]
+    assert len(train_ds.datasets[0].paths) == 3
+
+    # The split datasets keep a temporal index, so samplers and indexing work
+    for split in (train_ds, val_ds):
+        assert isinstance(split.index.index, pd.IntervalIndex)
+        sample = split[split.bounds]
+        assert "image" in sample and "mask" in sample
+
+
+def test_intersection_dataset_keeps_transforms_and_temporal_index(dataset_files):
+    data_dir = dataset_files[0][0].parent
+
+    def transforms(sample):
+        sample["transformed"] = True
+        return sample
+
+    ds = ClassificationRasterDataset(
+        ImageDataset(paths=str(data_dir)),
+        LabelDataset(paths=str(data_dir)),
+        transforms=transforms,
+    )
+
+    assert ds.transforms is transforms
+    assert isinstance(ds.index.index, pd.IntervalIndex)
+
+    sample = ds[ds.bounds]
+    assert sample["transformed"]
+    # Bounds are a tensor so Lightning can move samples between devices
+    assert isinstance(sample["bounds"], torch.Tensor)
+    assert sample["bounds"].dtype == torch.float64

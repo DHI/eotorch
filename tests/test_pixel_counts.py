@@ -7,8 +7,8 @@ import pytest
 from torchgeo.datasets.utils import BoundingBox
 
 from eotorch.data.geodatasets import (
-    LabelledRasterDataset,
-    PlottabeLabelDataset,
+    ClassificationRasterDataset,
+    PlottableClassificationDataset,
     PlottableImageDataset,
     get_segmentation_dataset,
 )
@@ -28,8 +28,8 @@ def sparse_raster_path(test_data_dir):
 
 @pytest.fixture
 def label_dataset(sparse_raster_path):
-    """Create a PlottabeLabelDataset for testing."""
-    dataset = PlottabeLabelDataset(
+    """Create a PlottableClassificationDataset for testing."""
+    dataset = PlottableClassificationDataset(
         paths=sparse_raster_path, cache_size=1, reduce_zero_label=False
     )
     # Set nodata_value to None to avoid filtering out class 0
@@ -45,15 +45,15 @@ def image_dataset(sparse_raster_path):
 
 @pytest.fixture
 def labelled_dataset(sparse_raster_path):
-    """Create a LabelledRasterDataset for testing."""
+    """Create a ClassificationRasterDataset for testing."""
     # Use the same file for both image and labels for simplicity
     image_ds = PlottableImageDataset(paths=sparse_raster_path, cache_size=1)
-    label_ds = PlottabeLabelDataset(
+    label_ds = PlottableClassificationDataset(
         paths=sparse_raster_path, cache_size=1, reduce_zero_label=False
     )
     # Set nodata_value to None to avoid filtering out class 0
     label_ds.nodata_value = None
-    return LabelledRasterDataset(image_ds, label_ds)
+    return ClassificationRasterDataset(image_ds, label_ds)
 
 
 def test_label_dataset_temporal_bounds_structure(label_dataset):
@@ -141,13 +141,13 @@ def test_no_datetime_comparison_error(label_dataset, labelled_dataset):
     """Test that the specific pandas datetime comparison error is fixed."""
     import pandas.errors
 
-    # Test PlottabeLabelDataset.get_pixel_counts()
+    # Test PlottableClassificationDataset.get_pixel_counts()
     try:
         label_dataset.get_pixel_counts()
     except pandas.errors.InvalidComparison as e:
         pytest.fail(f"get_pixel_counts still raises InvalidComparison error: {e}")
 
-    # Test LabelledRasterDataset.get_label_pixel_counts()
+    # Test ClassificationRasterDataset.get_label_pixel_counts()
     try:
         labelled_dataset.get_label_pixel_counts()
     except pandas.errors.InvalidComparison as e:
@@ -282,7 +282,7 @@ def test_labelled_dataset_actual_pixel_counts(labelled_dataset):
 def test_pixel_counts_with_reduce_zero_label(sparse_raster_path):
     """Test pixel counts with reduce_zero_label=True option."""
     # Create dataset with reduce_zero_label=True
-    label_dataset = PlottabeLabelDataset(
+    label_dataset = PlottableClassificationDataset(
         paths=sparse_raster_path, cache_size=1, reduce_zero_label=True
     )
     # Set nodata_value to None to avoid filtering out any classes
@@ -363,7 +363,7 @@ def test_pixel_counts_edge_cases(sparse_raster_path):
 
     # Test with different cache sizes
     for cache_size in [1, 5, 20]:
-        label_dataset = PlottabeLabelDataset(
+        label_dataset = PlottableClassificationDataset(
             paths=sparse_raster_path, cache_size=cache_size, reduce_zero_label=False
         )
         # Set nodata_value to None to avoid filtering out class 0
@@ -388,7 +388,7 @@ def test_pixel_counts_edge_cases(sparse_raster_path):
         7: "class_7",
     }
 
-    label_dataset_with_mapping = PlottabeLabelDataset(
+    label_dataset_with_mapping = PlottableClassificationDataset(
         paths=sparse_raster_path, cache_size=1, reduce_zero_label=False
     )
     # Set nodata_value to None to avoid filtering out class 0
