@@ -3,7 +3,7 @@ import os
 import random
 from glob import glob
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import geopandas as gpd
 import numpy as np
@@ -846,6 +846,7 @@ def compute_patch_stats(
     image_suffix: str = 'image',
     nodata: float | None = 0.0,
     show_progress: bool = True,
+    transform: Callable[..., Any] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Compute per-band mean and standard deviation across a set of patch rasters.
 
@@ -860,12 +861,17 @@ def compute_patch_stats(
     image_suffix : str, optional
         Suffix identifying image patches, matched as ``*_{image_suffix}.tiff``.
     nodata : float | None, optional
-        Pixel value to exclude from the statistics. Patches written by
-        :func:`generate_train_val_patches` are zero-padded outside valid data
-        (via ``band_scaling``), so this defaults to ``0.0``. Pass None to
-        include every pixel.
+        Raw pixel value to exclude from the statistics, checked before
+        `transform` is applied. Defaults to ``0.0``. Pass None to include every
+        pixel.
     show_progress : bool, optional
         Whether to display a progress bar while scanning patches.
+    transform : Callable | None, optional
+        Transform applied to each patch before accumulating, called as
+        ``transform(image=arr)`` and returning a dict with an ``'image'`` key or
+        an array, e.g. an :class:`eotorch.transforms.BandScaling` instance, so the
+        statistics describe the scaled values a following
+        :class:`eotorch.transforms.Normalize` will see. Defaults to None.
 
     Returns
     -------
@@ -891,11 +897,18 @@ def compute_patch_stats(
     iterator = tqdm(patch_paths, desc='Computing patch stats') if show_progress else patch_paths
     for path in iterator:
         with rst.open(path) as src:
-            arr = src.read().astype(np.float64)
+            raw = src.read()
+
+        if transform is None:
+            arr = raw.astype(np.float64)
+        else:
+            result = transform(image=raw)
+            result = result['image'] if isinstance(result, dict) else result
+            arr = np.asarray(result, dtype=np.float64)
 
         for b in range(n_bands):
             band = arr[b]
-            valid = band[band != nodata] if nodata is not None else band.ravel()
+            valid = band[raw[b] != nodata] if nodata is not None else band.ravel()
             total_sum[b] += valid.sum()
             total_sumsq[b] += np.square(valid).sum()
             total_count[b] += valid.size
