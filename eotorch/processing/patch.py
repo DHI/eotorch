@@ -1,3 +1,4 @@
+from curses import meta
 import math
 import os
 import random
@@ -65,9 +66,12 @@ def _should_skip_patch(
     """
     def _dice_roll(prob: float) -> bool:
         return ~(np.random.random(1) <= prob)[0]
+
+    patch = image[:, *slice_obj]
+    nodata = meta['nodata']
         
     # Skip if all nodata or all zeros
-    if (image[:, *slice_obj] == meta['nodata']).all() or (image[:, *slice_obj] == 0).all():
+    if (patch == nodata).all() or (patch == 0).all():
         return True, 'all_nodata_or_zero'
     
     if value_threshold is not None:
@@ -75,8 +79,8 @@ def _should_skip_patch(
             if _dice_roll(frac_empty_patches):
                 return True, f'all_labels_leq_value_threshold({value_threshold})'
     
-    if empty_img_threshold is not None:
-        img_empty_ratio = ((image[:, *slice_obj] == meta['nodata']).all(axis=0).sum() / patch_size**2)
+    if empty_img_threshold is not None and nodata is not None:
+        img_empty_ratio = (patch == nodata).all(axis=0).sum() / patch_size**2
         if img_empty_ratio > empty_img_threshold:
             return True, (
                 f'img_empty_ratio({img_empty_ratio:.4f})>'
