@@ -1,4 +1,3 @@
-from curses import meta
 import math
 import os
 import random
