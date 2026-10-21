@@ -81,6 +81,113 @@ def blend_weight_2d(patch_size: int, min_weight: float = 1e-3) -> np.ndarray:
     return np.outer(taper, taper).astype(np.float32)
 
 
+class BlendAccumulator:
+    """Streaming weighted overlap-add of patch predictions into an open raster.
+
+    Instead of holding a full-raster accumulator, the output is split into
+    horizontal row chunks of height `chunk_height` that are created lazily when
+    a patch first touches them. Once a patch no longer overlaps a buffered chunk,
+    that chunk is normalized and written to `dest`, then freed. This is exact as
+    long as patches arrive in monotonic row order (top-down, as with
+    `patch_generator`, or bottom-up, as with torchgeo's GridGeoSampler); a patch
+    touching an already-written chunk raises a RuntimeError instead of silently
+    producing a wrong result. Memory scales with raster width x
+    (patch_size + 2 * chunk_height), not with the full raster size.
+
+    Parameters
+    ----------
+    dest : rasterio DatasetWriter
+        Open output raster to write normalized chunks to.
+    num_bands : int
+        Number of output bands.
+    patch_size : int
+        Side length of the (square) predicted patches.
+    chunk_height : int
+        Height in rows of each buffered chunk.
+    dtype : str
+        Output data type that normalized chunks are cast to.
+    nodata_value : int | float
+        Value written where no patch contributed any weight.
+    """
+
+    def __init__(
+        self,
+        dest,
+        num_bands: int,
+        patch_size: int,
+        chunk_height: int,
+        dtype: str,
+        nodata_value,
+    ):
+        self.dest = dest
+        self.num_bands = num_bands
+        self.patch_size = patch_size
+        self.chunk_height = max(1, int(chunk_height))
+        self.dtype = dtype
+        self.nodata_value = nodata_value
+        self.height, self.width = dest.height, dest.width
+        self.weight_2d = blend_weight_2d(patch_size)
+        self._chunks: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+        self._flushed: set[int] = set()
+
+    def _chunk_rows(self, idx: int) -> tuple[int, int]:
+        start = idx * self.chunk_height
+        return start, min(start + self.chunk_height, self.height)
+
+    def add(self, pred: np.ndarray, window: Window):
+        """Add one patch prediction (bands x patch x patch, or patch x patch)."""
+        patch_pred = pred if pred.ndim == 3 else pred[None]
+        row_off, col_off = int(window.row_off), int(window.col_off)
+        row_end = min(row_off + self.patch_size, self.height)
+        first, last = row_off // self.chunk_height, (row_end - 1) // self.chunk_height
+        touched = range(first, last + 1)
+        if any(idx in self._flushed for idx in touched):
+            raise RuntimeError(
+                "blend=True requires the data_and_window_generator to yield windows "
+                "in monotonic row order (top-down or bottom-up), but a window at "
+                f"row offset {row_off} touches rows that have already been written. "
+                "Use blend=False for generators with a different ordering."
+            )
+        weighted = patch_pred * self.weight_2d
+        col_end = col_off + self.patch_size
+        for idx in touched:
+            if idx not in self._chunks:
+                start, stop = self._chunk_rows(idx)
+                self._chunks[idx] = (
+                    np.zeros((self.num_bands, stop - start, self.width), dtype=np.float32),
+                    np.zeros((stop - start, self.width), dtype=np.float32),
+                )
+            accum, weight_accum = self._chunks[idx]
+            start, stop = self._chunk_rows(idx)
+            lo, hi = max(row_off, start), min(row_end, stop)
+            accum[:, lo - start:hi - start, col_off:col_end] += weighted[:, lo - row_off:hi - row_off]
+            weight_accum[lo - start:hi - start, col_off:col_end] += self.weight_2d[lo - row_off:hi - row_off]
+
+    def _flush(self, idx: int):
+        accum, weight_accum = self._chunks.pop(idx)
+        blended = np.divide(
+            accum,
+            weight_accum[None],
+            out=np.full_like(accum, self.nodata_value, dtype=np.float32),
+            where=weight_accum[None] > 0,
+        ).astype(self.dtype)
+        start, stop = self._chunk_rows(idx)
+        self.dest.write(blended, window=Window(0, start, self.width, stop - start))
+        self._flushed.add(idx)
+
+    def flush_except(self, row_lo: int, row_hi: int):
+        """Write out every buffered chunk not overlapping rows [row_lo, row_hi)."""
+        for idx in list(self._chunks):
+            start, stop = self._chunk_rows(idx)
+            if stop <= row_lo or start >= row_hi:
+                self._flush(idx)
+
+    def flush_all(self):
+        """Write out every remaining buffered chunk."""
+        for idx in list(self._chunks):
+            self._flush(idx)
+
+
 def buffered_to_unbuffered(
     window: Window,
     buffer: int,

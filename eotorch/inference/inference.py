@@ -100,10 +100,12 @@ def predict_on_tif_generic(
         at the boundary between them, typically from each patch's own
         zero-padded convolution edges biasing its border predictions. Only
         meaningful for continuous outputs (e.g. class probabilities, not hard
-        class indices). Accumulates the entire output raster in memory
-        (float32, `num_bands` x height x width) rather than streaming it to
-        disk window-by-window, so consider the raster's size before enabling
-        this for very large rasters. Defaults to False.
+        class indices). Blended rows are streamed to disk as soon as no further
+        patch can touch them (see `inference_utils.BlendAccumulator`), so memory
+        scales with the raster's width x patch_size rather than its full size.
+        Requires `data_and_window_generator` to yield windows in monotonic row
+        order (top-down or bottom-up), as both built-in generators do; otherwise
+        a RuntimeError is raised. Defaults to False.
     compress : str | None, optional
         GDAL compression method for the output TIF (e.g. "deflate", "lzw", "zstd").
         `tif_file_path`'s own compression, if any, is not otherwise reflected in the
@@ -187,27 +189,22 @@ def predict_on_tif_generic(
         )
 
     any_predictions_written = False
+    interrupted = False
 
-    if blend:
-        height, width = meta["height"], meta["width"]
-        weight_2d = iu.blend_weight_2d(patch_size)
-        accum = np.zeros((num_bands, height, width), dtype=np.float32)
-        weight_accum = np.zeros((height, width), dtype=np.float32)
-
-    def _write_blended(dest):
-        blended = np.divide(
-            accum,
-            weight_accum[None, :, :],
-            out=np.full_like(accum, nodata_value, dtype=np.float32),
-            where=weight_accum[None, :, :] > 0,
-        ).astype(dtype)
-        if blended.shape[0] == 1:
-            dest.write_band(1, blended[0])
-        else:
-            dest.write(blended)
-
-    try:
-        with rst.open(out_file_path, "w", **meta) as dest:
+    with rst.open(out_file_path, "w", **meta) as dest:
+        blend_acc = (
+            iu.BlendAccumulator(
+                dest,
+                num_bands=num_bands,
+                patch_size=patch_size,
+                chunk_height=patch_size // overlap,
+                dtype=dtype,
+                nodata_value=nodata_value,
+            )
+            if blend
+            else None
+        )
+        try:
             for batch, windows in (
                 alive_it(
                     data_and_window_generator,
@@ -230,12 +227,9 @@ def predict_on_tif_generic(
                     class_pred = pred[i]
 
                     if blend:
-                        row_off, col_off = int(window.row_off), int(window.col_off)
-                        patch_pred = class_pred if class_pred.ndim == 3 else class_pred[None]
-                        accum[:, row_off:row_off + patch_size, col_off:col_off + patch_size] += (
-                            patch_pred * weight_2d
-                        )
-                        weight_accum[row_off:row_off + patch_size, col_off:col_off + patch_size] += weight_2d
+                        blend_acc.add(class_pred, window)
+                        row_off = int(window.row_off)
+                        blend_acc.flush_except(row_off, row_off + patch_size)
                     else:
                         unbuffered_window = iu.buffered_to_unbuffered(
                             window,
@@ -253,13 +247,14 @@ def predict_on_tif_generic(
                     if not any_predictions_written:
                         any_predictions_written = True
 
-            if blend and any_predictions_written:
-                _write_blended(dest)
+        except KeyboardInterrupt:
+            interrupted = True
 
-    except KeyboardInterrupt:
-        if blend and any_predictions_written:
-            with rst.open(out_file_path, "w", **meta) as dest:
-                _write_blended(dest)
+        if blend:
+            # On interrupt this also writes the partially-blended rows still in memory.
+            blend_acc.flush_all()
+
+    if interrupted:
         if show_results and any_predictions_written:
             print(
                 "Inference interrupted. Showing predictions that have been generated so far."
