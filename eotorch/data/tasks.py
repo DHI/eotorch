@@ -18,6 +18,7 @@ from torchmetrics import Accuracy, F1Score, JaccardIndex, MetricCollection
 from torchmetrics.wrappers import ClasswiseWrapper
 from torchvision.models._api import WeightsEnum
 
+from eotorch.data.datamodules import normalize_image
 from eotorch.models import MODEL_MAPPING
 from eotorch.models.loss import segmentation_loss
 from eotorch.utils import get_init_args
@@ -95,6 +96,10 @@ class _TaskMixin:
 
     #: Number of output channels of the model
     num_outputs: int
+    #: Preprocessing of input images during training, set by predict_on_tif_file
+    input_bands: list[int] | None = None
+    input_mean: list[float] | None = None
+    input_std: list[float] | None = None
 
     def configure_models(self) -> None:
         self.model = create_model(
@@ -169,10 +174,25 @@ class _TaskMixin:
             )
             plt.close()
 
-    def _to_tensor(self, batch: Tensor | np.ndarray) -> Tensor:
+    def _prepare_input(self, batch: Tensor | np.ndarray) -> Tensor:
+        """Select and normalize the bands of raw images, as done during training."""
         if isinstance(batch, np.ndarray):
             batch = array_to_tensor(batch)
-        return batch.float().to(self.device)
+        batch = batch.float().to(self.device)
+        if self.input_bands is not None:
+            batch = batch[:, self.input_bands]
+        if self.input_mean is not None:
+            batch = normalize_image(batch, self.input_mean, self.input_std)
+        return batch
+
+    def _set_input_preprocessing(self, datamodule_params: dict[str, Any]) -> None:
+        dataset_args = datamodule_params.get("dataset_args", {})
+        all_bands = list(dataset_args.get("all_image_bands") or [])
+        bands = list(dataset_args.get("bands_to_return") or [])
+        if all_bands and bands and bands != all_bands:
+            self.input_bands = [all_bands.index(band) for band in bands]
+        self.input_mean = datamodule_params.get("mean")
+        self.input_std = datamodule_params.get("std")
 
     def _inference_settings(self, dataset_args: dict[str, Any]) -> dict[str, Any]:
         """Keyword arguments for predict_on_tif_generic, given the saved dataset args."""
@@ -193,6 +213,9 @@ class _TaskMixin:
     ) -> Path:
         """
         Use a trained model to predict on a TIF file, patch by patch.
+
+        The bands of the file are selected and normalized as during training, based on
+        the data module parameters saved in the checkpoint.
 
         Args:
             tif_file_path: Path to the input TIF file.
@@ -222,6 +245,7 @@ class _TaskMixin:
                 "No patch_size found in the checkpoint, please provide it as an argument."
             )
 
+        module._set_input_preprocessing(datamodule_params)
         settings = module._inference_settings(datamodule_params.get("dataset_args", {}))
         return predict_on_tif_generic(
             tif_file_path=tif_file_path,
@@ -412,7 +436,7 @@ class SegmentationTask(_TaskMixin, SemanticSegmentation):
     @torch.inference_mode()
     def predict_probabilities(self, batch: Tensor | np.ndarray) -> Tensor:
         """Class probabilities (B, C, H, W) for a batch of images."""
-        y_hat = self(self._to_tensor(batch))
+        y_hat = self(self._prepare_input(batch))
         if self.hparams["task"] == "multiclass":
             return y_hat.softmax(dim=1)
         return y_hat.sigmoid()
@@ -551,7 +575,7 @@ class RegressionTask(_TaskMixin, PixelwiseRegression):
     @torch.inference_mode()
     def predict_value(self, batch: Tensor | np.ndarray) -> np.ndarray:
         """Predicted values (B, num_outputs, H, W) for a batch of images."""
-        return self(self._to_tensor(batch)).float().cpu().numpy()
+        return self(self._prepare_input(batch)).float().cpu().numpy()
 
     def _inference_settings(self, dataset_args: dict[str, Any]) -> dict[str, Any]:
         nodata = self.hparams["nodata_value"]

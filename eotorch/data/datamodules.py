@@ -1,6 +1,8 @@
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+import torch
 from torch import Tensor
 from torch.utils.data import DataLoader
 from torchgeo import samplers
@@ -17,6 +19,15 @@ from eotorch.data.geodatasets import (
 )
 from eotorch.data.samplers import FileSampler
 from eotorch.data.splits import file_wise_split
+
+
+def normalize_image(
+    image: Tensor, mean: Sequence[float], std: Sequence[float]
+) -> Tensor:
+    """Normalize each band of a batch of images (B, C, H, W)."""
+    mean = torch.as_tensor(mean, dtype=torch.float32, device=image.device)
+    std = torch.as_tensor(std, dtype=torch.float32, device=image.device)
+    return (image.float() - mean.view(-1, 1, 1)) / std.view(-1, 1, 1)
 
 
 def get_dataset_args(ds):
@@ -82,6 +93,8 @@ class RasterDataModule(GeoDataModule):
         pin_memory: bool = False,
         drop_last: bool = False,
         train_sampler_config: dict[str, Any] = None,
+        mean: Sequence[float] | None = None,
+        std: Sequence[float] | None = None,
     ):
         """
         Initialize the RasterDataModule.
@@ -111,6 +124,12 @@ class RasterDataModule(GeoDataModule):
                 Any sampler from torchgeo.samplers can be used here. The sampler will be initialized with the following parameters.
                 Example of some other sampler configurations:
                 train_sampler_config = {"type": "RandomPatchSampler", "length": length}
+            mean: Mean of each image band. If given together with std, images are
+                normalized on the fly as (image - mean) / std, which is also applied when
+                predicting with the trained model. See
+                eotorch.processing.normalize.band_statistics. For scaling from a range
+                (low, high) to (0, 1), use mean=low and std=high - low.
+            std: Standard deviation of each image band.
         """
         self.file_sampling = patch_size is None
         if self.file_sampling:
@@ -133,7 +152,10 @@ class RasterDataModule(GeoDataModule):
         self.persistent_workers = persistent_workers
         self.pin_memory = pin_memory
         self.drop_last = drop_last
-        self.aug = None
+        # Plain floats, to be saved in the checkpoint
+        mean = None if mean is None else [float(m) for m in mean]
+        std = None if std is None else [float(s) for s in std]
+        self.mean, self.std = mean, std
 
         def _format_dict_for_yaml(d: dict):
             out_dict = {}
@@ -162,6 +184,8 @@ class RasterDataModule(GeoDataModule):
                     "pin_memory": pin_memory,
                     "drop_last": drop_last,
                     "train_sampler_config": train_sampler_config,
+                    "mean": self.mean,
+                    "std": self.std,
                 }
             )
 
@@ -439,26 +463,7 @@ If this is not desired, please provide a val_dataset to the data module.
     def on_after_batch_transfer(
         self, batch: dict[str, Tensor], dataloader_idx: int
     ) -> dict[str, Tensor]:
-        """Apply batch augmentations to the batch after it is transferred to the device.
-
-        Args:
-            batch: A batch of data that needs to be altered or augmented.
-            dataloader_idx: The index of the dataloader to which the batch belongs.
-
-        Returns:
-            A batch of data.
-        """
-        # if self.trainer:
-        #     if self.trainer.training:
-        #         split = "train"
-        #     elif self.trainer.validating or self.trainer.sanity_checking:
-        #         split = "val"
-        #     elif self.trainer.testing:
-        #         split = "test"
-        #     elif self.trainer.predicting:
-        #         split = "predict"
-
-        #     aug = self._valid_attribute(f"{split}_aug", "aug")
-        #     batch = aug(batch)
-
+        """Normalize the images after they are transferred to the device."""
+        if self.mean is not None:
+            batch["image"] = normalize_image(batch["image"], self.mean, self.std)
         return batch

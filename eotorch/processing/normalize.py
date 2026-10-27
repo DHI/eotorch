@@ -505,3 +505,43 @@ def zscore_normalize(
     logger.info(f"Z-score normalization complete. Files saved to {out_dir}")
 
     return {"mean": means, "std": stds}
+
+
+def band_statistics(dataset, nodata: float | None = 0) -> tuple[list[float], list[float]]:
+    """
+    Computes the mean and standard deviation of each band over all image files of a dataset.
+
+    Pass the results to RasterDataModule(mean=..., std=...) to normalize the images on the
+    fly. Compute them on the training data only, so no information leaks from the
+    validation data.
+
+    Parameters:
+        dataset (RasterDataset | IntersectionDataset):
+            Dataset as created by eotorch.data.get_segmentation_dataset or
+            get_regression_dataset. Only its selected bands are used.
+        nodata (float | None):
+            Pixels where all bands have this value are ignored. Defaults to 0.
+
+    Returns:
+        tuple[list[float], list[float]]:
+            Mean and standard deviation of each band.
+    """
+    from torchgeo.datasets import IntersectionDataset
+
+    if isinstance(dataset, IntersectionDataset):
+        dataset = dataset.datasets[0]
+
+    total, total_sq, count = 0.0, 0.0, 0
+    for path in dataset.index.filepath.unique():
+        with rst.open(path) as src:
+            data = src.read(dataset.band_indexes).reshape(-1, src.width * src.height)
+        if nodata is not None:
+            data = data[:, ~(data == nodata).all(axis=0)]
+        data = data.astype("float64")
+        total += data.sum(axis=1)
+        total_sq += (data**2).sum(axis=1)
+        count += data.shape[1]
+
+    mean = total / count
+    std = np.sqrt(total_sq / count - mean**2)
+    return mean.tolist(), std.tolist()
