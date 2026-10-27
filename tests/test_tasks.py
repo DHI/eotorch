@@ -234,3 +234,8 @@ def test_lr_scheduler_config():
         config["lr_scheduler"]["scheduler"], torch.optim.lr_scheduler.CosineAnnealingLR
     )
     assert config["lr_scheduler"]["monitor"] == "val/mIoU"
+
+
+def test_eotorch_models_have_no_imagenet_weights():
+    with pytest.raises(ValueError, match="No pretrained weights"):
+        SegmentationTask(num_classes=3, in_channels=3, weights=True)

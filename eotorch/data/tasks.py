@@ -63,6 +63,8 @@ def create_model(
         net = model_cls(
             in_channels=in_channels, num_classes=out_channels, **model_kwargs
         )
+        if weights is True:
+            raise ValueError(f"No pretrained weights available for model {model}.")
         if weights:
             if isinstance(weights, (str, Path)):
                 weights = torch.load(weights, weights_only=True)
