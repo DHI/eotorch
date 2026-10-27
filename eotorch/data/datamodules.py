@@ -15,6 +15,7 @@ from eotorch.data.geodatasets import (
     PlottableClassificationDataset,
     PlottableImageDataset,
 )
+from eotorch.data.samplers import FileSampler
 from eotorch.data.splits import file_wise_split
 
 
@@ -75,7 +76,7 @@ class RasterDataModule(GeoDataModule):
         test_dataset: type[GeoDataset] | RasterDataset | IntersectionDataset = None,
         predict_dataset: type[GeoDataset] | RasterDataset | IntersectionDataset = None,
         batch_size: int = 1,
-        patch_size: int | tuple[int, int] = 64,
+        patch_size: int | tuple[int, int] | None = 64,
         num_workers: int = 0,
         persistent_workers: bool = False,
         pin_memory: bool = False,
@@ -90,7 +91,10 @@ class RasterDataModule(GeoDataModule):
             val_dataset: The validation dataset (optional).
             test_dataset: The test dataset (optional).
             batch_size: The batch size for data loading.
-            patch_size: The size of the patches to be extracted from the images.
+            patch_size: The size of the patches to be extracted from the images. Set to
+                None if the datasets are already split into patches, one per file (e.g.
+                with eotorch.processing.generate_patches_from_files). Each file is then
+                one sample, and the train_sampler_config is not used.
             num_workers: The number of worker processes for data loading.
             persistent_workers: Whether to use persistent workers for data loading.
             pin_memory: Whether to pin memory for data loading.
@@ -108,6 +112,11 @@ class RasterDataModule(GeoDataModule):
                 Example of some other sampler configurations:
                 train_sampler_config = {"type": "RandomPatchSampler", "length": length}
         """
+        self.file_sampling = patch_size is None
+        if self.file_sampling:
+            _, ymin, _, ymax = FileSampler(train_dataset).bounds[0]
+            patch_size = round((ymax - ymin) / train_dataset.res[1])
+
         super().__init__(
             dataset_class=train_dataset.__class__,
             batch_size=batch_size,
@@ -182,12 +191,12 @@ If this is not desired, please provide a val_dataset to the data module.
                     """
                     )
 
-            self.val_sampler = samplers.GriddedPatchSampler(
-                self.val_dataset, size=self.patch_size
-            )
+            self.val_sampler = self._eval_sampler(self.val_dataset)
 
         if stage in ["fit"]:
-            if self.train_sampler_config is None:
+            if self.file_sampling:
+                self.train_sampler = FileSampler(self.train_dataset, shuffle=True)
+            elif self.train_sampler_config is None:
                 self.train_sampler = samplers.GriddedPatchSampler(
                     self.train_dataset, size=self.patch_size, stride=self.patch_size / 2
                 )
@@ -208,13 +217,18 @@ If this is not desired, please provide a val_dataset to the data module.
                     )
 
         if stage in ["test"]:
-            self.test_sampler = samplers.GriddedPatchSampler(
-                self.test_dataset, size=self.patch_size
-            )
+            self.test_sampler = self._eval_sampler(self.test_dataset)
         if stage in ["predict"]:
-            self.predict_sampler = samplers.GriddedPatchSampler(
-                self.predict_dataset, size=self.patch_size, stride=self.patch_size / 2
+            self.predict_sampler = self._eval_sampler(
+                self.predict_dataset, stride=self.patch_size / 2
             )
+
+    def _eval_sampler(self, dataset: GeoDataset, stride: float | None = None):
+        if self.file_sampling:
+            return FileSampler(dataset)
+        return samplers.GriddedPatchSampler(
+            dataset, size=self.patch_size, stride=stride
+        )
 
     def preview_data_sampling(
         self,
