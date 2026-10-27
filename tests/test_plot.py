@@ -113,3 +113,35 @@ def test_plot_numpy_array_empty_array():
     assert legend is not None, "Legend should be present even with empty data"
 
     plt.close(fig)
+
+
+def test_plot_samples_with_patches_as_large_as_the_files(monkeypatch):
+    from pathlib import Path
+
+    from eotorch.data import get_segmentation_dataset
+    from eotorch.data.geodatasets import (
+        PlottableClassificationDataset,
+        PlottableImageDataset,
+    )
+
+    for cls in (PlottableImageDataset, PlottableClassificationDataset):
+        for k in cls._class_config:
+            if hasattr(cls, k):
+                monkeypatch.setattr(cls, k, getattr(cls, k))
+
+    data = Path(__file__).parent / "data"
+    ds = get_segmentation_dataset(
+        images_dir=data,
+        labels_dir=data,
+        image_glob="image_*.tif",
+        label_glob="label_*.tif",
+        all_image_bands=("red", "green", "blue"),
+    )
+    shown = []
+    monkeypatch.setattr(plt, "show", lambda: shown.append(plt.gcf()))
+
+    # The test files are 100 x 100 pixels
+    ds.plot_samples(n=2, patch_size=100, show_filepaths=True)
+
+    assert len(shown) == 2
+    plt.close("all")

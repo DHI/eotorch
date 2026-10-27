@@ -639,21 +639,20 @@ def plot_samples(
     show_filepaths: bool = False,
     dataset_type: str = 'classification',
 ):
-    from torch.utils.data import DataLoader
-    from torchgeo.datasets import stack_samples, unbind_samples
-    from torchgeo.samplers import RandomPatchSampler
-
     assert hasattr(dataset, "plot"), "Dataset must have a plot method"
-    sampler = RandomPatchSampler(dataset, size=patch_size)
-    dataloader = DataLoader(
-        dataset, sampler=sampler, collate_fn=stack_samples, batch_size=1
-    )
-    _iterator = iter(dataloader)
+    # Sample a random patch from a random file. TorchGeo's RandomPatchSampler samples
+    # from the combined area of all files shrunk by half a patch, which leaves nothing
+    # to sample from files that are about the size of a patch.
+    rng = np.random.default_rng()
+    width, height = patch_size * dataset.res[0], patch_size * dataset.res[1]
     samples = []
     for _ in range(100):
         try:
-            batch = next(_iterator)
-            sample = unbind_samples(batch)[0]
+            row = rng.integers(len(dataset.index))
+            xmin, ymin, xmax, ymax = dataset.index.geometry.iloc[row].bounds
+            x = rng.uniform(xmin, max(xmin, xmax - width))
+            y = rng.uniform(ymin, max(ymin, ymax - height))
+            sample = dataset[x : x + width, y : y + height]
             if dataset_type == 'classification':
                 if (
                     (("image" in sample) and (sample["image"] == 0).all())
@@ -670,8 +669,8 @@ def plot_samples(
             samples.append(sample)
             if len(samples) == n:
                 break
-        except StopIteration:
-            break
+        except IndexError:
+            continue
 
     if not samples:
         print("No valid samples found.")
