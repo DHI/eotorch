@@ -1,3 +1,4 @@
+import tempfile
 from pathlib import Path
 from typing import Callable, Generator
 
@@ -26,15 +27,16 @@ def predict_on_tif_generic(
     dtype: str = "uint8",
     count: int = 1,
     nodata: float | None = 0,
+    postprocess: Callable[[np.ndarray], np.ndarray] | None = None,
+    blend: bool = False,
 ) -> Path:
     """
-    Predict segmentation classes on a TIF file using a custom prediction function.
+    Predict on a TIF file patch by patch, using a custom prediction function.
     Also allows for a custom data_and_window_generator to be passed in, which can be used
     to generate patches and windows for the input data. This is useful for cases where
     the input data is not a simple TIF file, or when you want to use a custom patching strategy.
     The function will use the provided data_and_window_generator to generate batches of data and windows,
     and then apply the prediction function to each batch. The results will be written to a new TIF file.
-    By default,
 
     Parameters
     ----------
@@ -42,7 +44,7 @@ def predict_on_tif_generic(
         Path to the input TIF file.
     prediction_func : Callable
         Accepts the input image batch supplied by the data_and_window_generator
-        and returns a NumPy array of shape (batch_size, patch_size, patch_size, num_classes).
+        and returns a NumPy array or tensor of shape (batch_size, [bands,] patch_size, patch_size).
     data_and_window_generator : Generator
         A generator that yields batches of data and their corresponding windows.
         The generator should yield tuples of the form (batch, windows), where
@@ -67,9 +69,17 @@ def predict_on_tif_generic(
     dtype : str
         Data type of the output TIF file.
     count : int
-        Number of bands of the output TIF file, i.e. of each prediction.
+        Number of bands of the output TIF file.
     nodata : float, optional
         Nodata value of the output TIF file.
+    postprocess : Callable, optional
+        Converts predictions of shape ([bands,] height, width) before they are written,
+        e.g. class probabilities to class indices.
+    blend : bool
+        If True, overlapping patch predictions are averaged, weighted towards the center
+        of each patch, instead of only keeping the center of each patch. This avoids
+        visible seams between patches. The predictions must be continuous values, such
+        as class probabilities, which can be converted with postprocess.
 
 
     Returns
@@ -83,7 +93,7 @@ def predict_on_tif_generic(
         meta = src_in.meta.copy()
         old_no_data = meta["nodata"]
 
-    meta.update({"dtype": dtype, "count": count, "nodata": nodata})
+    meta.update({"driver": "GTiff", "dtype": dtype, "count": count, "nodata": nodata})
     batch_size = batch_size if func_supports_batching else 1
 
     if out_file_path is None:
@@ -109,14 +119,31 @@ def predict_on_tif_generic(
             data_window_only=data_window_only,
         )
 
+    def _write(dest, values: np.ndarray, window, covered: np.ndarray | None = None):
+        if postprocess is not None:
+            values = postprocess(values)
+        values = values.reshape(count, *values.shape[-2:])
+        if covered is not None and nodata is not None:
+            values[:, ~covered] = nodata
+        dest.write(values, window=window)
+
     if data_and_window_generator is None:
         data_and_window_generator = iu.patch_generator(
             tif_file_path, patch_size, overlap, batch_size
         )
 
     any_predictions_written = False
-    try:
-        with rst.open(out_file_path, "w", **meta) as dest:
+    interrupted = False
+    with (
+        rst.open(out_file_path, "w", **meta) as dest,
+        tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir,
+    ):
+        blender = (
+            iu.PatchBlender(tmp_dir, meta["height"], meta["width"], patch_size)
+            if blend
+            else None
+        )
+        try:
             for batch, windows in (
                 alive_it(
                     data_and_window_generator,
@@ -131,12 +158,12 @@ def predict_on_tif_generic(
                 if (batch == old_no_data).all():
                     continue
 
-                pred = prediction_func(batch)
+                pred = iu.prediction_to_numpy(prediction_func(batch))
 
-                pred = iu.prediction_to_numpy(pred)
-
-                for i, window in enumerate(windows):
-                    class_pred = pred[i]
+                for patch_pred, window in zip(pred, windows):
+                    if blend:
+                        blender.add(patch_pred, window)
+                        continue
                     unbuffered_window = iu.buffered_to_unbuffered(
                         window,
                         buffer=int(patch_size * (1 / (2 * overlap))),
@@ -144,16 +171,22 @@ def predict_on_tif_generic(
                         img_width=meta["width"],
                     )
                     window_arr = iu.crop_np_to_window(
-                        class_pred, window, unbuffered_window
+                        patch_pred, window, unbuffered_window
                     )
-                    dest.write(
-                        window_arr.reshape(count, *window_arr.shape[-2:]),
-                        window=unbuffered_window,
-                    )
-                    if not any_predictions_written:
-                        any_predictions_written = True
+                    _write(dest, window_arr, unbuffered_window)
+                any_predictions_written = True
 
-    except KeyboardInterrupt:
+        except KeyboardInterrupt:
+            interrupted = True
+
+        if blend:
+            if any_predictions_written:
+                for window, values, covered in blender.chunks():
+                    _write(dest, values, window, covered)
+            # Release the memory-mapped files, so the temporary directory can be removed
+            del blender
+
+    if interrupted:
         if show_results and any_predictions_written:
             print(
                 "Inference interrupted. Showing predictions that have been generated so far."

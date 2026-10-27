@@ -101,6 +101,16 @@ def test_segmentation_fit_and_predict(tmp_path):
     # Trained with reduce_zero_label, so classes are shifted back to 1-4
     assert set(np.unique(pred)) <= {1, 2, 3, 4}
 
+    blended = SegmentationTask.predict_on_tif_file(
+        TEST_DATA / "image_0.tif",
+        checkpoint,
+        out_file_path=tmp_path / "blended.tif",
+        progress_bar=False,
+        blend=True,
+    )
+    with rst.open(blended) as src:
+        assert set(np.unique(src.read(1))) <= {1, 2, 3, 4}
+
 
 def test_regression_fit_and_predict(tmp_path):
     # Continuous labels derived from the class labels, with 0 as nodata

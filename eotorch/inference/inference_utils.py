@@ -1,10 +1,9 @@
 from pathlib import Path
-from typing import Any, Optional, Tuple, Union
+from typing import Any, Optional, Union
 
 import numpy as np
 import rasterio as rst
-from affine import Affine
-from rasterio.windows import Window, from_bounds
+from rasterio.windows import Window
 
 
 def prediction_to_numpy(pred: Any) -> np.ndarray:
@@ -44,6 +43,61 @@ def crop_np_to_window(arr: np.ndarray, w_buffered: Window, w_unbuffered: Window)
     bottom = top + int(round(w_unbuffered.height))
 
     return arr[..., top:bottom, left:right]
+
+
+def blend_weights(patch_size: int) -> np.ndarray:
+    """2D Hann window for blending overlapping patch predictions, highest at the center.
+
+    Predictions near the edges of a patch are less reliable, as the model sees less
+    context there. The minimum weight keeps pixels at the image border, which may be
+    covered by a single patch edge only, from getting no weight at all.
+    """
+    taper = np.clip(np.hanning(patch_size), 1e-3, None)
+    return np.outer(taper, taper).astype("float32")
+
+
+class PatchBlender:
+    """Weighted average of overlapping patch predictions.
+
+    The weighted sums are kept in memory-mapped files in a directory, so large rasters
+    don't have to fit in memory.
+    """
+
+    def __init__(self, directory: str | Path, height: int, width: int, patch_size: int):
+        self.directory = Path(directory)
+        self.shape = (height, width)
+        self.patch_weights = blend_weights(patch_size)
+        self.weights = np.lib.format.open_memmap(
+            self.directory / "weights.npy", mode="w+", dtype="float32", shape=self.shape
+        )
+        # Created for the first prediction, once the number of bands is known
+        self.sums = None
+
+    def add(self, prediction: np.ndarray, window: Window) -> None:
+        """Add the prediction ([bands,] height, width) of the patch at window."""
+        prediction = prediction.reshape(-1, *prediction.shape[-2:])
+        if self.sums is None:
+            self.sums = np.lib.format.open_memmap(
+                self.directory / "sums.npy",
+                mode="w+",
+                dtype="float32",
+                shape=(len(prediction), *self.shape),
+            )
+        row, col = int(window.row_off), int(window.col_off)
+        rows = slice(row, row + prediction.shape[-2])
+        cols = slice(col, col + prediction.shape[-1])
+        self.sums[:, rows, cols] += prediction * self.patch_weights
+        self.weights[rows, cols] += self.patch_weights
+
+    def chunks(self, chunk_height: int = 256):
+        """Yield the window, blended values and covered pixels for each chunk of rows."""
+        height, width = self.shape
+        for row in range(0, height, chunk_height):
+            rows = slice(row, min(row + chunk_height, height))
+            weights = np.array(self.weights[rows])
+            covered = weights > 0
+            values = self.sums[:, rows] / np.where(covered, weights, 1)
+            yield Window(0, row, width, rows.stop - row), values, covered
 
 
 def buffered_to_unbuffered(
@@ -102,134 +156,6 @@ def buffered_to_unbuffered(
         window_width = img_width - left
 
     return Window(left, top, window_width, window_height)
-
-
-def buffered_to_unbuffered_new(
-    window: Window, buffer: int, img_height: int, img_width: int, transform: Affine
-) -> Tuple[Window, Affine]:
-    """
-    Convert a buffered window to an unbuffered window by removing the buffer
-    from the window's boundaries. Ensures the unbuffered window stays within the
-    image dimensions and updates the transform accordingly.
-
-    Parameters
-    ----------
-        window: rasterio.windows.Window, buffered window
-        buffer: int, buffer size
-        img_height: int, height of the original image
-        img_width: int, width of the original image
-        transform: Affine, original transform of the image
-
-    Returns
-    ----------
-        Tuple[rasterio.windows.Window, Affine], unbuffered window and updated transform
-    """
-    top, left = window.row_off, window.col_off
-    window_height, window_width = window.height, window.width
-
-    if top > 0:  # Remove buffer from top if not the first row
-        top += buffer
-        window_height -= buffer
-    if left > 0:  # Remove buffer from left if not the first column
-        left += buffer
-        window_width -= buffer
-    if (
-        top + window_height < img_height
-    ):  # Remove buffer from bottom if not the last row
-        window_height = min(window_height, img_height - top)
-    if (
-        left + window_width < img_width
-    ):  # Remove buffer from right if not the last column
-        window_width = min(window_width, img_width - left)
-
-    # Ensure the window height and width do not become negative
-    window_height = max(0, window_height)
-    window_width = max(0, window_width)
-
-    # Update the transform for the new window
-    new_transform = transform * Affine.translation(
-        left - window.col_off, top - window.row_off
-    )
-
-    window = Window(left, top, window_width, window_height)
-
-    return window, new_transform
-
-
-def eotorch_patch_generator(
-    tif_file_path: str | Path,
-    checkpoint_path: str | Path,
-    batch_size: int = 8,
-):
-    """
-    Similar to the patch_generator function, but uses the exact same way of loading the image data
-    as we do during training with eotorch.
-
-    Yields batches of image data and their corresponding windows.
-    """
-    import torch
-
-    from eotorch.data import RasterDataModule
-    from eotorch.data.geodatasets import get_segmentation_dataset
-    from eotorch.data.tasks import SegmentationTask
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    lightning_module = SegmentationTask.load_from_checkpoint(
-        checkpoint_path,
-        map_location=device,
-    )
-    lightning_module.eval()
-    data_module_params = torch.load(
-        checkpoint_path, weights_only=False, map_location=device
-    ).get("datamodule_hyper_parameters")
-    if not data_module_params:
-        raise ValueError(
-            "No datamodule_hyper_parameters found in checkpoint. "
-            "Please provide a valid checkpoint with datamodule_hyper_parameters."
-        )
-    lightning_module.datamodule_params = data_module_params
-    dataset_args = data_module_params.get("dataset_args", {})
-
-    pred_ds = get_segmentation_dataset(
-        images_dir=tif_file_path,
-        all_image_bands=dataset_args.get("all_image_bands"),
-        rgb_bands=dataset_args.get("rgb_bands"),
-        crs=dataset_args.get("crs"),
-        res=dataset_args.get("res"),
-        reduce_zero_label=dataset_args.get("reduce_zero_label"),
-        class_mapping=dataset_args.get("class_mapping"),
-        cache_size=0,
-        # cache_size=1,
-        bands_to_return=dataset_args.get("bands_to_return"),
-    )
-    module = RasterDataModule(
-        # val_dataset=pred_ds,
-        predict_dataset=pred_ds,
-        patch_size=data_module_params.get("patch_size"),
-        batch_size=batch_size,
-    )
-    # module.setup(stage="validate")
-    module.setup(stage="predict")
-    # data_loader = module.val_dataloader()
-    data_loader = module.predict_dataloader()
-
-    with rst.open(tif_file_path) as src:
-        transform = src.transform
-
-    for batch in data_loader:
-        pixel_windows = [
-            from_bounds(
-                left=bounds[0],
-                bottom=bounds[2],
-                right=bounds[1],
-                top=bounds[3],
-                transform=transform,
-            )
-            for bounds in batch["bounds"]
-        ]
-        batch = module.transfer_batch_to_device(batch, device)
-        yield batch["image"], pixel_windows
-        # yield batch["image"].to(device), pixel_windows
 
 
 def patch_generator(

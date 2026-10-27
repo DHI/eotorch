@@ -227,7 +227,8 @@ class _TaskMixin:
             ax: Matplotlib Axes to plot on if show_results is True.
             progress_bar: If True, show a progress bar.
             **kwargs: Passed on to eotorch.inference.inference.predict_on_tif_generic,
-                e.g. class_mapping to override the one saved in the checkpoint.
+                e.g. blend=True to blend overlapping patch predictions, or class_mapping
+                to override the one saved in the checkpoint.
 
         Returns:
             The path to the produced TIF file, or the plot if show_results is True.
@@ -441,21 +442,31 @@ class SegmentationTask(_TaskMixin, SemanticSegmentation):
             return y_hat.softmax(dim=1)
         return y_hat.sigmoid()
 
+    def classes_from_probabilities(self, probs: np.ndarray) -> np.ndarray:
+        """Class indices (..., H, W) from probabilities (..., C, H, W).
+
+        For multilabel segmentation, one binary map (..., L, H, W) per label.
+        """
+        if self.hparams["task"] == "multiclass":
+            classes = probs.argmax(axis=-3)
+        else:
+            classes = probs > 0.5
+            if self.hparams["task"] == "binary":
+                classes = classes[..., 0, :, :]
+        classes = classes.astype("uint8")
+        return classes + 1 if self.reduce_zero_label else classes
+
     def predict_class(self, batch: Tensor | np.ndarray) -> np.ndarray:
         """Class indices (B, H, W) for a batch of images, or (B, L, H, W) for multilabel."""
-        probs = self.predict_probabilities(batch)
-        if self.hparams["task"] == "multiclass":
-            classes = probs.argmax(dim=1)
-        else:
-            classes = (probs > 0.5).squeeze(1)
-        classes = classes.to(torch.uint8).cpu().numpy()
-        return classes + 1 if self.reduce_zero_label else classes
+        probs = self.predict_probabilities(batch).cpu().numpy()
+        return self.classes_from_probabilities(probs)
 
     def _inference_settings(self, dataset_args: dict[str, Any]) -> dict[str, Any]:
         self.reduce_zero_label = dataset_args.get("reduce_zero_label", False)
         count = self.num_outputs if self.hparams["task"] == "multilabel" else 1
         return {
-            "prediction_func": self.predict_class,
+            "prediction_func": self.predict_probabilities,
+            "postprocess": self.classes_from_probabilities,
             "class_mapping": dataset_args.get("class_mapping"),
             "count": count,
         }
