@@ -37,7 +37,9 @@ class _FakeBackbone(nn.Module):
 
 @pytest.fixture
 def fake_transformers(monkeypatch):
-    auto_backbone = SimpleNamespace(from_pretrained=lambda *args, **kwargs: _FakeBackbone())
+    auto_backbone = SimpleNamespace(
+        from_pretrained=lambda *args, **kwargs: _FakeBackbone()
+    )
     monkeypatch.setitem(
         sys.modules, "transformers", SimpleNamespace(AutoBackbone=auto_backbone)
     )

@@ -43,7 +43,7 @@ def crop_np_to_window(arr: np.ndarray, w_buffered: Window, w_unbuffered: Window)
     right = left + int(round(w_unbuffered.width))
     bottom = top + int(round(w_unbuffered.height))
 
-    return arr[top:bottom, left:right]
+    return arr[..., top:bottom, left:right]
 
 
 def buffered_to_unbuffered(
@@ -169,12 +169,12 @@ def eotorch_patch_generator(
     """
     import torch
 
-    from eotorch.data import SegmentationDataModule
+    from eotorch.data import RasterDataModule
     from eotorch.data.geodatasets import get_segmentation_dataset
-    from eotorch.data.tasks import SemanticSegmentationTask
+    from eotorch.data.tasks import SegmentationTask
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    lightning_module = SemanticSegmentationTask.load_from_checkpoint(
+    lightning_module = SegmentationTask.load_from_checkpoint(
         checkpoint_path,
         map_location=device,
     )
@@ -202,7 +202,7 @@ def eotorch_patch_generator(
         # cache_size=1,
         bands_to_return=dataset_args.get("bands_to_return"),
     )
-    module = SegmentationDataModule(
+    module = RasterDataModule(
         # val_dataset=pred_ds,
         predict_dataset=pred_ds,
         patch_size=data_module_params.get("patch_size"),

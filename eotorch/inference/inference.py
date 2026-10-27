@@ -23,6 +23,9 @@ def predict_on_tif_generic(
     ax: plt.Axes = None,
     progress_bar: bool = True,
     overlap: int = 2,
+    dtype: str = "uint8",
+    count: int = 1,
+    nodata: float | None = 0,
 ) -> Path:
     """
     Predict segmentation classes on a TIF file using a custom prediction function.
@@ -61,6 +64,12 @@ def predict_on_tif_generic(
         If True, display the prediction output in a notebook environment.
     ax : plt.Axes, optional
         Matplotlib Axes object for plotting if show_results is True.
+    dtype : str
+        Data type of the output TIF file.
+    count : int
+        Number of bands of the output TIF file, i.e. of each prediction.
+    nodata : float, optional
+        Nodata value of the output TIF file.
 
 
     Returns
@@ -74,7 +83,7 @@ def predict_on_tif_generic(
         meta = src_in.meta.copy()
         old_no_data = meta["nodata"]
 
-    meta.update({"dtype": "uint8", "count": 1, "nodata": 0})
+    meta.update({"dtype": dtype, "count": count, "nodata": nodata})
     batch_size = batch_size if func_supports_batching else 1
 
     if out_file_path is None:
@@ -137,7 +146,10 @@ def predict_on_tif_generic(
                     window_arr = iu.crop_np_to_window(
                         class_pred, window, unbuffered_window
                     )
-                    dest.write_band(1, window_arr, window=unbuffered_window)
+                    dest.write(
+                        window_arr.reshape(count, *window_arr.shape[-2:]),
+                        window=unbuffered_window,
+                    )
                     if not any_predictions_written:
                         any_predictions_written = True
 

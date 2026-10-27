@@ -1,4 +1,4 @@
-"""Tests for SegmentationDataModule setup and data loading."""
+"""Tests for RasterDataModule setup and data loading."""
 
 from pathlib import Path
 
@@ -6,7 +6,7 @@ import pytest
 import torch
 from torchgeo.datasets import IntersectionDataset
 
-from eotorch.data.datamodules import SegmentationDataModule, get_dataset_args
+from eotorch.data.datamodules import RasterDataModule, get_dataset_args
 from eotorch.data.geodatasets import (
     ClassificationRasterDataset,
     PlottableClassificationDataset,
@@ -55,7 +55,7 @@ def segmentation_dataset(image_dataset, label_dataset):
 
 @pytest.fixture
 def datamodule(segmentation_dataset):
-    return SegmentationDataModule(
+    return RasterDataModule(
         train_dataset=segmentation_dataset,
         batch_size=2,
         patch_size=32,
@@ -73,7 +73,7 @@ def test_datamodule_setup_fit(datamodule):
 
 def test_datamodule_setup_with_val_dataset(segmentation_dataset):
     """When val_dataset is provided, no automatic split should happen."""
-    dm = SegmentationDataModule(
+    dm = RasterDataModule(
         train_dataset=segmentation_dataset,
         val_dataset=segmentation_dataset,
         batch_size=2,
@@ -104,7 +104,7 @@ def test_datamodule_val_dataloader(datamodule):
 
 
 def test_datamodule_predict_setup(image_dataset):
-    dm = SegmentationDataModule(
+    dm = RasterDataModule(
         predict_dataset=image_dataset,
         batch_size=4,
         patch_size=32,
@@ -118,7 +118,7 @@ def test_datamodule_predict_setup(image_dataset):
 
 
 def test_datamodule_custom_sampler(segmentation_dataset):
-    dm = SegmentationDataModule(
+    dm = RasterDataModule(
         train_dataset=segmentation_dataset,
         val_dataset=segmentation_dataset,
         batch_size=2,
@@ -134,7 +134,7 @@ def test_datamodule_custom_sampler(segmentation_dataset):
 
 
 def test_datamodule_invalid_sampler(segmentation_dataset):
-    dm = SegmentationDataModule(
+    dm = RasterDataModule(
         train_dataset=segmentation_dataset,
         val_dataset=segmentation_dataset,
         batch_size=2,

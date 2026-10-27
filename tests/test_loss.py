@@ -46,7 +46,9 @@ def test_multiclass_losses_backpropagate(name):
     assert torch.isfinite(logits.grad).all()
 
 
-@pytest.mark.parametrize("name", ["bce", "dice", "focal", "boundary", "boundary_distance"])
+@pytest.mark.parametrize(
+    "name", ["bce", "dice", "focal", "boundary", "boundary_distance"]
+)
 def test_binary_losses_accept_squeezed_logits(name):
     """Binary segmentation passes (B, H, W) logits and float targets, as TorchGeo does."""
     logits = torch.randn(2, 32, 32, requires_grad=True)
