@@ -10,12 +10,8 @@ from lightning import LightningModule
 from matplotlib import pyplot as plt
 from torchgeo.datasets import RGBBandsMissingError, unbind_samples
 from torchgeo.datasets.utils import array_to_tensor
-from torchgeo.trainers import (
-    RegressionTask as TorchGeoRegressionTask,
-)
-from torchgeo.trainers import (
-    SemanticSegmentationTask as TorchGeoSemanticSegmentationTask,
-)
+from torchgeo.tasks import Regression as TorchGeoRegressionTask
+from torchgeo.tasks import SemanticSegmentation as TorchGeoSemanticSegmentationTask
 from torchmetrics import MetricCollection
 from torchmetrics.classification import (
     MulticlassAccuracy,

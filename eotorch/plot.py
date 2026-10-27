@@ -205,7 +205,6 @@ def plot_samplers_on_map(
     samplers: list,
     map=None,
     max_samples: int = None,
-    max_files: int = None,
     colors: list = None,
     dataset_colors: list = None,
     dataset_names: list = None,
@@ -219,7 +218,6 @@ def plot_samplers_on_map(
         samplers: List of samplers to visualize (must match datasets length)
         map: Optional existing folium map to add to
         max_samples: Maximum number of samples to plot per dataset-sampler pair
-        max_files: Maximum number of files to include in visualization
         colors: List of colors for the samples from each dataset
         dataset_colors: List of colors for the dataset boundaries
         dataset_names: List of names to use for each dataset in the legend
@@ -235,7 +233,6 @@ def plot_samplers_on_map(
     from alive_progress import alive_it
     from torch.utils.data import DataLoader
     from torchgeo.datasets import stack_samples, unbind_samples
-    from torchgeo.samplers import BatchGeoSampler
 
     if colors is None:
         colors = ["red", "green", "blue", "purple", "orange", "cadetblue", "black"]
@@ -256,9 +253,6 @@ def plot_samplers_on_map(
 
     # Create a folium map if not provided
     map = map or folium.Map()
-
-    # Dictionary to track processed files to avoid duplicates
-    processed_files = {}
 
     # Dictionary to track label counts if requested, one dict per dataset
     label_counts_per_dataset = (
@@ -291,15 +285,8 @@ def plot_samplers_on_map(
     dataloaders = []
 
     for dataset, sampler in zip(datasets, samplers):
-        if isinstance(sampler, BatchGeoSampler):
-            batch_sampler = sampler
-            sampler = None
-        else:
-            batch_sampler = None
-
         dataloader = DataLoader(
             dataset,
-            batch_sampler=batch_sampler,
             sampler=sampler,
             collate_fn=stack_samples,
         )
@@ -391,17 +378,6 @@ def plot_samplers_on_map(
                             )
 
                 sample_count += 1
-
-                # Process mask files if needed for additional visualization (e.g., debugging)
-                # Limits the number of unique mask files processed across all samples/datasets
-                if max_files is not None and "mask_filepaths" in sample:
-                    for mask_path in sample["mask_filepaths"]:
-                        if (
-                            mask_path not in processed_files
-                            and len(processed_files) < max_files
-                        ):
-                            # Mark this file as processed to avoid duplicates
-                            processed_files[mask_path] = True
 
                 # Check if we've reached the maximum sample count for this dataset
                 if max_samples is not None and sample_count >= max_samples:
@@ -665,13 +641,10 @@ def plot_samples(
 ):
     from torch.utils.data import DataLoader
     from torchgeo.datasets import stack_samples, unbind_samples
-    from torchgeo.samplers import RandomGeoSampler
+    from torchgeo.samplers import RandomPatchSampler
 
     assert hasattr(dataset, "plot"), "Dataset must have a plot method"
-    sampler = RandomGeoSampler(
-        dataset,
-        size=patch_size,
-    )
+    sampler = RandomPatchSampler(dataset, size=patch_size)
     dataloader = DataLoader(
         dataset, sampler=sampler, collate_fn=stack_samples, batch_size=1
     )

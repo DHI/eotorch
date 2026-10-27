@@ -98,16 +98,16 @@ class SegmentationDataModule(GeoDataModule):
             drop_last: Whether to drop the last incomplete batch. This is useful when
                 using models with BatchNorm layers that fail with batch_size=1.
             train_sampler_config: The training sampler configuration (optional).
-                If None, a default sampler will be used. The default is a GridGeoSampler with the following parameters:
+                If None, a default sampler will be used. The default is a GriddedPatchSampler with the following parameters:
                 size=patch_size, stride=patch_size / 2.
                 The way to specify the default sampler would be:
-                train_sampler_config = {"type": "GridGeoSampler", "size": patch_size, "stride": patch_size / 2}
+                train_sampler_config = {"type": "GriddedPatchSampler", "stride": patch_size / 2}
 
                 Patch size does not need to be specified here, as it is already a parameter of the data module.
                 It will be passed to the sampler as the 'size' arg automatically.
                 Any sampler from torchgeo.samplers can be used here. The sampler will be initialized with the following parameters.
                 Example of some other sampler configurations:
-                train_sampler_config = {"type": "RandomGeoSampler", "length": length}
+                train_sampler_config = {"type": "RandomPatchSampler", "length": length}
         """
         super().__init__(
             dataset_class=train_dataset.__class__,
@@ -164,26 +164,6 @@ class SegmentationDataModule(GeoDataModule):
             stage: Either 'fit', 'validate', 'test', or 'predict'.
         """
 
-        if stage in ["fit"]:
-            if self.train_sampler_config is None:
-                self.train_sampler = samplers.GridGeoSampler(
-                    self.train_dataset, self.patch_size, self.patch_size / 2
-                )
-            else:
-                # Initialize the sampler based on the provided configuration
-                local_config = self.train_sampler_config.copy()
-                sampler_type = local_config.pop("type")
-                if hasattr(samplers, sampler_type):
-                    sampler_class = getattr(samplers, sampler_type)
-                    self.train_sampler = sampler_class(
-                        self.train_dataset,
-                        size=self.patch_size,
-                        **local_config,
-                    )
-                else:
-                    raise ValueError(
-                        f"Sampler type '{sampler_type}' not found in torchgeo.samplers."
-                    )
         if stage in ["fit", "validate"]:
             if self.val_dataset is None:
                 print("No val dataset provided. Performing default train / val split.")
@@ -203,15 +183,33 @@ If this is not desired, please provide a val_dataset to the data module.
                     """
                     )
 
-            self.val_sampler = samplers.GridGeoSampler(
-                self.val_dataset, self.patch_size, self.patch_size
-            )
+            self.val_sampler = samplers.GriddedPatchSampler(self.val_dataset, size=self.patch_size)
+
+        if stage in ["fit"]:
+            if self.train_sampler_config is None:
+                self.train_sampler = samplers.GriddedPatchSampler(
+                    self.train_dataset, size=self.patch_size, stride=self.patch_size / 2
+                )
+            else:
+                # Initialize the sampler based on the provided configuration
+                local_config = self.train_sampler_config.copy()
+                sampler_type = local_config.pop("type")
+                if hasattr(samplers, sampler_type):
+                    sampler_class = getattr(samplers, sampler_type)
+                    self.train_sampler = sampler_class(
+                        self.train_dataset,
+                        size=self.patch_size,
+                        **local_config,
+                    )
+                else:
+                    raise ValueError(
+                        f"Sampler type '{sampler_type}' not found in torchgeo.samplers."
+                    )
+
         if stage in ["test"]:
-            self.test_sampler = samplers.GridGeoSampler(
-                self.test_dataset, self.patch_size, self.patch_size
-            )
+            self.test_sampler = samplers.GriddedPatchSampler(self.test_dataset, size=self.patch_size)
         if stage in ["predict"]:
-            self.predict_sampler = samplers.GridGeoSampler(
+            self.predict_sampler = samplers.GriddedPatchSampler(
                 self.predict_dataset, size=self.patch_size, stride=self.patch_size / 2
             )
 
@@ -407,53 +405,19 @@ If this is not desired, please provide a val_dataset to the data module.
                 dataset or sampler, or if the dataset or sampler has length 0.
         """
         dataset = self._valid_attribute(f"{split}_dataset", "dataset")
-        sampler = self._valid_attribute(
-            f"{split}_batch_sampler", f"{split}_sampler", "batch_sampler", "sampler"
-        )
+        sampler = self._valid_attribute(f"{split}_sampler", "sampler")
         batch_size = self._valid_attribute(f"{split}_batch_size", "batch_size")
-
-        if isinstance(sampler, samplers.BatchGeoSampler):
-            batch_size = 1
-            batch_sampler = sampler
-            sampler = None
-        else:
-            batch_sampler = None
 
         return DataLoader(
             dataset=dataset,
             batch_size=batch_size,
             sampler=sampler,
-            batch_sampler=batch_sampler,
             num_workers=self.num_workers,
             collate_fn=self.collate_fn,
             persistent_workers=self.persistent_workers,
             pin_memory=self.pin_memory,
             drop_last=self.drop_last if split == "train" else False,
         )
-
-    def transfer_batch_to_device(
-        self, batch: dict[str, Tensor], device: torch.device, dataloader_idx: int = None
-    ) -> dict[str, Tensor]:
-        """Transfer batch to device.
-
-        Defines how custom data types are moved to the target device.
-
-        Args:
-            batch: A batch of data that needs to be transferred to a new device.
-            device: The target device as defined in PyTorch.
-            dataloader_idx: The index of the dataloader to which the batch belongs.
-
-        Returns:
-            A reference to the data on the new device.
-        """
-        # Non-Tensor values cannot be moved to a device
-
-        for key in {"image_filepaths", "mask_filepaths"}:
-            if key in batch:
-                del batch[key]
-
-        batch = super().transfer_batch_to_device(batch, device, dataloader_idx)
-        return batch
 
     def on_after_batch_transfer(
         self, batch: dict[str, Tensor], dataloader_idx: int
@@ -527,7 +491,7 @@ class RegressionDataModule(GeoDataModule):
             persistent_workers: Whether to use persistent workers for data loading.
             pin_memory: Whether to pin memory for data loading.
             train_sampler_config: The training sampler configuration (optional).
-                If None, a default sampler will be used. The default is a GridGeoSampler with the following parameters:
+                If None, a default sampler will be used. The default is a GriddedPatchSampler with the following parameters:
                 size=patch_size, stride=patch_size / 2.
                 Any sampler from torchgeo.samplers can be used here.
             **kwargs: Additional keyword arguments.
@@ -584,26 +548,6 @@ class RegressionDataModule(GeoDataModule):
         Args:
             stage: Either 'fit', 'validate', 'test', or 'predict'.
         """
-        if stage in ["fit"]:
-            if self.train_sampler_config is None:
-                self.train_sampler = samplers.GridGeoSampler(
-                    self.train_dataset, self.patch_size, self.patch_size / 2
-                )
-            else:
-                local_config = self.train_sampler_config.copy()
-                sampler_type = local_config.pop("type")
-                if hasattr(samplers, sampler_type):
-                    sampler_class = getattr(samplers, sampler_type)
-                    self.train_sampler = sampler_class(
-                        self.train_dataset,
-                        size=self.patch_size,
-                        **local_config,
-                    )
-                else:
-                    raise ValueError(
-                        f"Sampler type '{sampler_type}' not found in torchgeo.samplers."
-                    )
-
         if stage in ["fit", "validate"]:
             if self.val_dataset is None:
                 print("No val dataset provided. Performing default train / val split.")
@@ -622,17 +566,33 @@ class RegressionDataModule(GeoDataModule):
                         """
                     )
 
-            self.val_sampler = samplers.GridGeoSampler(
-                self.val_dataset, self.patch_size, self.patch_size
-            )
+            self.val_sampler = samplers.GriddedPatchSampler(self.val_dataset, size=self.patch_size)
+
+        if stage in ["fit"]:
+            if self.train_sampler_config is None:
+                self.train_sampler = samplers.GriddedPatchSampler(
+                    self.train_dataset, size=self.patch_size, stride=self.patch_size / 2
+                )
+            else:
+                local_config = self.train_sampler_config.copy()
+                sampler_type = local_config.pop("type")
+                if hasattr(samplers, sampler_type):
+                    sampler_class = getattr(samplers, sampler_type)
+                    self.train_sampler = sampler_class(
+                        self.train_dataset,
+                        size=self.patch_size,
+                        **local_config,
+                    )
+                else:
+                    raise ValueError(
+                        f"Sampler type '{sampler_type}' not found in torchgeo.samplers."
+                    )
 
         if stage in ["test"]:
-            self.test_sampler = samplers.GridGeoSampler(
-                self.test_dataset, self.patch_size, self.patch_size
-            )
+            self.test_sampler = samplers.GriddedPatchSampler(self.test_dataset, size=self.patch_size)
 
         if stage in ["predict"]:
-            self.predict_sampler = samplers.GridGeoSampler(
+            self.predict_sampler = samplers.GriddedPatchSampler(
                 self.predict_dataset, size=self.patch_size, stride=self.patch_size / 2
             )
 
@@ -703,48 +663,18 @@ class RegressionDataModule(GeoDataModule):
             A collection of data loaders specifying samples.
         """
         dataset = self._valid_attribute(f"{split}_dataset", "dataset")
-        sampler = self._valid_attribute(
-            f"{split}_batch_sampler", f"{split}_sampler", "batch_sampler", "sampler"
-        )
+        sampler = self._valid_attribute(f"{split}_sampler", "sampler")
         batch_size = self._valid_attribute(f"{split}_batch_size", "batch_size")
-
-        if isinstance(sampler, samplers.BatchGeoSampler):
-            batch_size = 1
-            batch_sampler = sampler
-            sampler = None
-        else:
-            batch_sampler = None
 
         return DataLoader(
             dataset=dataset,
             batch_size=batch_size,
             sampler=sampler,
-            batch_sampler=batch_sampler,
             num_workers=self.num_workers,
             collate_fn=self.collate_fn,
             persistent_workers=self.persistent_workers,
             pin_memory=self.pin_memory,
         )
-
-    def transfer_batch_to_device(
-        self, batch: dict[str, Tensor], device: torch.device, dataloader_idx: int = None
-    ) -> dict[str, Tensor]:
-        """Transfer batch to device.
-
-        Args:
-            batch: A batch of data that needs to be transferred to a new device.
-            device: The target device as defined in PyTorch.
-            dataloader_idx: The index of the dataloader to which the batch belongs.
-
-        Returns:
-            A reference to the data on the new device.
-        """
-        for key in {"image_filepaths", "mask_filepaths"}:
-            if key in batch:
-                del batch[key]
-
-        batch = super().transfer_batch_to_device(batch, device, dataloader_idx)
-        return batch
 
     def on_after_batch_transfer(
         self, batch: dict[str, Tensor], dataloader_idx: int

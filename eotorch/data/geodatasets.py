@@ -26,7 +26,6 @@ from torchgeo.datasets import (
     RasterDataset,
     concat_samples,
 )
-from torchgeo.datasets.utils import BoundingBox  # deprecated but still used internally
 
 from eotorch.bandindex import BAND_INDEX
 from eotorch.inference.inference_utils import prediction_to_numpy
@@ -380,33 +379,10 @@ class CustomCacheRasterDataset(RasterDataset, SamplePlotMixin):
         self.__dict__.update(state)
         self._init_cache()
 
-    def __getitem__(self, index) -> dict[str, Any]:
-        """Retrieve image/mask and metadata indexed by query.
-
-        Args:
-            index: spatiotemporal slice to index (GeoSlice)
-
-        Returns:
-            sample of image/mask and metadata at that index
-
-        Raises:
-            IndexError: if query is not found in the index
-        """
-        # Extract filepaths before delegating to super
-        x, y, t = self._disambiguate_slice(index)
-        interval = pd.Interval(t.start, t.stop)
-        df = self.index.iloc[self.index.index.overlaps(interval)]
-        df = df.cx[x.start : x.stop, y.start : y.stop]
-        filepaths = df.filepath.tolist()
-
-        sample = super().__getitem__(index)
-
-        if self.is_image:
-            sample["image_filepaths"] = filepaths
-        else:
-            sample["mask_filepaths"] = filepaths
-
-        return sample
+    def filepaths_at(self, bounds: Tensor) -> list[str]:
+        """Files spatially overlapping a sample's "bounds" tensor."""
+        xmin, xmax, _, ymin, ymax = bounds.tolist()[:5]
+        return self.index.cx[xmin:xmax, ymin:ymax].filepath.tolist()
 
     def _repr_html_(self):
         print(
@@ -537,7 +513,7 @@ class PlottableImageDataset(CustomCacheRasterDataset):
         image = sample["image"][rgb_indices]
 
         if show_filepaths := kwargs.pop("show_filepaths", False):
-            filepaths = sample["image_filepaths"]
+            filepaths = self.filepaths_at(sample["bounds"])
             formatted_paths = _format_filepaths(filepaths)
             ax.set_title(formatted_paths, fontsize=8, wrap=True)
 
@@ -595,7 +571,7 @@ class PlottableClassificationDataset(CustomCacheRasterDataset):
         if self.reduce_zero_label:
             vals += 1
         if show_filepaths := kwargs.pop("show_filepaths", False):
-            filepaths = sample["mask_filepaths"]
+            filepaths = self.filepaths_at(sample["bounds"])
             formatted_paths = _format_filepaths(filepaths)
             ax.set_title(formatted_paths, fontsize=8, wrap=True)
 
@@ -730,14 +706,10 @@ class PlottableRegressionDataset(CustomCacheRasterDataset):
     ) -> None:
         super().__init__(paths, crs, res, bands, transforms, cache_size)
 
-    def __getitem__(self, index) -> dict[str, Any]:
-        sample = super().__getitem__(index)
-        return sample
-
     def plot(self, sample, ax=None, **kwargs):
         vals = sample["mask"].numpy()
         if show_filepaths := kwargs.pop("show_filepaths", False):
-            filepaths = sample["mask_filepaths"]
+            filepaths = self.filepaths_at(sample["bounds"])
             formatted_paths = _format_filepaths(filepaths)
             ax.set_title(formatted_paths, fontsize=8, wrap=True)
 

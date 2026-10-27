@@ -124,7 +124,7 @@ def test_datamodule_custom_sampler(segmentation_dataset):
         batch_size=2,
         patch_size=32,
         num_workers=0,
-        train_sampler_config={"type": "RandomGeoSampler", "length": 10},
+        train_sampler_config={"type": "RandomPatchSampler", "length": 10},
     )
     dm.setup(stage="fit")
     loader = dm.train_dataloader()

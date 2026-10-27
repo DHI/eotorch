@@ -16,7 +16,6 @@ from pyproj import Geod
 from rasterio.windows import Window
 from shapely import MultiPolygon, Polygon
 from shapely.ops import transform
-from torchgeo.datasets.utils import BoundingBox
 
 
 class Region:

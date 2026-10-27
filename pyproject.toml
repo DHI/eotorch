@@ -23,7 +23,7 @@ dependencies = [
     "folium>=0.19.5",
     "geopandas>=1.0.1",
     "numpy>=1.26",
-    "torchgeo>=0.9.0",
+    "torchgeo>=0.10.1",
 ]
 
 authors = [
