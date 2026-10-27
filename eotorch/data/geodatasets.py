@@ -344,11 +344,41 @@ class CustomCacheRasterDataset(RasterDataset, SamplePlotMixin):
     ) -> None:
         super().__init__(paths, crs, res, bands, transforms, cache=cache_size > 0)
         self.cache_size = cache_size
-        self._cached_load_warp_file = functools.lru_cache(maxsize=cache_size)(
-            self._load_warp_file
-        )
+        self._init_cache()
         # In order to avoid spamming "Skipping source" Log Messages in Rasterio Merge
         logging.getLogger("rasterio").setLevel(logging.WARNING)
+
+    def _init_cache(self) -> None:
+        self._cached_load_warp_file = functools.lru_cache(maxsize=self.cache_size)(
+            self._load_warp_file
+        )
+
+    # Configured on the class by get_*_dataset, so they would revert to their defaults
+    # in a freshly spawned process unless pickled along with the instance.
+    _class_config = (
+        "filename_glob",
+        "filename_regex",
+        "date_format",
+        "all_bands",
+        "rgb_bands",
+        "separate_files",
+        "is_image",
+        "class_mapping",
+        "dataset_type",
+        "nodata_value",
+    )
+
+    def __getstate__(self) -> dict[str, Any]:
+        # DataLoader workers started with "spawn" (the only option on Windows) pickle the
+        # dataset. The per-instance lru_cache can't be pickled, so rebuild it afterwards.
+        state = {k: getattr(self, k) for k in self._class_config if hasattr(self, k)}
+        state.update(self.__dict__)
+        del state["_cached_load_warp_file"]
+        return state
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        self.__dict__.update(state)
+        self._init_cache()
 
     def __getitem__(self, index) -> dict[str, Any]:
         """Retrieve image/mask and metadata indexed by query.
