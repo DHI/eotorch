@@ -20,7 +20,7 @@ from torchmetrics.classification import (
 )
 from torchmetrics.wrappers import ClasswiseWrapper
 
-from eotorch.models import CLF_MODEL_MAPPING, REG_MODEL_MAPPING
+from eotorch.models import MODEL_MAPPING
 from eotorch.utils import get_init_args
 
 if TYPE_CHECKING:
@@ -108,8 +108,8 @@ class SemanticSegmentationTask(TorchGeoSemanticSegmentationTask):
         model: str = self.hparams["model"]
         weights = self.weights
 
-        if model.lower() in CLF_MODEL_MAPPING:
-            model_cls = CLF_MODEL_MAPPING[model]
+        if model.lower() in MODEL_MAPPING:
+            model_cls = MODEL_MAPPING[model]
 
             init_args = get_init_args(model_cls)
             for param in init_args:
@@ -652,8 +652,8 @@ class RegressionTask(TorchGeoRegressionTask):
         weights = self.weights
 
         # Model selection
-        if model.lower() in REG_MODEL_MAPPING:
-            model_cls = REG_MODEL_MAPPING[model]
+        if model.lower() in MODEL_MAPPING:
+            model_cls = MODEL_MAPPING[model]
 
             init_args = get_init_args(model_cls)
             for param in init_args:
@@ -959,8 +959,8 @@ class PatchSegmentationTask(LightningModule):
         model: str = self.hparams["model"]
         weights = self.weights
 
-        if model.lower() in CLF_MODEL_MAPPING:
-            model_cls = CLF_MODEL_MAPPING[model]
+        if model.lower() in MODEL_MAPPING:
+            model_cls = MODEL_MAPPING[model]
 
             init_args = get_init_args(model_cls)
             for param in init_args:
