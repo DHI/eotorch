@@ -1,11 +1,13 @@
 """Tests for generating patch files and training on them."""
 
+import pickle
 from pathlib import Path
 
 import lightning as L
 import numpy as np
 import pytest
 import rasterio as rst
+import torch
 from rasterio.warp import Resampling, calculate_default_transform, reproject
 
 from eotorch.data import RasterDataModule, SegmentationTask, get_segmentation_dataset
@@ -49,7 +51,7 @@ def patch_dir(tmp_path):
     return tmp_path
 
 
-def _patch_dataset(directory):
+def _patch_dataset(directory, **kwargs):
     return get_segmentation_dataset(
         images_dir=directory,
         labels_dir=directory,
@@ -57,6 +59,7 @@ def _patch_dataset(directory):
         label_glob="*_label.tif",
         all_image_bands=("red", "green", "blue"),
         cache_size=0,
+        **kwargs,
     )
 
 
@@ -138,6 +141,51 @@ def test_file_sampler_samples_each_image_file_once(patch_dir):
         assert dataset[index]["image"].shape == (3, PATCH_SIZE, PATCH_SIZE)
 
 
+def test_single_file_reads_return_only_the_matching_file(patch_dir):
+    images = sorted((patch_dir / "train").glob("*_image.tif"))
+    # Distinct values per file, so a merge with overlapping patches would show
+    for value, path in enumerate(images, start=1):
+        with rst.open(path, "r+") as dst:
+            dst.write(np.full((3, PATCH_SIZE, PATCH_SIZE), value, dtype=dst.dtypes[0]))
+
+    dataset = _patch_dataset(patch_dir / "train")
+    for ds in dataset.datasets:
+        ds.single_file_reads = True
+    dataset = pickle.loads(pickle.dumps(dataset))  # as in DataLoader workers
+
+    for value, path in enumerate(images, start=1):
+        b = _bounds(path)
+        sample = dataset[slice(b.left, b.right), slice(b.bottom, b.top)]
+        assert (sample["image"] == value).all()
+        with rst.open(str(path).replace("_image", "_label")) as src:
+            labels = torch.from_numpy(src.read(1).astype("int64")) - 1
+        torch.testing.assert_close(sample["mask"].long(), labels)
+
+
+@pytest.mark.parametrize("case", ["no_matching_file", "other_resolution"])
+def test_single_file_reads_fall_back_to_merging(patch_dir, case):
+    b = _bounds(next((patch_dir / "train").glob("*_image.tif")))
+    res = (b.right - b.left) / PATCH_SIZE
+    if case == "no_matching_file":
+        # Shifted by 3 pixels, so no file matches the query
+        query = slice(b.left + 3 * res, b.right + 3 * res), slice(b.bottom, b.top)
+        kwargs = {}
+    else:
+        # Matches a file, which needs resampling to the resolution of the dataset
+        query = slice(b.left, b.right), slice(b.bottom, b.top)
+        kwargs = {"res": 2 * res}
+
+    merged = _patch_dataset(patch_dir / "train", **kwargs)[query]
+    dataset = _patch_dataset(patch_dir / "train", **kwargs)
+    for ds in dataset.datasets:
+        ds.single_file_reads = True
+    sample = dataset[query]
+    torch.testing.assert_close(sample["image"], merged["image"])
+    torch.testing.assert_close(sample["mask"], merged["mask"])
+    if case == "other_resolution":
+        assert sample["image"].shape == (3, PATCH_SIZE // 2, PATCH_SIZE // 2)
+
+
 def test_train_and_predict_on_patches(patch_dir, tmp_path):
     datamodule = RasterDataModule(
         train_dataset=_patch_dataset(patch_dir / "train"),
@@ -146,6 +194,8 @@ def test_train_and_predict_on_patches(patch_dir, tmp_path):
         patch_size=None,
     )
     assert datamodule.hparams["patch_size"] == PATCH_SIZE
+    datamodule.setup("fit")
+    assert all(ds.single_file_reads for ds in datamodule.train_dataset.datasets)
 
     task = SegmentationTask(
         num_classes=4, in_channels=3, model="unet_lite", num_filters=4, ignore_index=-1

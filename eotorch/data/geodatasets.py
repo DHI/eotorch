@@ -26,6 +26,7 @@ from torchgeo.datasets import (
     RasterDataset,
     concat_samples,
 )
+from torchgeo.datasets.utils import GeoSlice, array_to_tensor
 
 from eotorch.bandindex import BAND_INDEX
 from eotorch.inference.inference_utils import prediction_to_numpy
@@ -343,6 +344,10 @@ class CustomCacheRasterDataset(RasterDataset, SamplePlotMixin):
     ) -> None:
         super().__init__(paths, crs, res, bands, transforms, cache=cache_size > 0)
         self.cache_size = cache_size
+        # If True, a query matching the footprint of a file exactly reads only that
+        # file, instead of merging every file it touches. Used for pre-patched data,
+        # see RasterDataModule(patch_size=None).
+        self.single_file_reads = False
         self._init_cache()
         # In order to avoid spamming "Skipping source" Log Messages in Rasterio Merge
         logging.getLogger("rasterio").setLevel(logging.WARNING)
@@ -351,6 +356,9 @@ class CustomCacheRasterDataset(RasterDataset, SamplePlotMixin):
         self._cached_load_warp_file = functools.lru_cache(maxsize=self.cache_size)(
             self._load_warp_file
         )
+        # Lookup table of file footprints, built on first use and whenever the index changes
+        self._footprints: dict[tuple[int, ...], list[tuple[pd.Interval, str]]] = {}
+        self._footprints_index = None
 
     # Configured on the class by get_*_dataset, so they would revert to their defaults
     # in a freshly spawned process unless pickled along with the instance.
@@ -372,12 +380,81 @@ class CustomCacheRasterDataset(RasterDataset, SamplePlotMixin):
         # dataset. The per-instance lru_cache can't be pickled, so rebuild it afterwards.
         state = {k: getattr(self, k) for k in self._class_config if hasattr(self, k)}
         state.update(self.__dict__)
-        del state["_cached_load_warp_file"]
+        for cache in ("_cached_load_warp_file", "_footprints", "_footprints_index"):
+            del state[cache]
         return state
 
     def __setstate__(self, state: dict[str, Any]) -> None:
         self.__dict__.update(state)
         self._init_cache()
+
+    def __getitem__(self, index: GeoSlice) -> dict[str, Any]:
+        if self.single_file_reads and not self.separate_files:
+            x, y, t = self._disambiguate_slice(index)
+            filepath = self._file_with_footprint(x, y, t)
+            if filepath is not None:
+                return self._read_file(filepath, (x, y, t))
+        return super().__getitem__(index)
+
+    def _pixel_keys(self, bounds: np.ndarray) -> list[tuple[int, ...]]:
+        """Lookup keys for (minx, miny, maxx, maxy) rows of bounds."""
+        xres, yres = self.res
+        x0, y0 = self._footprints_origin
+        # In whole pixels, float noise in the coordinates can't break exact dict lookups
+        pixels = np.rint((bounds - [x0, y0, x0, y0]) / [xres, yres, xres, yres])
+        return [tuple(row) for row in pixels.astype(int).tolist()]
+
+    def _file_with_footprint(self, x: slice, y: slice, t: slice) -> str | None:
+        """The file whose footprint matches the query to within half a pixel, if any."""
+        if self._footprints_index is not self.index:
+            bounds = self.index.geometry.bounds.to_numpy()
+            # Pixels are counted from the corner of a file, as the coordinates of a
+            # grid aren't necessarily multiples of its resolution
+            self._footprints_origin = bounds[0, :2]
+            self._footprints = defaultdict(list)
+            for key, interval, filepath in zip(
+                self._pixel_keys(bounds), self.index.index, self.index.filepath
+            ):
+                self._footprints[key].append((interval, filepath))
+            self._footprints_index = self.index
+
+        (key,) = self._pixel_keys(np.array([[x.start, y.start, x.stop, y.stop]]))
+        query_interval = pd.Interval(t.start, t.stop)
+        for interval, filepath in self._footprints.get(key, []):
+            if interval.overlaps(query_interval):
+                return filepath
+        return None
+
+    def _read_file(self, filepath: str, index: GeoSlice) -> dict[str, Any]:
+        """Same as RasterDataset.__getitem__, but reading a single file."""
+        x, y, _ = index
+        src = (
+            self._cached_load_warp_file(filepath, self.crs)
+            if self.cache
+            else self._load_warp_file(filepath, self.crs)
+        )
+        shape = round((y.stop - y.start) / y.step), round((x.stop - x.start) / x.step)
+        if src.shape == shape:
+            # Already on the grid of the query, so skip the slower resampling of a merge
+            data = array_to_tensor(src.read(self.band_indexes))
+        else:
+            data = self._merge_or_stack([filepath], index, self.band_indexes)
+        transform = rst.transform.from_origin(x.start, y.stop, x.step, y.step)
+        sample = {
+            "bounds": self._slice_to_tensor(index),
+            "transform": torch.tensor(transform),
+        }
+
+        data = data.to(self.dtype)
+        if self.is_image:
+            sample["image"] = data
+        else:
+            sample["mask"] = data.squeeze(-3)
+
+        if self.transforms is not None:
+            sample = self.transforms(sample)
+
+        return sample
 
     def filepaths_at(self, bounds: Tensor) -> list[str]:
         """Files spatially overlapping a sample's "bounds" tensor."""

@@ -14,6 +14,7 @@ from torchgeo.datasets import (
 )
 
 from eotorch.data.geodatasets import (
+    CustomCacheRasterDataset,
     PlottableClassificationDataset,
     PlottableImageDataset,
 )
@@ -107,7 +108,8 @@ class RasterDataModule(GeoDataModule):
             patch_size: The size of the patches to be extracted from the images. Set to
                 None if the datasets are already split into patches, one per file (e.g.
                 with eotorch.processing.generate_patches_from_files). Each file is then
-                one sample, and the train_sampler_config is not used.
+                one sample, read from that file only (overlapping files are not
+                merged), and the train_sampler_config is not used.
             num_workers: The number of worker processes for data loading.
             persistent_workers: Whether to use persistent workers for data loading.
             pin_memory: Whether to pin memory for data loading.
@@ -219,7 +221,9 @@ If this is not desired, please provide a val_dataset to the data module.
 
         if stage in ["fit"]:
             if self.file_sampling:
-                self.train_sampler = FileSampler(self.train_dataset, shuffle=True)
+                self.train_sampler = self._file_sampler(
+                    self.train_dataset, shuffle=True
+                )
             elif self.train_sampler_config is None:
                 self.train_sampler = samplers.GriddedPatchSampler(
                     self.train_dataset, size=self.patch_size, stride=self.patch_size / 2
@@ -249,10 +253,19 @@ If this is not desired, please provide a val_dataset to the data module.
 
     def _eval_sampler(self, dataset: GeoDataset, stride: float | None = None):
         if self.file_sampling:
-            return FileSampler(dataset)
+            return self._file_sampler(dataset)
         return samplers.GriddedPatchSampler(
             dataset, size=self.patch_size, stride=stride
         )
+
+    @staticmethod
+    def _file_sampler(dataset: GeoDataset, shuffle: bool = False) -> FileSampler:
+        # Each sample is a whole file, so read only that file instead of merging it
+        # with every file it touches, which is much faster.
+        for ds in getattr(dataset, "datasets", [dataset]):
+            if isinstance(ds, CustomCacheRasterDataset):
+                ds.single_file_reads = True
+        return FileSampler(dataset, shuffle=shuffle)
 
     def preview_data_sampling(
         self,
