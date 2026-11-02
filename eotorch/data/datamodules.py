@@ -78,6 +78,8 @@ class RasterDataModule(GeoDataModule):
     - Parameters such as the number of workers, persistent workers, and pin memory can be set modified when
         initializing the data module. This allows for more control over the data loading process.
     - The dataset arguments are saved in the checkpoint, so inference can load data the same way.
+    - If no validation dataset is given, a file-wise validation split is held out from the
+      training dataset when the data module is created (see val_split).
 
     """
 
@@ -96,6 +98,7 @@ class RasterDataModule(GeoDataModule):
         train_sampler_config: dict[str, Any] = None,
         mean: Sequence[float] | None = None,
         std: Sequence[float] | None = None,
+        val_split: float | None = 0.1,
     ):
         """
         Initialize the RasterDataModule.
@@ -132,6 +135,9 @@ class RasterDataModule(GeoDataModule):
                 eotorch.processing.normalize.band_statistics. For scaling from a range
                 (low, high) to (0, 1), use mean=low and std=high - low.
             std: Standard deviation of each image band.
+            val_split: Fraction of training files to hold out for validation when
+                val_dataset is not given. The split is file-wise and seeded, so it is
+                reproducible. Set to None to require an explicit val_dataset.
         """
         self.file_sampling = patch_size is None
         if self.file_sampling:
@@ -150,6 +156,11 @@ class RasterDataModule(GeoDataModule):
         self.test_dataset = test_dataset
         self.predict_dataset = predict_dataset
         self.train_sampler_config = train_sampler_config
+        self.val_split = val_split
+        if val_dataset is None and train_dataset is not None:
+            self.train_dataset, self.val_dataset = self._split_off_val(
+                train_dataset, val_split
+            )
 
         self.persistent_workers = persistent_workers
         self.pin_memory = pin_memory
@@ -188,8 +199,34 @@ class RasterDataModule(GeoDataModule):
                     "train_sampler_config": train_sampler_config,
                     "mean": self.mean,
                     "std": self.std,
+                    "val_split": val_split,
                 }
             )
+
+    @staticmethod
+    def _split_off_val(
+        dataset: GeoDataset, val_split: float | None
+    ) -> tuple[GeoDataset, GeoDataset]:
+        """Hold out a file-wise validation split from the training dataset."""
+        if val_split is None:
+            raise ValueError(
+                "No val_dataset given and val_split=None. Pass a val_dataset or set val_split."
+            )
+        n_total = len(dataset)
+        if n_total < 2:
+            raise ValueError(
+                f"No val_dataset given, and the training dataset has {n_total} file(s), "
+                "but a file-wise validation split needs at least 2. Pass a val_dataset, "
+                "e.g. created with eotorch.data.splits.file_wise_split or an ROI-based split."
+            )
+        train_dataset, val_dataset = file_wise_split(
+            dataset=dataset, ratios_or_counts=[1 - val_split, val_split]
+        )
+        print(
+            f"No val_dataset given: holding out {len(val_dataset)} of {n_total} files "
+            f"for validation (val_split={val_split})."
+        )
+        return train_dataset, val_dataset
 
     def setup(self, stage: str) -> None:
         """Set up datasets.
@@ -199,24 +236,6 @@ class RasterDataModule(GeoDataModule):
         """
 
         if stage in ["fit", "validate"]:
-            if self.val_dataset is None:
-                print("No val dataset provided. Performing default train / val split.")
-                # TODO: Change this to > 10 once more splits are supported, for fewer files we probably want an ROI based split
-                number_of_files_threshold = 1
-                if len(self.train_dataset) > number_of_files_threshold:
-                    self.train_dataset, self.val_dataset = file_wise_split(
-                        dataset=self.train_dataset,
-                        ratios_or_counts=[0.9, 0.1],
-                    )
-                    print(
-                        f"""
-Since the number of files in the training dataset ({len(self.train_dataset)}) is greater than 
-{number_of_files_threshold}, a  train / val split based on files was performed.
-{len(self.val_dataset)} file(s) were assigned to the validation dataset.
-If this is not desired, please provide a val_dataset to the data module.
-                    """
-                    )
-
             self.val_sampler = self._eval_sampler(self.val_dataset)
 
         if stage in ["fit"]:

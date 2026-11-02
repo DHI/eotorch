@@ -71,6 +71,30 @@ def test_datamodule_setup_fit(datamodule):
     assert datamodule.val_sampler is not None
 
 
+def test_datamodule_val_split_at_init(segmentation_dataset):
+    """Without a val_dataset, a file-wise split is held out when the module is created."""
+    n_files = len(segmentation_dataset)
+    dm = RasterDataModule(train_dataset=segmentation_dataset, patch_size=32)
+    assert dm.val_dataset is not None
+    assert len(dm.train_dataset) + len(dm.val_dataset) == n_files
+    assert len(dm.val_dataset) >= 1
+
+
+def test_datamodule_val_split_none_raises(segmentation_dataset):
+    with pytest.raises(ValueError, match="val_split=None"):
+        RasterDataModule(
+            train_dataset=segmentation_dataset, patch_size=32, val_split=None
+        )
+
+
+def test_datamodule_single_file_without_val_raises(image_dataset):
+    PlottableImageDataset.filename_glob = "image_0.tif"
+    single_file_dataset = PlottableImageDataset(paths=str(TEST_DATA), cache_size=1)
+    assert len(single_file_dataset) == 1
+    with pytest.raises(ValueError, match="at least 2"):
+        RasterDataModule(train_dataset=single_file_dataset, patch_size=32)
+
+
 def test_datamodule_setup_with_val_dataset(segmentation_dataset):
     """When val_dataset is provided, no automatic split should happen."""
     dm = RasterDataModule(
