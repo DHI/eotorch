@@ -149,4 +149,5 @@ notebooks/**
 *Zone.Identifier
 *.geojson
 *instructions.md
+notes.md
 !tests/data/*

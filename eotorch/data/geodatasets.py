@@ -951,7 +951,6 @@ class ClassificationRasterDataset(
         if isinstance(self.datasets[-1], PlottableClassificationDataset):
             label_ds: PlottableClassificationDataset = self.datasets[-1]
             pixel_counts = defaultdict(int)
-            # Use GeoPandas iteration instead of R-tree intersection
             for temporal_interval, row in self.index.iterrows():
                 bounds = row.geometry.bounds  # (minx, miny, maxx, maxy)
                 geo_slice = (
