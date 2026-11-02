@@ -100,3 +100,41 @@ def test_blended_probabilities_are_postprocessed(tmp_path, first_band):
         blend=True,
     )
     np.testing.assert_array_equal(_read(out), first_band > 100)
+
+
+@pytest.mark.parametrize("blend", [False, True])
+def test_probabilities_are_saved_next_to_classes(tmp_path, first_band, blend):
+    def probabilities(batch):
+        bright = (batch[:, 0] > 100).astype("float32")
+        return np.stack([1 - bright, bright], axis=1)
+
+    out = predict_on_tif_generic(
+        TEST_IMAGE,
+        probabilities,
+        patch_size=32,
+        postprocess=lambda probs: probs.argmax(axis=-3).astype("uint8"),
+        out_file_path=tmp_path / "pred.tif",
+        progress_bar=False,
+        blend=blend,
+        save_probabilities=True,
+        probability_band_names=["dark", "bright"],
+    )
+    np.testing.assert_array_equal(_read(out), first_band > 100)
+    with rst.open(tmp_path / "pred_probabilities.tif") as src:
+        assert src.count == 2 and src.dtypes[0] == "float32"
+        assert src.descriptions == ("dark", "bright")
+        probs = src.read()
+    np.testing.assert_allclose(probs[1], first_band > 100, atol=1e-6)
+    np.testing.assert_allclose(probs.sum(axis=0), 1, rtol=1e-6)
+
+
+def test_probabilities_are_not_saved_by_default(tmp_path):
+    predict_on_tif_generic(
+        TEST_IMAGE,
+        _first_band,
+        patch_size=32,
+        dtype="float32",
+        out_file_path=tmp_path / "pred.tif",
+        progress_bar=False,
+    )
+    assert not (tmp_path / "pred_probabilities.tif").exists()

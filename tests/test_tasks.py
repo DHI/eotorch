@@ -111,6 +111,21 @@ def test_segmentation_fit_and_predict(tmp_path):
     with rst.open(blended) as src:
         assert set(np.unique(src.read(1))) <= {1, 2, 3, 4}
 
+    with_probabilities = SegmentationTask.predict_on_tif_file(
+        TEST_DATA / "image_0.tif",
+        checkpoint,
+        out_file_path=tmp_path / "with_probabilities.tif",
+        progress_bar=False,
+        save_probabilities=True,
+    )
+    with rst.open(with_probabilities) as src:
+        np.testing.assert_array_equal(src.read(1), pred)
+    with rst.open(tmp_path / "with_probabilities_probabilities.tif") as src:
+        assert src.descriptions == ("a", "b", "c", "d")
+        probs = src.read()
+    np.testing.assert_allclose(probs.sum(axis=0), 1, rtol=1e-5)
+    np.testing.assert_array_equal(probs.argmax(axis=0) + 1, pred)
+
 
 def test_regression_fit_and_predict(tmp_path):
     # Continuous labels derived from the class labels, with 0 as nodata

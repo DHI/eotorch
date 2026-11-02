@@ -1,4 +1,5 @@
 import tempfile
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Callable, Generator
 
@@ -29,6 +30,8 @@ def predict_on_tif_generic(
     nodata: float | None = 0,
     postprocess: Callable[[np.ndarray], np.ndarray] | None = None,
     blend: bool = False,
+    save_probabilities: bool = False,
+    probability_band_names: list[str] | None = None,
 ) -> Path:
     """
     Predict on a TIF file patch by patch, using a custom prediction function.
@@ -80,6 +83,11 @@ def predict_on_tif_generic(
         of each patch, instead of only keeping the center of each patch. This avoids
         visible seams between patches. The predictions must be continuous values, such
         as class probabilities, which can be converted with postprocess.
+    save_probabilities : bool
+        If True, also write the predictions before postprocess, e.g. class probabilities,
+        as float32 to "<out_file_path stem>_probabilities.tif", one band per class.
+    probability_band_names : list[str], optional
+        Names of the bands of the probabilities file, e.g. the class names.
 
 
     Returns
@@ -119,7 +127,14 @@ def predict_on_tif_generic(
             data_window_only=data_window_only,
         )
 
+    probabilities_file_path = out_file_path.with_name(
+        f"{out_file_path.stem}_probabilities.tif"
+    )
+    probabilities_meta = {**meta, "dtype": "float32", "nodata": np.nan}
+
     def _write(dest, values: np.ndarray, window, covered: np.ndarray | None = None):
+        if save_probabilities:
+            _write_probabilities(values, window, covered)
         if postprocess is not None:
             values = postprocess(values)
         values = values.reshape(count, *values.shape[-2:])
@@ -137,7 +152,28 @@ def predict_on_tif_generic(
     with (
         rst.open(out_file_path, "w", **meta) as dest,
         tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp_dir,
+        ExitStack() as probabilities_stack,
     ):
+        probabilities_dest = None
+
+        def _write_probabilities(values: np.ndarray, window, covered):
+            nonlocal probabilities_dest
+            values = values.reshape(-1, *values.shape[-2:]).astype("float32")
+            if covered is not None:
+                values[:, ~covered] = np.nan
+            # Opened for the first prediction, once the number of bands is known
+            if probabilities_dest is None:
+                probabilities_dest = probabilities_stack.enter_context(
+                    rst.open(
+                        probabilities_file_path,
+                        "w",
+                        **{**probabilities_meta, "count": len(values)},
+                    )
+                )
+                if probability_band_names:
+                    probabilities_dest.descriptions = tuple(probability_band_names)
+            probabilities_dest.write(values, window=window)
+
         blender = (
             iu.PatchBlender(tmp_dir, meta["height"], meta["width"], patch_size)
             if blend
