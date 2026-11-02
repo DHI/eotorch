@@ -92,6 +92,7 @@ uv add "git+https://github.com/DHI/eotorch.git[<add_extras_here>]"
 You can find usage examples in the [notebooks](notebooks/) directory.
 
 * For segmentation use cases, check [notebooks/segmentation.ipynb](notebooks/segmentation.ipynb)
+* To save the class probabilities of a segmentation model next to its predictions, check [notebooks/class_probabilities.ipynb](notebooks/class_probabilities.ipynb)
 
 ---
 

@@ -145,6 +145,7 @@ dev_data
 notebooks/**
 !notebooks/segmentation.ipynb
 !notebooks/pre_patched_segmentation.ipynb
+!notebooks/class_probabilities.ipynb
 *Zone.Identifier
 *.geojson
 *instructions.md
