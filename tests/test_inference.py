@@ -116,8 +116,8 @@ def test_probabilities_are_saved_next_to_classes(tmp_path, first_band, blend):
         out_file_path=tmp_path / "pred.tif",
         progress_bar=False,
         blend=blend,
+        class_mapping={0: "dark", 1: "bright"},
         save_probabilities=True,
-        probability_band_names=["dark", "bright"],
     )
     np.testing.assert_array_equal(_read(out), first_band > 100)
     with rst.open(tmp_path / "pred_probabilities.tif") as src:
@@ -126,6 +126,22 @@ def test_probabilities_are_saved_next_to_classes(tmp_path, first_band, blend):
         probs = src.read()
     np.testing.assert_allclose(probs[1], first_band > 100, atol=1e-6)
     np.testing.assert_allclose(probs.sum(axis=0), 1, rtol=1e-6)
+
+
+def test_probability_bands_are_unnamed_without_one_class_per_band(tmp_path):
+    # A binary model predicts one probability band, but the mapping has two classes
+    predict_on_tif_generic(
+        TEST_IMAGE,
+        lambda batch: (batch[:, :1] > 100).astype("float32"),
+        patch_size=32,
+        postprocess=lambda probs: (probs[..., 0, :, :] > 0.5).astype("uint8"),
+        class_mapping={0: "dark", 1: "bright"},
+        out_file_path=tmp_path / "pred.tif",
+        progress_bar=False,
+        save_probabilities=True,
+    )
+    with rst.open(tmp_path / "pred_probabilities.tif") as src:
+        assert src.count == 1 and src.descriptions == (None,)
 
 
 def test_probabilities_are_not_saved_by_default(tmp_path):

@@ -475,28 +475,14 @@ class SegmentationTask(_TaskMixin, SemanticSegmentation):
         probs = self.predict_probabilities(batch).cpu().numpy()
         return self.classes_from_probabilities(probs)
 
-    def probability_band_names(
-        self, class_mapping: dict[int, str] | None = None
-    ) -> list[str]:
-        """Names of the classes of the predicted probabilities, in band order."""
-        class_mapping = class_mapping or {}
-        offset = int(self.reduce_zero_label)
-        if self.hparams["task"] == "binary":
-            # The probability of the positive class
-            offset += 1
-        classes = [i + offset for i in range(self.num_outputs)]
-        return [str(class_mapping.get(c, c)) for c in classes]
-
     def _inference_settings(self, dataset_args: dict[str, Any]) -> dict[str, Any]:
         self.reduce_zero_label = dataset_args.get("reduce_zero_label", False)
         count = self.num_outputs if self.hparams["task"] == "multilabel" else 1
-        class_mapping = dataset_args.get("class_mapping")
         return {
             "prediction_func": self.predict_probabilities,
             "postprocess": self.classes_from_probabilities,
-            "class_mapping": class_mapping,
+            "class_mapping": dataset_args.get("class_mapping"),
             "count": count,
-            "probability_band_names": self.probability_band_names(class_mapping),
         }
 
 

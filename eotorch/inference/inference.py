@@ -31,7 +31,6 @@ def predict_on_tif_generic(
     postprocess: Callable[[np.ndarray], np.ndarray] | None = None,
     blend: bool = False,
     save_probabilities: bool = False,
-    probability_band_names: list[str] | None = None,
 ) -> Path:
     """
     Predict on a TIF file patch by patch, using a custom prediction function.
@@ -86,8 +85,8 @@ def predict_on_tif_generic(
     save_probabilities : bool
         If True, also write the predictions before postprocess, e.g. class probabilities,
         as float32 to "<out_file_path stem>_probabilities.tif", one band per class.
-    probability_band_names : list[str], optional
-        Names of the bands of the probabilities file, e.g. the class names.
+        If class_mapping has one entry per band, the bands are named after its values,
+        in the order of its keys.
 
 
     Returns
@@ -170,8 +169,10 @@ def predict_on_tif_generic(
                         **{**probabilities_meta, "count": len(values)},
                     )
                 )
-                if probability_band_names:
-                    probabilities_dest.descriptions = tuple(probability_band_names)
+                if class_mapping and len(class_mapping) == len(values):
+                    probabilities_dest.descriptions = tuple(
+                        str(class_mapping[k]) for k in sorted(class_mapping)
+                    )
             probabilities_dest.write(values, window=window)
 
         blender = (
