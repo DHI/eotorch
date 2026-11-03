@@ -1,5 +1,4 @@
 from pathlib import Path
-from typing import List
 
 import torch
 import torch.nn as nn
@@ -11,7 +10,7 @@ class PointwiseBlock(nn.Module):
     def __init__(
         self,
         in_channels: int,
-        num_filters: List[int],
+        num_filters: list[int],
     ):
         assert len(num_filters) == 3, (
             "num_filters requires a list of exactly three values."

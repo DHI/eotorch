@@ -194,10 +194,10 @@ def plot_samplers_on_map(
     datasets: list,
     samplers: list,
     map=None,
-    max_samples: int = None,
-    colors: list = None,
-    dataset_colors: list = None,
-    dataset_names: list = None,
+    max_samples: int | None = None,
+    colors: list | None = None,
+    dataset_colors: list | None = None,
+    dataset_names: list | None = None,
     count_labels: bool = False,
 ):
     """
@@ -444,7 +444,7 @@ def plot_samplers_on_map(
 def plot_class_raster(
     tif_file_path: str | Path,
     ax: plt.Axes = None,
-    class_mapping: dict[int, str] = None,
+    class_mapping: dict[int, str] | None = None,
     colormap=cm.tab20,
     data_window_only: bool = False,
     **kwargs,
@@ -483,8 +483,8 @@ def plot_class_raster(
 def plot_numpy_array(
     array: np.ndarray,
     ax: plt.Axes = None,
-    class_mapping: dict[int, str] = None,
-    nodata_value: int = None,  # Changed: Allow None
+    class_mapping: dict[int, str] | None = None,
+    nodata_value: int | None = None,  # Changed: Allow None
     colormap=cm.tab20,
     data_window_only: bool = False,
     nodata_color: str = "black",

@@ -4,7 +4,7 @@ import logging
 import os
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING
 
 import geopandas as gpd
 import numpy as np
@@ -64,7 +64,7 @@ class VectorSource(ABC):
         out_path: Path | str,
         exclude_nodata_bounds: bool = True,
         min_size: int = 300,
-        class_order: List[int] = None,
+        class_order: list[int] | None = None,
         **kwargs,
     ):
         geoms = self._get_geoms()

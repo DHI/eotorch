@@ -3,7 +3,6 @@ import json
 import logging
 import random
 from pathlib import Path
-from typing import Dict, List, Tuple, Union
 
 # Data management
 import numpy as np
@@ -20,11 +19,11 @@ logger = logging.getLogger(__name__)
 def normalize(
     img_path: str | Path,
     sensor: str | None = None,
-    indexes: List | None = None,
-    limits: Dict | Tuple = (1, 99),
+    indexes: list | None = None,
+    limits: dict | tuple = (1, 99),
     out_res: float | None = None,
-    bands: List | None = None,
-    out_path: str | Path = None,
+    bands: list | None = None,
+    out_path: str | Path | None = None,
     sample_size: int | float = 0.5,
 ) -> Path:
     """
@@ -121,10 +120,10 @@ def normalize(
 
 def sample_limits(
     img_path: Path | str,
-    limits: Tuple,
+    limits: tuple,
     sample_size: int | float,
-    band_list: List = None,
-) -> Dict:
+    band_list: list | None = None,
+) -> dict:
     """
     Finds the percentile `limits` of the input image by sampling a number of internal tiles/blocks.
 
@@ -180,7 +179,7 @@ def sample_limits(
 
 def band_scaling(
     img: np.ndarray,
-    limits: Tuple | Dict,
+    limits: tuple | dict,
 ) -> np.ndarray:
     """
     Band scaling using either percentile cutoffs (e.g. 2nd and 98th percentile) common to visualization
@@ -228,7 +227,7 @@ def band_scaling(
 
 def resample(
     img_path: Path | str, res: float, resampling: str = "nearest", **kwargs
-) -> Tuple[np.ndarray, dict]:
+) -> tuple[np.ndarray, dict]:
     """
     Resamples the input raster to the target spatial resolution using the specified resampling method.
 
@@ -293,12 +292,12 @@ def resample(
 
 
 def zscore_normalize(
-    input_files: Union[str, Path, List[Union[str, Path]]],
-    out_dir: Union[str, Path],
-    bands: List[int] = None,
+    input_files: str | Path | list[str | Path],
+    out_dir: str | Path,
+    bands: list[int] | None = None,
     save_stats: bool = False,
     sample_size: float = 1.0,
-) -> Dict[str, np.ndarray]:
+) -> dict[str, np.ndarray]:
     """
     Applies z-score normalization to a set of images based on mean and standard deviation
     computed across all input files.

@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any
 
 import numpy as np
 import rasterio as rst
@@ -159,10 +159,10 @@ def buffered_to_unbuffered(
 
 
 def patch_generator(
-    tif_file_path: Union[str, Path],
-    patch_size: Optional[int] = 64,
-    overlap: Optional[int] = 2,
-    batch_size: Optional[int] = 32,
+    tif_file_path: str | Path,
+    patch_size: int | None = 64,
+    overlap: int | None = 2,
+    batch_size: int | None = 32,
 ):
     """
     Generator that yields patches of a tif file.

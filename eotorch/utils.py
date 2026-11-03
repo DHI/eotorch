@@ -3,8 +3,9 @@ import inspect
 import json
 import math
 import os
+from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Sequence, Tuple, Union
+from typing import TYPE_CHECKING
 
 import geopandas as gpd
 import numpy as np
@@ -40,8 +41,8 @@ class Region:
     def create(
         cls,
         source: str | Path | dict | Polygon | list[Polygon],
-        crs: str = None,
-        name: str = None,
+        crs: str | None = None,
+        name: str | None = None,
         dissolve: bool = True,
         **kwargs,
     ):
@@ -85,9 +86,9 @@ class Region:
     def from_shapefile(
         cls,
         path: str | Path,
-        crs: str = None,
+        crs: str | None = None,
         dissolve: bool = True,
-        name: str = None,
+        name: str | None = None,
         **kwargs,
     ):
         """
@@ -147,7 +148,7 @@ class Region:
         dissolve: bool = True,
         name: str | None = None,
         **kwargs,
-    ) -> Union["Region", list["Region"]]:
+    ) -> "Region | list[Region]":
         """
         Create a region from multiple shapely polygons.
 
@@ -214,7 +215,11 @@ class Region:
 
     @classmethod
     def from_geojson(
-        cls, geojson_path: str | Path, crs: str = None, name: str = None, **kwargs
+        cls,
+        geojson_path: str | Path,
+        crs: str | None = None,
+        name: str | None = None,
+        **kwargs,
     ):
         """
         Create a region from a GeoJSON file.
@@ -408,7 +413,7 @@ class Region:
         number_of_meters = pixel_buffer * pixel_size_m
         return self.with_metres_buffer(number_of_meters)
 
-    def crop_raster(self, raster_path: str | Path, out_path: str | Path = None):
+    def crop_raster(self, raster_path: str | Path, out_path: str | Path | None = None):
         """
         Crops a raster file to the region.
 
@@ -665,7 +670,7 @@ def intersect_paired_datasets(ds1: "IntersectionDataset", ds2: "IntersectionData
     )
 
 
-def window_to_np_idc(window: Window) -> Tuple[slice, slice]:
+def window_to_np_idc(window: Window) -> tuple[slice, slice]:
     """Convert a window to numpy array indices."""
     return (
         slice(int(round(window.row_off)), int(round(window.row_off + window.height))),

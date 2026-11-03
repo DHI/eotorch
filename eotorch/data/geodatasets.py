@@ -6,8 +6,9 @@ import logging
 import os
 import re
 from collections import defaultdict
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Iterable, Sequence, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import geopandas as gpd
 import matplotlib.pyplot as plt
@@ -1117,22 +1118,22 @@ class RegressionRasterDataset(
 
 def get_segmentation_dataset(
     images_dir: str | Path | Iterable[str] | Iterable[Path],
-    labels_dir: str | Path | Iterable[str] | Iterable[Path] = None,
+    labels_dir: str | Path | Iterable[str] | Iterable[Path] | None = None,
     image_glob="*.tif",
     label_glob="*.tif",
-    image_filename_regex: str = None,
-    label_filename_regex: str = None,
-    image_date_format: str = None,
-    label_date_format: str = None,
+    image_filename_regex: str | None = None,
+    label_filename_regex: str | None = None,
+    image_date_format: str | None = None,
+    label_date_format: str | None = None,
     all_image_bands: tuple[str] = (),
     rgb_bands: tuple[str] = ("red", "green", "blue"),
-    sensor_name: str = None,
+    sensor_name: str | None = None,
     crs: CRS = None,
-    res: float = None,
-    bands_to_return: tuple[str] = None,
-    image_transforms: Callable[[dict[str, Any]], dict[str, Any]] = None,
-    label_transforms: Callable[[dict[str, Any]], dict[str, Any]] = None,
-    class_mapping: dict[int, str] = None,
+    res: float | None = None,
+    bands_to_return: tuple[str] | None = None,
+    image_transforms: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    label_transforms: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    class_mapping: dict[int, str] | None = None,
     cache_size: int = 20,
     reduce_zero_label: bool = True,
     split_sparse_labels: bool = False,
@@ -1238,22 +1239,22 @@ def get_segmentation_dataset(
 
 def get_regression_dataset(
     images_dir: str | Path | Iterable[str] | Iterable[Path],
-    labels_dir: str | Path | Iterable[str] | Iterable[Path] = None,
+    labels_dir: str | Path | Iterable[str] | Iterable[Path] | None = None,
     image_glob="*.tif",
     label_glob="*.tif",
-    image_filename_regex: str = None,
-    label_filename_regex: str = None,
-    image_date_format: str = None,
-    label_date_format: str = None,
+    image_filename_regex: str | None = None,
+    label_filename_regex: str | None = None,
+    image_date_format: str | None = None,
+    label_date_format: str | None = None,
     all_image_bands: tuple[str] = (),
     rgb_bands: tuple[str] = ("red", "green", "blue"),
-    sensor_name: str = None,
+    sensor_name: str | None = None,
     crs: CRS = None,
-    res: float = None,
+    res: float | None = None,
     nodata_value: float = 0.0,
-    bands_to_return: tuple[str] = None,
-    image_transforms: Callable[[dict[str, Any]], dict[str, Any]] = None,
-    label_transforms: Callable[[dict[str, Any]], dict[str, Any]] = None,
+    bands_to_return: tuple[str] | None = None,
+    image_transforms: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    label_transforms: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     cache_size: int = 20,
     split_sparse_labels: bool = False,
     split_sparse_labels_min_size: int = 300,

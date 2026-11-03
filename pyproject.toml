@@ -95,7 +95,7 @@ explicit = true
 lint.ignore = ["E501"]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.12"
 ignore_missing_imports = true
 warn_unreachable = false
 no_implicit_optional = true

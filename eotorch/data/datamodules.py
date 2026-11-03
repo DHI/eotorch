@@ -95,7 +95,7 @@ class RasterDataModule(GeoDataModule):
         persistent_workers: bool = False,
         pin_memory: bool = False,
         drop_last: bool = False,
-        train_sampler_config: dict[str, Any] = None,
+        train_sampler_config: dict[str, Any] | None = None,
         mean: Sequence[float] | None = None,
         std: Sequence[float] | None = None,
         val_split: float | None = 0.1,
@@ -291,7 +291,7 @@ class RasterDataModule(GeoDataModule):
         max_samples: int = 100,
         map=None,
         count_labels: bool = False,
-        class_mapping: dict = None,
+        class_mapping: dict | None = None,
     ):
         """
         Visualize the dataset splits and their samplers on an interactive map.

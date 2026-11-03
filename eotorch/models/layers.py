@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, List, Tuple
+from typing import TYPE_CHECKING
 
 import torch.nn as nn
 
@@ -13,9 +13,9 @@ class Conv2d(nn.Module):
         self,
         in_channels: int,
         out_channels: int,
-        kernel_size: Tuple | int = (3, 3),
-        stride: Tuple | int = 1,
-        padding: Tuple | int | str = "same",
+        kernel_size: tuple | int = (3, 3),
+        stride: tuple | int = 1,
+        padding: tuple | int | str = "same",
         norm_layer: nn.Module = nn.BatchNorm2d,
         norm_momentum: float = 0.1,  # Add momentum parameter
         bn: bool = True,
@@ -56,7 +56,7 @@ class ResBlock(nn.Module):
         self,
         in_channels: int,
         out_channels: int,
-        kernel_sizes: List[int] | List[tuple] = [3, 3, 1],
+        kernel_sizes: list[int] | list[tuple] = [3, 3, 1],
         norm_layer: nn.Module = nn.BatchNorm2d,
         norm_momentum: float = 0.1,  # Add momentum parameter
         **kwargs,
@@ -128,9 +128,9 @@ class SeparableConv2d(nn.Module):
         self,
         in_channels: int,
         out_channels: int,
-        kernel_size: Tuple | int = (3, 3),
-        stride: Tuple | int = 1,
-        padding: Tuple | int | str = "same",
+        kernel_size: tuple | int = (3, 3),
+        stride: tuple | int = 1,
+        padding: tuple | int | str = "same",
         norm_layer: nn.Module = nn.BatchNorm2d,
         norm_momentum: float = 0.1,  # Add momentum parameter
         bn: bool = True,

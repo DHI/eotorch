@@ -1,9 +1,10 @@
 import warnings
+from collections.abc import Sequence
 from copy import deepcopy
 from glob import glob
 from math import isclose
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple, TypeVar, Union, cast
+from typing import Any, cast
 
 import geopandas as gpd
 import numpy as np
@@ -15,8 +16,6 @@ from shapely.ops import unary_union
 from torch import Generator, default_generator, randperm
 from torchgeo.datasets import GeoDataset, IntersectionDataset, RasterDataset
 from torchgeo.datasets.splits import _fractions_to_lengths
-
-_DatasetT = TypeVar("_DatasetT", bound=GeoDataset)
 
 
 def _transform_bounds_to_crs(bounds, source_crs, target_crs):
@@ -57,7 +56,7 @@ def _transform_bounds_to_crs(bounds, source_crs, target_crs):
         )
 
 
-def _format_paths(files: Union[str, Path, List[str], List[Path], None]) -> List[Path]:
+def _format_paths(files: str | Path | list[str] | list[Path] | None) -> list[Path]:
     """Formats various file input types into a list of resolved Path objects."""
     if files is None:
         return []
@@ -69,14 +68,14 @@ def _format_paths(files: Union[str, Path, List[str], List[Path], None]) -> List[
 
 
 def _get_split_items(
-    dataset_items: List[Tuple[Any, Any]],  # (geometry, filepath) tuples
-    dataset_files: List[Path],
-    val_files: List[Path],
-    test_files: List[Path],
-) -> Tuple[List[Tuple[Any, Any]], List[Tuple[Any, Any]], List[Tuple[Any, Any]]]:
+    dataset_items: list[tuple[Any, Any]],  # (geometry, filepath) tuples
+    dataset_files: list[Path],
+    val_files: list[Path],
+    test_files: list[Path],
+) -> tuple[list[tuple[Any, Any]], list[tuple[Any, Any]], list[tuple[Any, Any]]]:
     """Validates split files and returns items partitioned into train, val, test."""
 
-    def _validate_and_collect_items(files_param: List[Path]) -> List[Tuple[Any, Any]]:
+    def _validate_and_collect_items(files_param: list[Path]) -> list[tuple[Any, Any]]:
         """Checks if files exist in the dataset and collects corresponding items."""
         out_list = []
         file_found = False
@@ -104,15 +103,15 @@ def _get_split_items(
 
 
 def _build_split_indexes(
-    train_items: List[Tuple[Any, Any]],
-    val_items: List[Tuple[Any, Any]],
-    test_items: List[Tuple[Any, Any]],
+    train_items: list[tuple[Any, Any]],
+    val_items: list[tuple[Any, Any]],
+    test_items: list[tuple[Any, Any]],
     original_index: gpd.GeoDataFrame,
-) -> List[gpd.GeoDataFrame]:
+) -> list[gpd.GeoDataFrame]:
     """Builds GeoPandas GeoDataFrame indexes for train, validation, and test splits."""
     new_indexes = []
 
-    def _create_index(items: List[Tuple[Any, Any]]) -> gpd.GeoDataFrame:
+    def _create_index(items: list[tuple[Any, Any]]) -> gpd.GeoDataFrame:
         """Helper to create and populate a GeoPandas index."""
         if not items:
             # Return empty GeoDataFrame with correct structure and temporal index
@@ -145,9 +144,9 @@ def _build_split_indexes(
     return new_indexes
 
 
-def _build_split_datasets(
-    original_dataset: _DatasetT, new_indexes: List[gpd.GeoDataFrame]
-) -> list[_DatasetT]:
+def _build_split_datasets[DatasetT: GeoDataset](
+    original_dataset: DatasetT, new_indexes: list[gpd.GeoDataFrame]
+) -> list[DatasetT]:
     """Builds the final list of split datasets using the provided indexes."""
     new_datasets = []
     for index in new_indexes:
@@ -221,29 +220,29 @@ def _build_split_datasets(
     return new_datasets
 
 
-def file_wise_split(
-    dataset: _DatasetT,
-    val_img_files: Union[str, Path, List[str], List[Path], None] = None,
-    test_img_files: Union[str, Path, List[str], List[Path], None] = None,
-    val_img_glob: Union[str, Path] = None,
-    test_img_glob: Union[str, Path] = None,
-    ratios_or_counts: Optional[Sequence[float]] = None,
-) -> list[_DatasetT]:
+def file_wise_split[DatasetT: GeoDataset](
+    dataset: DatasetT,
+    val_img_files: str | Path | list[str] | list[Path] | None = None,
+    test_img_files: str | Path | list[str] | list[Path] | None = None,
+    val_img_glob: str | Path | None = None,
+    test_img_glob: str | Path | None = None,
+    ratios_or_counts: Sequence[float] | None = None,
+) -> list[DatasetT]:
     """
     Splits a dataset based on image files, ensuring no file overlap between splits.
 
     Parameters:
         dataset (RasterDataset):
             The dataset to be split (RasterDataset or IntersectionDataset).
-        val_img_files (Union[str, Path, List[str], List[Path], None], optional):
+        val_img_files (str | Path | list[str] | list[Path] | None, optional):
             Files for the validation set. Defaults to None.
-        test_img_files (Union[str, Path, List[str], List[Path], None], optional):
+        test_img_files (str | Path | list[str] | list[Path] | None, optional):
             Files for the test set. Defaults to None.
-        val_img_glob (Union[str, Path], optional):
+        val_img_glob (str | Path | None, optional):
             glob pattern to find images for the validation set. Overrides `val_img_files`. Defaults to None.
-        test_img_glob (Union[str, Path], optional):
+        test_img_glob (str | Path | None, optional):
             glob pattern to find images for the test set. Overrides `test_img_files`. Defaults to None.
-        ratios_or_counts (Optional[Sequence[float]], optional):
+        ratios_or_counts (Sequence[float] | None, optional):
             Ratios or counts for random splitting (overrides file lists). Defaults to None.
 
     Raises:
@@ -253,7 +252,7 @@ def file_wise_split(
             If dataset is not a RasterDataset or IntersectionDataset.
 
     Returns:
-        List[RasterDataset]:
+        list[RasterDataset]:
             A list of datasets [train, validation (optional), test (optional)].
     """
 
@@ -322,11 +321,11 @@ def file_wise_split(
     return new_datasets
 
 
-def random_bbox_assignment(
-    dataset: _DatasetT,
+def random_bbox_assignment[DatasetT: GeoDataset](
+    dataset: DatasetT,
     lengths: Sequence[float],
     generator: Generator | None = default_generator,
-) -> list[_DatasetT]:
+) -> list[DatasetT]:
     """
     Reimplementation of the random_bbox_assignment function from torchgeo, but with assurance that
     if a split percentage is provided, at least one bbox is assigned to each split.
@@ -414,12 +413,12 @@ def random_bbox_assignment(
     return _build_split_datasets(dataset, new_indexes)
 
 
-def aoi_split(
-    dataset: _DatasetT,
-    aoi_files: str | Path | Sequence[Union[str, Path]],
-    crs: str | Dict[str, Any] | CRS | None = None,
+def aoi_split[DatasetT: GeoDataset](
+    dataset: DatasetT,
+    aoi_files: str | Path | Sequence[str | Path],
+    crs: str | dict[str, Any] | CRS | None = None,
     buffer_size_metres: int = 0,
-) -> list[_DatasetT]:
+) -> list[DatasetT]:
     """Split a GeoDataset based on provided AOI files.
 
     Each polygon in an AOI file is replaced by its bounding box. The dataset footprints
@@ -577,7 +576,7 @@ def _convert_buffer_to_crs_units(buffer_meters: float, dataset_crs: str) -> floa
 
 def _split_geometry_into_boxes(
     original_geom: Polygon, subtract_geom: Polygon
-) -> List[Polygon]:
+) -> list[Polygon]:
     """
     Split a geometry into multiple box geometries that exclude the subtract_geom area.
 

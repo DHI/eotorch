@@ -1,7 +1,7 @@
 import tempfile
+from collections.abc import Callable, Generator
 from contextlib import ExitStack
 from pathlib import Path
-from typing import Callable, Generator
 
 import numpy as np
 import rasterio as rst
@@ -15,12 +15,12 @@ from eotorch.plot import plot_class_raster
 def predict_on_tif_generic(
     tif_file_path: str | Path,
     prediction_func: Callable,
-    data_and_window_generator: Generator = None,
+    data_and_window_generator: Generator | None = None,
     patch_size: int = 256,
-    class_mapping: dict[int, str] = None,
+    class_mapping: dict[int, str] | None = None,
     func_supports_batching: bool = True,
     batch_size: int = 8,
-    out_file_path: str | Path = None,
+    out_file_path: str | Path | None = None,
     show_results: bool = False,
     ax: plt.Axes = None,
     progress_bar: bool = True,
