@@ -211,6 +211,8 @@ class _TaskMixin:
         show_results: bool = False,
         ax: plt.Axes | None = None,
         progress_bar: bool = True,
+        blend: bool = False,
+        save_probabilities: bool = False,
         **kwargs: Any,
     ) -> Path:
         """
@@ -228,11 +230,14 @@ class _TaskMixin:
             show_results: If True, plot the prediction.
             ax: Matplotlib Axes to plot on if show_results is True.
             progress_bar: If True, show a progress bar.
+            blend: If True, average overlapping patch predictions, weighted towards the
+                center of each patch, instead of only keeping the center of each patch.
+                This avoids visible seams between patches.
+            save_probabilities: If True, also write the class probabilities of a
+                segmentation model as float32 to
+                "<out_file_path stem>_probabilities.tif", with one band per class.
             **kwargs: Passed on to eotorch.inference.inference.predict_on_tif_generic,
-                e.g. blend=True to blend overlapping patch predictions, class_mapping
-                to override the one saved in the checkpoint, or save_probabilities=True
-                to also write the class probabilities of a segmentation model to a
-                separate file, with one band per class.
+                e.g. class_mapping to override the one saved in the checkpoint.
 
         Returns:
             The path to the produced TIF file, or the plot if show_results is True.
@@ -263,6 +268,8 @@ class _TaskMixin:
             show_results=show_results,
             ax=ax,
             progress_bar=progress_bar,
+            blend=blend,
+            save_probabilities=save_probabilities,
             **{**settings, **kwargs},
         )
 
