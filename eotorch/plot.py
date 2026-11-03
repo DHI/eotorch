@@ -5,6 +5,7 @@ import geopandas as gpd
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import pyproj
 import rasterio as rst
 import torch
@@ -44,6 +45,30 @@ def plot_raster_histogram(raster_file_path: str | Path, band: int = 1, bins: int
         plt.ylabel("Frequency")
         plt.grid()
         plt.show()
+
+
+def _files_at(dataset, geom, interval) -> str:
+    """
+    Names of the files of a dataset that make up the index entry with footprint
+    `geom` and time interval `interval`. For an intersection of datasets, the files
+    of each dataset are joined with " + ", e.g. "image_3.tif + label_3.tif".
+    """
+    if hasattr(dataset, "datasets"):
+        return " + ".join(_files_at(ds, geom, interval) for ds in dataset.datasets)
+    index = dataset.index
+    if "filepath" not in index.columns:
+        return ""
+    point = geom.representative_point()
+    match = index.geometry.contains(point) & index.index.overlaps(interval)
+    return ", ".join(sorted(Path(f).name for f in index.filepath[match]))
+
+
+def _format_interval(interval) -> str:
+    """Date range of an index entry, or "" for the default unbounded interval."""
+    if interval.left == pd.Timestamp.min and interval.right == pd.Timestamp.max:
+        return ""
+    start, end = (f"{t:%Y-%m-%d}" for t in (interval.left, interval.right))
+    return start if start == end else f"{start} to {end}"
 
 
 def plot_dataset_index(dataset, map=None, color="olive", name=None):
@@ -102,62 +127,27 @@ def plot_dataset_index(dataset, map=None, color="olive", name=None):
         print(
             f"Warning: No objects found in dataset '{name}'. Skipping bounds fitting and GeoJson addition."
         )
-        geoms_list = []
     else:
-        geoms_list = index_gdf.geometry.tolist()
-        bounds = index_gdf.total_bounds  # returns [minx, miny, maxx, maxy]
-        current_bounds = tuple(bounds)
+        current_bounds = tuple(index_gdf.total_bounds)  # [minx, miny, maxx, maxy]
 
-    if (
-        current_bounds and geoms_list
-    ):  # Only add GeoJson if bounds were determined and objects exist
-        for geom in geoms_list:  # Iterate over the geometries
-            try:  # Add try-except for individual geometry processing
-                # Get original bounds before transformation
-                original_bounds = geom.bounds  # (minx, miny, maxx, maxy)
+        rows = list(zip(index_gdf.geometry, index_gdf.index))
+        footprints = gpd.GeoDataFrame(
+            {"file": [_files_at(dataset, geom, interval) for geom, interval in rows]},
+            geometry=index_gdf.geometry.values,
+            crs=dataset.crs,
+        ).to_crs(4326)
+        fields, aliases = ["file"], ["File"]
+        dates = [_format_interval(interval) for interval in index_gdf.index]
+        if any(dates):
+            footprints["date"] = dates
+            fields.append("date")
+            aliases.append("Date")
 
-                # Convert to lat/lon if needed
-                if dataset.crs != 4326:  # Assuming CRS 4326 is WGS84
-                    # Transform geometry to WGS84 for folium
-                    # gdf_temp = gpd.GeoDataFrame([1], geometry=[geom], crs="EPSG:4326")
-                    gdf_temp = gpd.GeoDataFrame([1], geometry=[geom], crs=dataset.crs)
-                    gdf_temp = gdf_temp.to_crs(4326)
-                    geom_transformed = gdf_temp.geometry.iloc[0]
-                    transformed_bounds = geom_transformed.bounds
-                else:
-                    geom_transformed = geom
-                    transformed_bounds = original_bounds
-
-                def create_style_function(style):
-                    return lambda x: style
-
-                # Create tooltip with bounds information
-                tooltip_text = (
-                    f"Bounds ({dataset.crs.name}):<br>"
-                    f"Min X: {original_bounds[0]:.6f}<br>"
-                    f"Min Y: {original_bounds[1]:.6f}<br>"
-                    f"Max X: {original_bounds[2]:.6f}<br>"
-                    f"Max Y: {original_bounds[3]:.6f}"
-                )
-
-                if dataset.crs != 4326:
-                    tooltip_text += (
-                        f"<br><br>Bounds (WGS84):<br>"
-                        f"Min Lon: {transformed_bounds[0]:.6f}<br>"
-                        f"Min Lat: {transformed_bounds[1]:.6f}<br>"
-                        f"Max Lon: {transformed_bounds[2]:.6f}<br>"
-                        f"Max Lat: {transformed_bounds[3]:.6f}"
-                    )
-
-                folium.GeoJson(
-                    geom_transformed,
-                    style_function=create_style_function(style_dict),
-                    tooltip=tooltip_text,
-                ).add_to(feature_group)
-            except Exception as e:
-                print(
-                    f"Warning: Could not process geometry in dataset '{name}'. Error: {e}"
-                )
+        folium.GeoJson(
+            footprints,
+            style_function=lambda _: style_dict,
+            tooltip=folium.GeoJsonTooltip(fields=fields, aliases=aliases),
+        ).add_to(feature_group)
 
     # Add the feature group to the map (even if empty, so it appears in LayerControl)
     feature_group.add_to(map)

@@ -504,11 +504,12 @@ class CustomCacheRasterDataset(RasterDataset, SamplePlotMixin):
             "all_bands": "'all_bands' attribute",
             "is_image": "'is_image' attribute",
             "separate_files": "'separate_files' attribute",
+            "reduce_zero_label": "'reduce_zero_label' attribute",
         }
 
         for attr_name, display_name in compatibility_attrs.items():
-            self_attr = getattr(self, attr_name)
-            other_attr = getattr(other, attr_name)
+            self_attr = getattr(self, attr_name, None)
+            other_attr = getattr(other, attr_name, None)
             if self_attr != other_attr:
                 raise ValueError(
                     f"{display_name} must be the same for union. "
@@ -523,10 +524,8 @@ class CustomCacheRasterDataset(RasterDataset, SamplePlotMixin):
             other_transformed.res = self.res
 
         # --- Construct the items for the new_dataset.index ---
-        # Combine indexes from both datasets
-        combined_index = pd.concat(
-            [self.index, other_transformed.index], ignore_index=True
-        )
+        # Combine indexes from both datasets, keeping their time intervals
+        combined_index = pd.concat([self.index, other_transformed.index])
 
         if combined_index.empty:
             raise ValueError(
@@ -567,6 +566,9 @@ class CustomCacheRasterDataset(RasterDataset, SamplePlotMixin):
             transforms=self.transforms,  # Inherit from self
             cache_size=self.cache_size,  # Inherit from self
         )
+        # Set per instance by label datasets, so not passed on by the class attributes above
+        if hasattr(self, "reduce_zero_label"):
+            new_dataset.reduce_zero_label = self.reduce_zero_label
 
         # Replace the automatically generated index with our carefully constructed one.
         new_dataset.index = combined_index
@@ -871,19 +873,6 @@ class ClassificationRasterDataset(
             dataset1, dataset2, collate_fn=collate_fn, transforms=transforms
         )
 
-        # rename index columns resulting from merge, for more clarity
-        if "filepath_1" in self.index.columns:
-            self.index = self.index.rename(
-                columns={"filepath_1": "image_filepath", "filepath_2": "label_filepath"}
-            )
-        if "datetime_1" in self.index.columns:
-            self.index = self.index.rename(
-                columns={
-                    "datetime_1": "image_datetime",
-                    "datetime_2": "label_datetime",
-                }
-            )
-
     def plot(self, sample: dict[str, Any], **kwargs):
         predictions = sample.pop("prediction", None)
         n_cols = 3 if predictions is not None else 2
@@ -1160,13 +1149,15 @@ def get_segmentation_dataset(
         label_glob (str): Glob pattern for the label files. Defaults to "*.tif". Modify if not all .tif files in the directory should be used.
         image_filename_regex (str): Regular expression to extract metadata from image filenames.
                                     See https://torchgeo.readthedocs.io/en/stable/tutorials/custom_raster_dataset.html#filename_regex
-        date_format (str): Date format to extract metadata from image filenames. Should be specified if image_filename_regex is used.
+        label_filename_regex (str): Regular expression to extract metadata from label filenames.
+        image_date_format (str): Date format of the date extracted from image filenames. Should be specified if image_filename_regex captures a date.
                             See https://torchgeo.readthedocs.io/en/stable/tutorials/custom_raster_dataset.html#date_format
                             Example for matching files from the same year, when the filenames have the format "image_YYYY_3.tif" and "label_YYYY_whatever.tif":
                                 image_filename_regex=r'.*_(?P<date>\d{4})_.*',
                                 label_filename_regex=r'.*_(?P<date>\d{4})_.*',
-                                date_format='%Y'
-        label_filename_regex (str): Regular expression to extract metadata from label filenames.
+                                image_date_format='%Y',
+                                label_date_format='%Y'
+        label_date_format (str): Date format of the date extracted from label filenames. Should be specified if label_filename_regex captures a date.
         all_image_bands (tuple): All bands in the image files.
         rgb_bands (tuple): Bands to use for RGB visualization.
         sensor_name (str): Name of the sensor to use. Overrides all_image_bands and res. For valid sensor names, see BAND_INDEX in eotorch.bandindex.py.
@@ -1278,13 +1269,15 @@ def get_regression_dataset(
         label_glob (str): Glob pattern for the label files. Defaults to "*.tif". Modify if not all .tif files in the directory should be used.
         image_filename_regex (str): Regular expression to extract metadata from image filenames.
                                     See https://torchgeo.readthedocs.io/en/stable/tutorials/custom_raster_dataset.html#filename_regex
-        date_format (str): Date format to extract metadata from image filenames. Should be specified if image_filename_regex is used.
+        label_filename_regex (str): Regular expression to extract metadata from label filenames.
+        image_date_format (str): Date format of the date extracted from image filenames. Should be specified if image_filename_regex captures a date.
                             See https://torchgeo.readthedocs.io/en/stable/tutorials/custom_raster_dataset.html#date_format
                             Example for matching files from the same year, when the filenames have the format "image_YYYY_3.tif" and "label_YYYY_whatever.tif":
                                 image_filename_regex=r'.*_(?P<date>\d{4})_.*',
                                 label_filename_regex=r'.*_(?P<date>\d{4})_.*',
-                                date_format='%Y'
-        label_filename_regex (str): Regular expression to extract metadata from label filenames.
+                                image_date_format='%Y',
+                                label_date_format='%Y'
+        label_date_format (str): Date format of the date extracted from label filenames. Should be specified if label_filename_regex captures a date.
         all_image_bands (tuple): All bands in the image files.
         rgb_bands (tuple): Bands to use for RGB visualization.
         sensor_name (str): Name of the sensor to use. Overrides all_image_bands and res. For valid sensor names, see BAND_INDEX in eotorch.bandindex.py.

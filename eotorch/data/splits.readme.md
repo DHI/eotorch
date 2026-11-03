@@ -68,7 +68,6 @@ from eotorch.data import splits
 train_ds, val_ds = splits.aoi_split(
     dataset=ds,
     aoi_files="validation_zones.geojson",
-    crs="EPSG:4326",        # CRS of the AOI file (default: EPSG:4326)
     buffer_size_metres=100  # Optional buffer
 )
 ```
@@ -76,7 +75,7 @@ train_ds, val_ds = splits.aoi_split(
 ### Parameters
 
 - **`aoi_files`**: Single filepath or sequence of filepaths to shapefile or GeoJSON files containing the AOI polygons.
-- **`crs`**: The CRS of the input AOI geometries (e.g., `"EPSG:4326"` for lat/lon). The function will automatically transform AOI bounds to match the dataset's CRS. Default is `"EPSG:4326"`.
+- **`crs`**: The CRS of the coordinates in the AOI files (e.g., `"EPSG:32634"`). AOIs are always reprojected to the dataset's CRS, using the CRS declared in each file. Only set `crs` for files that declare no CRS or the wrong one, e.g. GeoJSON files with projected coordinates (GeoJSON files without CRS information are always read as `"EPSG:4326"`); it overrides the CRS declared in the files. Default is `None`: use the declared CRS, or the dataset's CRS for files that declare none.
 - **`buffer_size_metres`**: Size of buffer in meters to apply around AOIs. Default is 0.
 
 ### Buffer Zone
