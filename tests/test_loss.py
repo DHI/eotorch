@@ -13,7 +13,7 @@ from eotorch.models.loss import (
     segmentation_loss,
 )
 
-LOSSES = ["ce", "dice", "focal", "jaccard", "tversky", "boundary", "boundary_distance"]
+LOSSES = ["ce", "dice", "focal", "tversky", "boundary", "boundary_distance"]
 
 
 def _vertical_boundary_target(boundary_x: int = 32) -> torch.Tensor:

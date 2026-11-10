@@ -170,7 +170,7 @@ def segmentation_loss(
     """Create a segmentation loss by name, or a :class:`CombinedLoss` from a dict of weights.
 
     Args:
-        loss: One of "ce", "bce", "dice", "focal", "jaccard", "tversky", "boundary" and
+        loss: One of "ce", "bce", "dice", "focal", "tversky", "boundary" and
             "boundary_distance", or a dict mapping several of them to their weights.
         task: One of "binary", "multiclass" or "multilabel".
         num_classes: Number of classes.
@@ -218,12 +218,6 @@ def segmentation_loss(
         case "tversky":
             kwargs = {"alpha": 0.3, "beta": 0.7, **kwargs}
             return smp.losses.TverskyLoss(task, ignore_index=ignore_index, **kwargs)
-        case "jaccard":
-            # JaccardLoss takes the classes to use instead of a class index to ignore
-            classes = None
-            if task == "multiclass" and ignore_index is not None:
-                classes = [i for i in range(num_classes) if i != ignore_index]
-            return smp.losses.JaccardLoss(task, classes=classes, **kwargs)
         case "boundary":
             return BoundaryLoss(ignore_index=ignore_index)
         case "boundary_distance":

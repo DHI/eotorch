@@ -327,7 +327,7 @@ Trainer(max_epochs=50).fit(task, datamodule=module)
 
 **Models**: `model` is one of the eotorch models (`"deepresunet"`, `"unet_lite"`, a small UNet whose size is set by `num_filters`, and `"dinov3_upernet"`), TorchGeo's `"fcn"`, or any architecture of [segmentation_models_pytorch](https://smp.readthedocs.io/en/latest/models.html) such as `"unet"`, `"unetplusplus"`, `"deeplabv3plus"`, `"upernet"`, `"segformer"` or `"dpt"`. Model-specific arguments go into `model_kwargs`, e.g. `model_kwargs={"decoder_channels": [128, 64, 32, 16, 8]}`. Pretrained encoders can be loaded with `weights` (`True` for ImageNet, or a TorchGeo weight enum), and frozen with `freeze_backbone=True`.
 
-**Losses**: `"ce"`, `"bce"`, `"dice"`, `"focal"`, `"jaccard"`, `"tversky"`, `"boundary"` and `"boundary_distance"` (Kervadec et al.), or a weighted combination of them as a dict. Extra arguments per loss go into `loss_kwargs`, e.g. `loss_kwargs={"focal": {"gamma": 2.0}}`. The `LossWeightScheduler` callback in `eotorch.models.callbacks` can ramp up the weight of one term, which is useful for the boundary losses.
+**Losses**: `"ce"`, `"bce"`, `"dice"`, `"focal"`, `"tversky"`, `"boundary"` and `"boundary_distance"` (Kervadec et al.), or a weighted combination of them as a dict. Extra arguments per loss go into `loss_kwargs`, e.g. `loss_kwargs={"focal": {"gamma": 2.0}}`. The `LossWeightScheduler` callback in `eotorch.models.callbacks` can ramp up the weight of one term, which is useful for the boundary losses.
 
 **Binary segmentation**: use `num_classes=1, task="binary"` and e.g. `loss="bce"`.
 
