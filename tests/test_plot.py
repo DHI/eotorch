@@ -115,27 +115,40 @@ def test_plot_numpy_array_empty_array():
     plt.close(fig)
 
 
-def test_plot_samples_with_patches_as_large_as_the_files(monkeypatch):
+@pytest.mark.parametrize("labels", ["label", "target"])
+def test_plot_samples_with_patches_as_large_as_the_files(monkeypatch, labels):
     from pathlib import Path
 
-    from eotorch.data import get_segmentation_dataset
+    from eotorch.data import get_regression_dataset, get_segmentation_dataset
     from eotorch.data.geodatasets import (
         PlottableClassificationDataset,
         PlottableImageDataset,
+        PlottableRegressionDataset,
     )
 
-    for cls in (PlottableImageDataset, PlottableClassificationDataset):
+    for cls in (
+        PlottableImageDataset,
+        PlottableClassificationDataset,
+        PlottableRegressionDataset,
+    ):
         for k in cls._class_config:
             if hasattr(cls, k):
                 monkeypatch.setattr(cls, k, getattr(cls, k))
 
+    # Segmentation labels (label_*.tif) or regression labels with nodata (target_*.tif)
+    get_dataset = get_segmentation_dataset
+    kwargs = {}
+    if labels == "target":
+        get_dataset = get_regression_dataset
+        kwargs = {"nodata_value": -9999.0}
     data = Path(__file__).parent / "data"
-    ds = get_segmentation_dataset(
+    ds = get_dataset(
         images_dir=data,
         labels_dir=data,
         image_glob="image_*.tif",
-        label_glob="label_*.tif",
+        label_glob=f"{labels}_*.tif",
         all_image_bands=("red", "green", "blue"),
+        **kwargs,
     )
     shown = []
     monkeypatch.setattr(plt, "show", lambda: shown.append(plt.gcf()))

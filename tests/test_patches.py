@@ -10,24 +10,36 @@ import rasterio as rst
 import torch
 from rasterio.warp import Resampling, calculate_default_transform, reproject
 
-from eotorch.data import RasterDataModule, SegmentationTask, get_segmentation_dataset
+from eotorch.data import (
+    RasterDataModule,
+    SegmentationTask,
+    get_regression_dataset,
+    get_segmentation_dataset,
+)
 from eotorch.data.geodatasets import (
     PlottableClassificationDataset,
     PlottableImageDataset,
+    PlottableRegressionDataset,
 )
 from eotorch.data.samplers import FileSampler
 from eotorch.processing import generate_patches_from_files
 
 TEST_DATA = Path(__file__).parent / "data"
 PATCH_SIZE = 32
+NODATA = -9999.0
 
 
 @pytest.fixture(autouse=True)
 def _restore_class_attrs():
-    """get_segmentation_dataset configures the dataset classes, so restore them."""
+    """get_*_dataset configures the dataset classes, so restore them."""
+    classes = (
+        PlottableImageDataset,
+        PlottableClassificationDataset,
+        PlottableRegressionDataset,
+    )
     saved = {
         cls: {k: getattr(cls, k) for k in cls._class_config if hasattr(cls, k)}
-        for cls in (PlottableImageDataset, PlottableClassificationDataset)
+        for cls in classes
     }
     yield
     for cls, attrs in saved.items():
@@ -127,6 +139,45 @@ def test_labels_are_reprojected_onto_image_grid(tmp_path):
         label_patches[0].name.replace("_label", "_image")
     )
     assert _bounds(label_patches[0]) == _bounds(image_patch)
+
+
+def test_regression_patches(tmp_path):
+    """Patches of continuous labels keep their values and nodata, and load as samples."""
+    generate_patches_from_files(
+        TEST_DATA / "image_3.tif",
+        TEST_DATA / "target_3.tif",
+        tmp_path,
+        patch_size=PATCH_SIZE,
+        val_fraction=0,
+        empty_img_threshold=None,
+        empty_label_threshold=0.5,
+        show_progress=False,
+    )
+    label_patches = sorted((tmp_path / "train").glob("*_label.tif"))
+    # Half of target_3.tif is nodata: 4 of the 9 blocks are at most half nodata
+    assert len(label_patches) == 4
+
+    dataset = get_regression_dataset(
+        images_dir=tmp_path / "train",
+        labels_dir=tmp_path / "train",
+        image_glob="*_image.tif",
+        label_glob="*_label.tif",
+        nodata_value=NODATA,
+        cache_size=0,
+    )
+    with rst.open(TEST_DATA / "target_3.tif") as full:
+        for path in label_patches:
+            with rst.open(path) as src:
+                assert src.dtypes[0] == "float32" and src.nodata == NODATA
+                labels = src.read(1)
+                window = rst.windows.from_bounds(*src.bounds, full.transform)
+            np.testing.assert_array_equal(labels, full.read(1, window=window))
+            assert (labels == NODATA).mean() <= 0.5
+
+            b = _bounds(path)
+            mask = dataset[slice(b.left, b.right), slice(b.bottom, b.top)]["mask"]
+            assert mask.dtype == torch.float32
+            np.testing.assert_array_equal(mask.numpy(), labels)
 
 
 def test_file_sampler_samples_each_image_file_once(patch_dir):

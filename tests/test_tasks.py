@@ -128,18 +128,9 @@ def test_segmentation_fit_and_predict(tmp_path):
 
 
 def test_regression_fit_and_predict(tmp_path):
-    # Continuous labels derived from the class labels, with 0 as nodata
-    for label in TEST_DATA.glob("label_*.tif"):
-        with rst.open(label) as src:
-            data, profile = src.read().astype("float32"), src.profile
-        data = np.where(data == 0, NODATA, data * 1.5)
-        profile.update(dtype="float32", nodata=NODATA)
-        with rst.open(tmp_path / f"target_{label.name}", "w", **profile) as dst:
-            dst.write(data)
-
     dataset = get_regression_dataset(
         images_dir=TEST_DATA,
-        labels_dir=tmp_path,
+        labels_dir=TEST_DATA,
         image_glob="image_*.tif",
         label_glob="target_*.tif",
         all_image_bands=("red", "green", "blue"),

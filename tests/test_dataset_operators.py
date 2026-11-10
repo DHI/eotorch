@@ -10,9 +10,10 @@ DATA_DIR = Path(__file__).parent / "data"
 def _dataset(get_dataset, i: int, **kwargs):
     # Selecting files by path rather than glob, as get_*_dataset stores the globs on
     # the dataset classes, which would leak into other tests
+    labels = "target" if get_dataset is get_regression_dataset else "label"
     return get_dataset(
         images_dir=DATA_DIR / f"image_{i}.tif",
-        labels_dir=DATA_DIR / f"label_{i}.tif",
+        labels_dir=DATA_DIR / f"{labels}_{i}.tif",
         **kwargs,
     )
 
