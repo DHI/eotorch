@@ -5,6 +5,7 @@ import geopandas as gpd
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import pyproj
 import rasterio as rst
 import torch
@@ -44,6 +45,30 @@ def plot_raster_histogram(raster_file_path: str | Path, band: int = 1, bins: int
         plt.ylabel("Frequency")
         plt.grid()
         plt.show()
+
+
+def _files_at(dataset, geom, interval) -> str:
+    """
+    Names of the files of a dataset that make up the index entry with footprint
+    `geom` and time interval `interval`. For an intersection of datasets, the files
+    of each dataset are joined with " + ", e.g. "image_3.tif + label_3.tif".
+    """
+    if hasattr(dataset, "datasets"):
+        return " + ".join(_files_at(ds, geom, interval) for ds in dataset.datasets)
+    index = dataset.index
+    if "filepath" not in index.columns:
+        return ""
+    point = geom.representative_point()
+    match = index.geometry.contains(point) & index.index.overlaps(interval)
+    return ", ".join(sorted(Path(f).name for f in index.filepath[match]))
+
+
+def _format_interval(interval) -> str:
+    """Date range of an index entry, or "" for the default unbounded interval."""
+    if interval.left == pd.Timestamp.min and interval.right == pd.Timestamp.max:
+        return ""
+    start, end = (f"{t:%Y-%m-%d}" for t in (interval.left, interval.right))
+    return start if start == end else f"{start} to {end}"
 
 
 def plot_dataset_index(dataset, map=None, color="olive", name=None):
@@ -102,62 +127,27 @@ def plot_dataset_index(dataset, map=None, color="olive", name=None):
         print(
             f"Warning: No objects found in dataset '{name}'. Skipping bounds fitting and GeoJson addition."
         )
-        geoms_list = []
     else:
-        geoms_list = index_gdf.geometry.tolist()
-        bounds = index_gdf.total_bounds  # returns [minx, miny, maxx, maxy]
-        current_bounds = tuple(bounds)
+        current_bounds = tuple(index_gdf.total_bounds)  # [minx, miny, maxx, maxy]
 
-    if (
-        current_bounds and geoms_list
-    ):  # Only add GeoJson if bounds were determined and objects exist
-        for geom in geoms_list:  # Iterate over the geometries
-            try:  # Add try-except for individual geometry processing
-                # Get original bounds before transformation
-                original_bounds = geom.bounds  # (minx, miny, maxx, maxy)
+        rows = list(zip(index_gdf.geometry, index_gdf.index))
+        footprints = gpd.GeoDataFrame(
+            {"file": [_files_at(dataset, geom, interval) for geom, interval in rows]},
+            geometry=index_gdf.geometry.values,
+            crs=dataset.crs,
+        ).to_crs(4326)
+        fields, aliases = ["file"], ["File"]
+        dates = [_format_interval(interval) for interval in index_gdf.index]
+        if any(dates):
+            footprints["date"] = dates
+            fields.append("date")
+            aliases.append("Date")
 
-                # Convert to lat/lon if needed
-                if dataset.crs != 4326:  # Assuming CRS 4326 is WGS84
-                    # Transform geometry to WGS84 for folium
-                    # gdf_temp = gpd.GeoDataFrame([1], geometry=[geom], crs="EPSG:4326")
-                    gdf_temp = gpd.GeoDataFrame([1], geometry=[geom], crs=dataset.crs)
-                    gdf_temp = gdf_temp.to_crs(4326)
-                    geom_transformed = gdf_temp.geometry.iloc[0]
-                    transformed_bounds = geom_transformed.bounds
-                else:
-                    geom_transformed = geom
-                    transformed_bounds = original_bounds
-
-                def create_style_function(style):
-                    return lambda x: style
-
-                # Create tooltip with bounds information
-                tooltip_text = (
-                    f"Bounds ({dataset.crs.name}):<br>"
-                    f"Min X: {original_bounds[0]:.6f}<br>"
-                    f"Min Y: {original_bounds[1]:.6f}<br>"
-                    f"Max X: {original_bounds[2]:.6f}<br>"
-                    f"Max Y: {original_bounds[3]:.6f}"
-                )
-
-                if dataset.crs != 4326:
-                    tooltip_text += (
-                        f"<br><br>Bounds (WGS84):<br>"
-                        f"Min Lon: {transformed_bounds[0]:.6f}<br>"
-                        f"Min Lat: {transformed_bounds[1]:.6f}<br>"
-                        f"Max Lon: {transformed_bounds[2]:.6f}<br>"
-                        f"Max Lat: {transformed_bounds[3]:.6f}"
-                    )
-
-                folium.GeoJson(
-                    geom_transformed,
-                    style_function=create_style_function(style_dict),
-                    tooltip=tooltip_text,
-                ).add_to(feature_group)
-            except Exception as e:
-                print(
-                    f"Warning: Could not process geometry in dataset '{name}'. Error: {e}"
-                )
+        folium.GeoJson(
+            footprints,
+            style_function=lambda _: style_dict,
+            tooltip=folium.GeoJsonTooltip(fields=fields, aliases=aliases),
+        ).add_to(feature_group)
 
     # Add the feature group to the map (even if empty, so it appears in LayerControl)
     feature_group.add_to(map)
@@ -204,11 +194,10 @@ def plot_samplers_on_map(
     datasets: list,
     samplers: list,
     map=None,
-    max_samples: int = None,
-    max_files: int = None,
-    colors: list = None,
-    dataset_colors: list = None,
-    dataset_names: list = None,
+    max_samples: int | None = None,
+    colors: list | None = None,
+    dataset_colors: list | None = None,
+    dataset_names: list | None = None,
     count_labels: bool = False,
 ):
     """
@@ -219,7 +208,6 @@ def plot_samplers_on_map(
         samplers: List of samplers to visualize (must match datasets length)
         map: Optional existing folium map to add to
         max_samples: Maximum number of samples to plot per dataset-sampler pair
-        max_files: Maximum number of files to include in visualization
         colors: List of colors for the samples from each dataset
         dataset_colors: List of colors for the dataset boundaries
         dataset_names: List of names to use for each dataset in the legend
@@ -235,7 +223,6 @@ def plot_samplers_on_map(
     from alive_progress import alive_it
     from torch.utils.data import DataLoader
     from torchgeo.datasets import stack_samples, unbind_samples
-    from torchgeo.samplers import BatchGeoSampler
 
     if colors is None:
         colors = ["red", "green", "blue", "purple", "orange", "cadetblue", "black"]
@@ -256,9 +243,6 @@ def plot_samplers_on_map(
 
     # Create a folium map if not provided
     map = map or folium.Map()
-
-    # Dictionary to track processed files to avoid duplicates
-    processed_files = {}
 
     # Dictionary to track label counts if requested, one dict per dataset
     label_counts_per_dataset = (
@@ -291,15 +275,8 @@ def plot_samplers_on_map(
     dataloaders = []
 
     for dataset, sampler in zip(datasets, samplers):
-        if isinstance(sampler, BatchGeoSampler):
-            batch_sampler = sampler
-            sampler = None
-        else:
-            batch_sampler = None
-
         dataloader = DataLoader(
             dataset,
-            batch_sampler=batch_sampler,
             sampler=sampler,
             collate_fn=stack_samples,
         )
@@ -392,17 +369,6 @@ def plot_samplers_on_map(
 
                 sample_count += 1
 
-                # Process mask files if needed for additional visualization (e.g., debugging)
-                # Limits the number of unique mask files processed across all samples/datasets
-                if max_files is not None and "mask_filepaths" in sample:
-                    for mask_path in sample["mask_filepaths"]:
-                        if (
-                            mask_path not in processed_files
-                            and len(processed_files) < max_files
-                        ):
-                            # Mark this file as processed to avoid duplicates
-                            processed_files[mask_path] = True
-
                 # Check if we've reached the maximum sample count for this dataset
                 if max_samples is not None and sample_count >= max_samples:
                     break
@@ -478,7 +444,7 @@ def plot_samplers_on_map(
 def plot_class_raster(
     tif_file_path: str | Path,
     ax: plt.Axes = None,
-    class_mapping: dict[int, str] = None,
+    class_mapping: dict[int, str] | None = None,
     colormap=cm.tab20,
     data_window_only: bool = False,
     **kwargs,
@@ -517,8 +483,8 @@ def plot_class_raster(
 def plot_numpy_array(
     array: np.ndarray,
     ax: plt.Axes = None,
-    class_mapping: dict[int, str] = None,
-    nodata_value: int = None,  # Changed: Allow None
+    class_mapping: dict[int, str] | None = None,
+    nodata_value: int | None = None,  # Changed: Allow None
     colormap=cm.tab20,
     data_window_only: bool = False,
     nodata_color: str = "black",
@@ -663,24 +629,20 @@ def plot_samples(
     show_filepaths: bool = False,
     dataset_type: str = 'classification',
 ):
-    from torch.utils.data import DataLoader
-    from torchgeo.datasets import stack_samples, unbind_samples
-    from torchgeo.samplers import RandomGeoSampler
-
     assert hasattr(dataset, "plot"), "Dataset must have a plot method"
-    sampler = RandomGeoSampler(
-        dataset,
-        size=patch_size,
-    )
-    dataloader = DataLoader(
-        dataset, sampler=sampler, collate_fn=stack_samples, batch_size=1
-    )
-    _iterator = iter(dataloader)
+    # Sample a random patch from a random file. TorchGeo's RandomPatchSampler samples
+    # from the combined area of all files shrunk by half a patch, which leaves nothing
+    # to sample from files that are about the size of a patch.
+    rng = np.random.default_rng()
+    width, height = patch_size * dataset.res[0], patch_size * dataset.res[1]
     samples = []
     for _ in range(100):
         try:
-            batch = next(_iterator)
-            sample = unbind_samples(batch)[0]
+            row = rng.integers(len(dataset.index))
+            xmin, ymin, xmax, ymax = dataset.index.geometry.iloc[row].bounds
+            x = rng.uniform(xmin, max(xmin, xmax - width))
+            y = rng.uniform(ymin, max(ymin, ymax - height))
+            sample = dataset[x : x + width, y : y + height]
             if dataset_type == 'classification':
                 if (
                     (("image" in sample) and (sample["image"] == 0).all())
@@ -697,8 +659,8 @@ def plot_samples(
             samples.append(sample)
             if len(samples) == n:
                 break
-        except StopIteration:
-            break
+        except IndexError:
+            continue
 
     if not samples:
         print("No valid samples found.")

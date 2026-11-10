@@ -1,8 +1,11 @@
+import copy
 import inspect
 import json
 import math
+import os
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence, Tuple, Union
+from typing import TYPE_CHECKING
 
 import geopandas as gpd
 import numpy as np
@@ -16,7 +19,11 @@ from pyproj import Geod
 from rasterio.windows import Window
 from shapely import MultiPolygon, Polygon
 from shapely.ops import transform
-from torchgeo.datasets.utils import BoundingBox
+
+if TYPE_CHECKING:
+    from torchgeo.datasets import IntersectionDataset
+
+    from eotorch.data.geodatasets import CustomCacheRasterDataset
 
 
 class Region:
@@ -34,8 +41,8 @@ class Region:
     def create(
         cls,
         source: str | Path | dict | Polygon | list[Polygon],
-        crs: str = None,
-        name: str = None,
+        crs: str | None = None,
+        name: str | None = None,
         dissolve: bool = True,
         **kwargs,
     ):
@@ -79,9 +86,9 @@ class Region:
     def from_shapefile(
         cls,
         path: str | Path,
-        crs: str = None,
+        crs: str | None = None,
         dissolve: bool = True,
-        name: str = None,
+        name: str | None = None,
         **kwargs,
     ):
         """
@@ -141,7 +148,7 @@ class Region:
         dissolve: bool = True,
         name: str | None = None,
         **kwargs,
-    ) -> Union["Region", list["Region"]]:
+    ) -> "Region | list[Region]":
         """
         Create a region from multiple shapely polygons.
 
@@ -208,7 +215,11 @@ class Region:
 
     @classmethod
     def from_geojson(
-        cls, geojson_path: str | Path, crs: str = None, name: str = None, **kwargs
+        cls,
+        geojson_path: str | Path,
+        crs: str | None = None,
+        name: str | None = None,
+        **kwargs,
     ):
         """
         Create a region from a GeoJSON file.
@@ -402,7 +413,7 @@ class Region:
         number_of_meters = pixel_buffer * pixel_size_m
         return self.with_metres_buffer(number_of_meters)
 
-    def crop_raster(self, raster_path: str | Path, out_path: str | Path = None):
+    def crop_raster(self, raster_path: str | Path, out_path: str | Path | None = None):
         """
         Crops a raster file to the region.
 
@@ -599,7 +610,67 @@ def transform_index(
     return new_index
 
 
-def window_to_np_idc(window: Window) -> Tuple[slice, slice]:
+def _check_same_type(ds1, ds2, operation: str) -> None:
+    if not isinstance(ds2, type(ds1)):
+        raise TypeError(
+            f"Cannot {operation} {type(ds1).__name__} with {type(ds2).__name__}"
+        )
+
+
+def union_raster_datasets(
+    ds1: "CustomCacheRasterDataset", ds2: "CustomCacheRasterDataset"
+) -> "CustomCacheRasterDataset":
+    """
+    Combine the files of two raster datasets into one dataset. The datasets must contain
+    the same bands, but may differ in CRS and resolution. The result takes the CRS,
+    resolution and all other settings from ds1.
+    """
+    _check_same_type(ds1, ds2, "union")
+    for attr in ("bands", "all_bands", "is_image", "separate_files"):
+        if getattr(ds1, attr) != getattr(ds2, attr):
+            raise ValueError(
+                f"'{attr}' must be the same for union. "
+                f"Got {getattr(ds1, attr)} and {getattr(ds2, attr)}"
+            )
+
+    ds2 = copy.deepcopy(ds2)
+    ds2.crs = ds1.crs
+    ds2.res = ds1.res
+
+    def as_list(paths):
+        return [paths] if isinstance(paths, (str, os.PathLike)) else list(paths)
+
+    union = copy.deepcopy(ds1)
+    union.index = pd.concat([ds1.index, ds2.index])
+    union.paths = sorted({str(p) for p in as_list(ds1.paths) + as_list(ds2.paths)})
+    return union
+
+
+def union_paired_datasets(ds1: "IntersectionDataset", ds2: "IntersectionDataset"):
+    """Union of two image/label datasets, combining the images and the labels separately."""
+    _check_same_type(ds1, ds2, "union")
+    return type(ds1)(
+        ds1.datasets[0] | ds2.datasets[0],
+        ds1.datasets[1] | ds2.datasets[1],
+        collate_fn=ds1.collate_fn,
+        transforms=ds1.transforms,
+    )
+
+
+def intersect_paired_datasets(ds1: "IntersectionDataset", ds2: "IntersectionDataset"):
+    """Intersection of two image/label datasets, intersecting the images and the labels separately."""
+    from torchgeo.datasets import IntersectionDataset
+
+    _check_same_type(ds1, ds2, "intersect")
+    return type(ds1)(
+        IntersectionDataset(ds1.datasets[0], ds2.datasets[0]),
+        IntersectionDataset(ds1.datasets[1], ds2.datasets[1]),
+        collate_fn=ds1.collate_fn,
+        transforms=ds1.transforms,
+    )
+
+
+def window_to_np_idc(window: Window) -> tuple[slice, slice]:
     """Convert a window to numpy array indices."""
     return (
         slice(int(round(window.row_off)), int(round(window.row_off + window.height))),

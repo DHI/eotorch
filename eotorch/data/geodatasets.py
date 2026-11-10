@@ -6,8 +6,9 @@ import logging
 import os
 import re
 from collections import defaultdict
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Iterable, Sequence, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import geopandas as gpd
 import matplotlib.pyplot as plt
@@ -26,7 +27,7 @@ from torchgeo.datasets import (
     RasterDataset,
     concat_samples,
 )
-from torchgeo.datasets.utils import BoundingBox  # deprecated but still used internally
+from torchgeo.datasets.utils import GeoSlice, array_to_tensor
 
 from eotorch.bandindex import BAND_INDEX
 from eotorch.inference.inference_utils import prediction_to_numpy
@@ -344,39 +345,122 @@ class CustomCacheRasterDataset(RasterDataset, SamplePlotMixin):
     ) -> None:
         super().__init__(paths, crs, res, bands, transforms, cache=cache_size > 0)
         self.cache_size = cache_size
-        self._cached_load_warp_file = functools.lru_cache(maxsize=cache_size)(
-            self._load_warp_file
-        )
+        # If True, a query matching the footprint of a file exactly reads only that
+        # file, instead of merging every file it touches. Used for pre-patched data,
+        # see RasterDataModule(patch_size=None).
+        self.single_file_reads = False
+        self._init_cache()
         # In order to avoid spamming "Skipping source" Log Messages in Rasterio Merge
         logging.getLogger("rasterio").setLevel(logging.WARNING)
 
-    def __getitem__(self, index) -> dict[str, Any]:
-        """Retrieve image/mask and metadata indexed by query.
+    def _init_cache(self) -> None:
+        self._cached_load_warp_file = functools.lru_cache(maxsize=self.cache_size)(
+            self._load_warp_file
+        )
+        # Lookup table of file footprints, built on first use and whenever the index changes
+        self._footprints: dict[tuple[int, ...], list[tuple[pd.Interval, str]]] = {}
+        self._footprints_index = None
 
-        Args:
-            index: spatiotemporal slice to index (GeoSlice)
+    # Configured on the class by get_*_dataset, so they would revert to their defaults
+    # in a freshly spawned process unless pickled along with the instance.
+    _class_config = (
+        "filename_glob",
+        "filename_regex",
+        "date_format",
+        "all_bands",
+        "rgb_bands",
+        "separate_files",
+        "is_image",
+        "class_mapping",
+        "dataset_type",
+        "nodata_value",
+    )
 
-        Returns:
-            sample of image/mask and metadata at that index
+    def __getstate__(self) -> dict[str, Any]:
+        # DataLoader workers started with "spawn" (the only option on Windows) pickle the
+        # dataset. The per-instance lru_cache can't be pickled, so rebuild it afterwards.
+        state = {k: getattr(self, k) for k in self._class_config if hasattr(self, k)}
+        state.update(self.__dict__)
+        for cache in ("_cached_load_warp_file", "_footprints", "_footprints_index"):
+            del state[cache]
+        return state
 
-        Raises:
-            IndexError: if query is not found in the index
-        """
-        # Extract filepaths before delegating to super
-        x, y, t = self._disambiguate_slice(index)
-        interval = pd.Interval(t.start, t.stop)
-        df = self.index.iloc[self.index.index.overlaps(interval)]
-        df = df.cx[x.start : x.stop, y.start : y.stop]
-        filepaths = df.filepath.tolist()
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        self.__dict__.update(state)
+        self._init_cache()
 
-        sample = super().__getitem__(index)
+    def __getitem__(self, index: GeoSlice) -> dict[str, Any]:
+        if self.single_file_reads and not self.separate_files:
+            x, y, t = self._disambiguate_slice(index)
+            filepath = self._file_with_footprint(x, y, t)
+            if filepath is not None:
+                return self._read_file(filepath, (x, y, t))
+        return super().__getitem__(index)
 
-        if self.is_image:
-            sample["image_filepaths"] = filepaths
+    def _pixel_keys(self, bounds: np.ndarray) -> list[tuple[int, ...]]:
+        """Lookup keys for (minx, miny, maxx, maxy) rows of bounds."""
+        xres, yres = self.res
+        x0, y0 = self._footprints_origin
+        # In whole pixels, float noise in the coordinates can't break exact dict lookups
+        pixels = np.rint((bounds - [x0, y0, x0, y0]) / [xres, yres, xres, yres])
+        return [tuple(row) for row in pixels.astype(int).tolist()]
+
+    def _file_with_footprint(self, x: slice, y: slice, t: slice) -> str | None:
+        """The file whose footprint matches the query to within half a pixel, if any."""
+        if self._footprints_index is not self.index:
+            bounds = self.index.geometry.bounds.to_numpy()
+            # Pixels are counted from the corner of a file, as the coordinates of a
+            # grid aren't necessarily multiples of its resolution
+            self._footprints_origin = bounds[0, :2]
+            self._footprints = defaultdict(list)
+            for key, interval, filepath in zip(
+                self._pixel_keys(bounds), self.index.index, self.index.filepath
+            ):
+                self._footprints[key].append((interval, filepath))
+            self._footprints_index = self.index
+
+        (key,) = self._pixel_keys(np.array([[x.start, y.start, x.stop, y.stop]]))
+        query_interval = pd.Interval(t.start, t.stop)
+        for interval, filepath in self._footprints.get(key, []):
+            if interval.overlaps(query_interval):
+                return filepath
+        return None
+
+    def _read_file(self, filepath: str, index: GeoSlice) -> dict[str, Any]:
+        """Same as RasterDataset.__getitem__, but reading a single file."""
+        x, y, _ = index
+        src = (
+            self._cached_load_warp_file(filepath, self.crs)
+            if self.cache
+            else self._load_warp_file(filepath, self.crs)
+        )
+        shape = round((y.stop - y.start) / y.step), round((x.stop - x.start) / x.step)
+        if src.shape == shape:
+            # Already on the grid of the query, so skip the slower resampling of a merge
+            data = array_to_tensor(src.read(self.band_indexes))
         else:
-            sample["mask_filepaths"] = filepaths
+            data = self._merge_or_stack([filepath], index, self.band_indexes)
+        transform = rst.transform.from_origin(x.start, y.stop, x.step, y.step)
+        sample = {
+            "bounds": self._slice_to_tensor(index),
+            "transform": torch.tensor(transform),
+        }
+
+        data = data.to(self.dtype)
+        if self.is_image:
+            sample["image"] = data
+        else:
+            sample["mask"] = data.squeeze(-3)
+
+        if self.transforms is not None:
+            sample = self.transforms(sample)
 
         return sample
+
+    def filepaths_at(self, bounds: Tensor) -> list[str]:
+        """Files spatially overlapping a sample's "bounds" tensor."""
+        xmin, xmax, _, ymin, ymax = bounds.tolist()[:5]
+        return self.index.cx[xmin:xmax, ymin:ymax].filepath.tolist()
 
     def _repr_html_(self):
         print(
@@ -421,11 +505,12 @@ class CustomCacheRasterDataset(RasterDataset, SamplePlotMixin):
             "all_bands": "'all_bands' attribute",
             "is_image": "'is_image' attribute",
             "separate_files": "'separate_files' attribute",
+            "reduce_zero_label": "'reduce_zero_label' attribute",
         }
 
         for attr_name, display_name in compatibility_attrs.items():
-            self_attr = getattr(self, attr_name)
-            other_attr = getattr(other, attr_name)
+            self_attr = getattr(self, attr_name, None)
+            other_attr = getattr(other, attr_name, None)
             if self_attr != other_attr:
                 raise ValueError(
                     f"{display_name} must be the same for union. "
@@ -440,10 +525,8 @@ class CustomCacheRasterDataset(RasterDataset, SamplePlotMixin):
             other_transformed.res = self.res
 
         # --- Construct the items for the new_dataset.index ---
-        # Combine indexes from both datasets
-        combined_index = pd.concat(
-            [self.index, other_transformed.index], ignore_index=True
-        )
+        # Combine indexes from both datasets, keeping their time intervals
+        combined_index = pd.concat([self.index, other_transformed.index])
 
         if combined_index.empty:
             raise ValueError(
@@ -484,6 +567,9 @@ class CustomCacheRasterDataset(RasterDataset, SamplePlotMixin):
             transforms=self.transforms,  # Inherit from self
             cache_size=self.cache_size,  # Inherit from self
         )
+        # Set per instance by label datasets, so not passed on by the class attributes above
+        if hasattr(self, "reduce_zero_label"):
+            new_dataset.reduce_zero_label = self.reduce_zero_label
 
         # Replace the automatically generated index with our carefully constructed one.
         new_dataset.index = combined_index
@@ -507,7 +593,7 @@ class PlottableImageDataset(CustomCacheRasterDataset):
         image = sample["image"][rgb_indices]
 
         if show_filepaths := kwargs.pop("show_filepaths", False):
-            filepaths = sample["image_filepaths"]
+            filepaths = self.filepaths_at(sample["bounds"])
             formatted_paths = _format_filepaths(filepaths)
             ax.set_title(formatted_paths, fontsize=8, wrap=True)
 
@@ -565,7 +651,7 @@ class PlottableClassificationDataset(CustomCacheRasterDataset):
         if self.reduce_zero_label:
             vals += 1
         if show_filepaths := kwargs.pop("show_filepaths", False):
-            filepaths = sample["mask_filepaths"]
+            filepaths = self.filepaths_at(sample["bounds"])
             formatted_paths = _format_filepaths(filepaths)
             ax.set_title(formatted_paths, fontsize=8, wrap=True)
 
@@ -700,14 +786,10 @@ class PlottableRegressionDataset(CustomCacheRasterDataset):
     ) -> None:
         super().__init__(paths, crs, res, bands, transforms, cache_size)
 
-    def __getitem__(self, index) -> dict[str, Any]:
-        sample = super().__getitem__(index)
-        return sample
-
     def plot(self, sample, ax=None, **kwargs):
         vals = sample["mask"].numpy()
         if show_filepaths := kwargs.pop("show_filepaths", False):
-            filepaths = sample["mask_filepaths"]
+            filepaths = self.filepaths_at(sample["bounds"])
             formatted_paths = _format_filepaths(filepaths)
             ax.set_title(formatted_paths, fontsize=8, wrap=True)
 
@@ -792,19 +874,6 @@ class ClassificationRasterDataset(
             dataset1, dataset2, collate_fn=collate_fn, transforms=transforms
         )
 
-        # rename index columns resulting from merge, for more clarity
-        if "filepath_1" in self.index.columns:
-            self.index = self.index.rename(
-                columns={"filepath_1": "image_filepath", "filepath_2": "label_filepath"}
-            )
-        if "datetime_1" in self.index.columns:
-            self.index = self.index.rename(
-                columns={
-                    "datetime_1": "image_datetime",
-                    "datetime_2": "label_datetime",
-                }
-            )
-
     def plot(self, sample: dict[str, Any], **kwargs):
         predictions = sample.pop("prediction", None)
         n_cols = 3 if predictions is not None else 2
@@ -872,7 +941,6 @@ class ClassificationRasterDataset(
         if isinstance(self.datasets[-1], PlottableClassificationDataset):
             label_ds: PlottableClassificationDataset = self.datasets[-1]
             pixel_counts = defaultdict(int)
-            # Use GeoPandas iteration instead of R-tree intersection
             for temporal_interval, row in self.index.iterrows():
                 bounds = row.geometry.bounds  # (minx, miny, maxx, maxy)
                 geo_slice = (
@@ -1050,22 +1118,22 @@ class RegressionRasterDataset(
 
 def get_segmentation_dataset(
     images_dir: str | Path | Iterable[str] | Iterable[Path],
-    labels_dir: str | Path | Iterable[str] | Iterable[Path] = None,
+    labels_dir: str | Path | Iterable[str] | Iterable[Path] | None = None,
     image_glob="*.tif",
     label_glob="*.tif",
-    image_filename_regex: str = None,
-    label_filename_regex: str = None,
-    image_date_format: str = None,
-    label_date_format: str = None,
+    image_filename_regex: str | None = None,
+    label_filename_regex: str | None = None,
+    image_date_format: str | None = None,
+    label_date_format: str | None = None,
     all_image_bands: tuple[str] = (),
     rgb_bands: tuple[str] = ("red", "green", "blue"),
-    sensor_name: str = None,
+    sensor_name: str | None = None,
     crs: CRS = None,
-    res: float = None,
-    bands_to_return: tuple[str] = None,
-    image_transforms: Callable[[dict[str, Any]], dict[str, Any]] = None,
-    label_transforms: Callable[[dict[str, Any]], dict[str, Any]] = None,
-    class_mapping: dict[int, str] = None,
+    res: float | None = None,
+    bands_to_return: tuple[str] | None = None,
+    image_transforms: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    label_transforms: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    class_mapping: dict[int, str] | None = None,
     cache_size: int = 20,
     reduce_zero_label: bool = True,
     split_sparse_labels: bool = False,
@@ -1082,13 +1150,15 @@ def get_segmentation_dataset(
         label_glob (str): Glob pattern for the label files. Defaults to "*.tif". Modify if not all .tif files in the directory should be used.
         image_filename_regex (str): Regular expression to extract metadata from image filenames.
                                     See https://torchgeo.readthedocs.io/en/stable/tutorials/custom_raster_dataset.html#filename_regex
-        date_format (str): Date format to extract metadata from image filenames. Should be specified if image_filename_regex is used.
+        label_filename_regex (str): Regular expression to extract metadata from label filenames.
+        image_date_format (str): Date format of the date extracted from image filenames. Should be specified if image_filename_regex captures a date.
                             See https://torchgeo.readthedocs.io/en/stable/tutorials/custom_raster_dataset.html#date_format
                             Example for matching files from the same year, when the filenames have the format "image_YYYY_3.tif" and "label_YYYY_whatever.tif":
                                 image_filename_regex=r'.*_(?P<date>\d{4})_.*',
                                 label_filename_regex=r'.*_(?P<date>\d{4})_.*',
-                                date_format='%Y'
-        label_filename_regex (str): Regular expression to extract metadata from label filenames.
+                                image_date_format='%Y',
+                                label_date_format='%Y'
+        label_date_format (str): Date format of the date extracted from label filenames. Should be specified if label_filename_regex captures a date.
         all_image_bands (tuple): All bands in the image files.
         rgb_bands (tuple): Bands to use for RGB visualization.
         sensor_name (str): Name of the sensor to use. Overrides all_image_bands and res. For valid sensor names, see BAND_INDEX in eotorch.bandindex.py.
@@ -1169,22 +1239,22 @@ def get_segmentation_dataset(
 
 def get_regression_dataset(
     images_dir: str | Path | Iterable[str] | Iterable[Path],
-    labels_dir: str | Path | Iterable[str] | Iterable[Path] = None,
+    labels_dir: str | Path | Iterable[str] | Iterable[Path] | None = None,
     image_glob="*.tif",
     label_glob="*.tif",
-    image_filename_regex: str = None,
-    label_filename_regex: str = None,
-    image_date_format: str = None,
-    label_date_format: str = None,
+    image_filename_regex: str | None = None,
+    label_filename_regex: str | None = None,
+    image_date_format: str | None = None,
+    label_date_format: str | None = None,
     all_image_bands: tuple[str] = (),
     rgb_bands: tuple[str] = ("red", "green", "blue"),
-    sensor_name: str = None,
+    sensor_name: str | None = None,
     crs: CRS = None,
-    res: float = None,
+    res: float | None = None,
     nodata_value: float = 0.0,
-    bands_to_return: tuple[str] = None,
-    image_transforms: Callable[[dict[str, Any]], dict[str, Any]] = None,
-    label_transforms: Callable[[dict[str, Any]], dict[str, Any]] = None,
+    bands_to_return: tuple[str] | None = None,
+    image_transforms: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    label_transforms: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     cache_size: int = 20,
     split_sparse_labels: bool = False,
     split_sparse_labels_min_size: int = 300,
@@ -1200,13 +1270,15 @@ def get_regression_dataset(
         label_glob (str): Glob pattern for the label files. Defaults to "*.tif". Modify if not all .tif files in the directory should be used.
         image_filename_regex (str): Regular expression to extract metadata from image filenames.
                                     See https://torchgeo.readthedocs.io/en/stable/tutorials/custom_raster_dataset.html#filename_regex
-        date_format (str): Date format to extract metadata from image filenames. Should be specified if image_filename_regex is used.
+        label_filename_regex (str): Regular expression to extract metadata from label filenames.
+        image_date_format (str): Date format of the date extracted from image filenames. Should be specified if image_filename_regex captures a date.
                             See https://torchgeo.readthedocs.io/en/stable/tutorials/custom_raster_dataset.html#date_format
                             Example for matching files from the same year, when the filenames have the format "image_YYYY_3.tif" and "label_YYYY_whatever.tif":
                                 image_filename_regex=r'.*_(?P<date>\d{4})_.*',
                                 label_filename_regex=r'.*_(?P<date>\d{4})_.*',
-                                date_format='%Y'
-        label_filename_regex (str): Regular expression to extract metadata from label filenames.
+                                image_date_format='%Y',
+                                label_date_format='%Y'
+        label_date_format (str): Date format of the date extracted from label filenames. Should be specified if label_filename_regex captures a date.
         all_image_bands (tuple): All bands in the image files.
         rgb_bands (tuple): Bands to use for RGB visualization.
         sensor_name (str): Name of the sensor to use. Overrides all_image_bands and res. For valid sensor names, see BAND_INDEX in eotorch.bandindex.py.

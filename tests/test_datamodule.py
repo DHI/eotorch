@@ -1,4 +1,4 @@
-"""Tests for SegmentationDataModule setup and data loading."""
+"""Tests for RasterDataModule setup and data loading."""
 
 from pathlib import Path
 
@@ -6,7 +6,7 @@ import pytest
 import torch
 from torchgeo.datasets import IntersectionDataset
 
-from eotorch.data.datamodules import SegmentationDataModule, get_dataset_args
+from eotorch.data.datamodules import RasterDataModule, get_dataset_args
 from eotorch.data.geodatasets import (
     ClassificationRasterDataset,
     PlottableClassificationDataset,
@@ -55,7 +55,7 @@ def segmentation_dataset(image_dataset, label_dataset):
 
 @pytest.fixture
 def datamodule(segmentation_dataset):
-    return SegmentationDataModule(
+    return RasterDataModule(
         train_dataset=segmentation_dataset,
         batch_size=2,
         patch_size=32,
@@ -71,9 +71,33 @@ def test_datamodule_setup_fit(datamodule):
     assert datamodule.val_sampler is not None
 
 
+def test_datamodule_val_split_at_init(segmentation_dataset):
+    """Without a val_dataset, a file-wise split is held out when the module is created."""
+    n_files = len(segmentation_dataset)
+    dm = RasterDataModule(train_dataset=segmentation_dataset, patch_size=32)
+    assert dm.val_dataset is not None
+    assert len(dm.train_dataset) + len(dm.val_dataset) == n_files
+    assert len(dm.val_dataset) >= 1
+
+
+def test_datamodule_val_split_none_raises(segmentation_dataset):
+    with pytest.raises(ValueError, match="val_split=None"):
+        RasterDataModule(
+            train_dataset=segmentation_dataset, patch_size=32, val_split=None
+        )
+
+
+def test_datamodule_single_file_without_val_raises(image_dataset):
+    PlottableImageDataset.filename_glob = "image_0.tif"
+    single_file_dataset = PlottableImageDataset(paths=str(TEST_DATA), cache_size=1)
+    assert len(single_file_dataset) == 1
+    with pytest.raises(ValueError, match="at least 2"):
+        RasterDataModule(train_dataset=single_file_dataset, patch_size=32)
+
+
 def test_datamodule_setup_with_val_dataset(segmentation_dataset):
     """When val_dataset is provided, no automatic split should happen."""
-    dm = SegmentationDataModule(
+    dm = RasterDataModule(
         train_dataset=segmentation_dataset,
         val_dataset=segmentation_dataset,
         batch_size=2,
@@ -104,7 +128,7 @@ def test_datamodule_val_dataloader(datamodule):
 
 
 def test_datamodule_predict_setup(image_dataset):
-    dm = SegmentationDataModule(
+    dm = RasterDataModule(
         predict_dataset=image_dataset,
         batch_size=4,
         patch_size=32,
@@ -118,13 +142,13 @@ def test_datamodule_predict_setup(image_dataset):
 
 
 def test_datamodule_custom_sampler(segmentation_dataset):
-    dm = SegmentationDataModule(
+    dm = RasterDataModule(
         train_dataset=segmentation_dataset,
         val_dataset=segmentation_dataset,
         batch_size=2,
         patch_size=32,
         num_workers=0,
-        train_sampler_config={"type": "RandomGeoSampler", "length": 10},
+        train_sampler_config={"type": "RandomPatchSampler", "length": 10},
     )
     dm.setup(stage="fit")
     loader = dm.train_dataloader()
@@ -134,7 +158,7 @@ def test_datamodule_custom_sampler(segmentation_dataset):
 
 
 def test_datamodule_invalid_sampler(segmentation_dataset):
-    dm = SegmentationDataModule(
+    dm = RasterDataModule(
         train_dataset=segmentation_dataset,
         val_dataset=segmentation_dataset,
         batch_size=2,

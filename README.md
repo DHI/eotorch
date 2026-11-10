@@ -1,13 +1,16 @@
 # EOTorch
 
-**EOTorch** is a Python library for geospatial deep learning built on top of [TorchGeo](https://github.com/microsoft/torchgeo) and [PyTorch Lightning](https://lightning.ai/). It provides a streamlined workflow for common Earth observation (EO) tasks. Currently, the main focus is semantic segmentation, with the plan to add further tasks, such as regression and object detection later on. 
+**EOTorch** is a Python library for geospatial deep learning built on top of [TorchGeo](https://github.com/microsoft/torchgeo) and [PyTorch Lightning](https://lightning.ai/). It provides a streamlined workflow for common Earth observation (EO) tasks: semantic segmentation and pixelwise regression. 
 
 ## Key Features
 
 - 🗺️ **Easy dataset creation** from GeoTIFF images and labels with automatic CRS/resolution handling
 - 🔀 **Flexible data splitting** - file-wise random splits or spatial (AOI-based) splits  
 - 📊 **Built-in visualization** - plot samples, preview datasets on interactive maps
-- 🚀 **Seamless inference** - run predictions on large rasters with automatic patching
+- 🧠 **Flexible training** - eotorch and [segmentation_models_pytorch](https://smp.readthedocs.io) models, combinable losses, sparse labels
+- 🧩 **Pre-patched data** - generate patch files once and train on them with the same tools
+- ⚖️ **On-the-fly normalization** - no need to write normalized copies of your images
+- 🚀 **Seamless inference** - run predictions on large rasters with automatic patching and optional blending of overlapping patches
 - 🔧 **TorchGeo compatible** - works with existing TorchGeo components while simplifying common workflows
 
 ---
@@ -18,9 +21,10 @@
 - [Core Concepts](#core-concepts)
   - [1. Dataset Creation with `get_segmentation_dataset()`](#1-dataset-creation-with-get_segmentation_dataset)
   - [2. Data Splitting with `splits`](#2-data-splitting-with-splits)
-  - [3. Data Loading with `SegmentationDataModule`](#3-data-loading-with-segmentationdatamodule)
-  - [4. Inference with `SemanticSegmentationTask.predict_on_tif_file()`](#4-inference-with-semanticsegmentationtaskpredict_on_tif_file)
-  - [5. Preprocessing with `eotorch.processing`](#5-preprocessing-with-eotorchprocessing)
+  - [3. Data Loading with `RasterDataModule`](#3-data-loading-with-rasterdatamodule)
+  - [4. Training with `SegmentationTask` and `RegressionTask`](#4-training-with-segmentationtask-and-regressiontask)
+  - [5. Inference with `predict_on_tif_file()`](#5-inference-with-predict_on_tif_file)
+  - [6. Preprocessing with `eotorch.processing`](#6-preprocessing-with-eotorchprocessing)
 - [Key Differences from TorchGeo](#key-differences-from-torchgeo)
 - [API Reference](#api-reference)
 - [Examples](#examples)
@@ -47,6 +51,7 @@ EOTorch supports several optional features. You can install them optional extras
 | `dev`       | Developer tools (formatting, testing, docs) |
 | `test`      | Testing tools (pytest, coverage, mypy)      |
 | `notebooks` | Jupyter notebook support                    |
+| `dinov3`    | The `dinov3_upernet` model (`transformers`) |
 | `cuda126`   | GPU support for Windows with CUDA 12.6      |
 
 #### Example: Install with optional extras for Jupyter notebook and Windows GPU Support
@@ -87,6 +92,7 @@ uv add "git+https://github.com/DHI/eotorch.git[<add_extras_here>]"
 You can find usage examples in the [notebooks](notebooks/) directory.
 
 * For segmentation use cases, check [notebooks/segmentation.ipynb](notebooks/segmentation.ipynb)
+* To save the class probabilities of a segmentation model next to its predictions, check [notebooks/class_probabilities.ipynb](notebooks/class_probabilities.ipynb)
 
 ---
 
@@ -241,19 +247,19 @@ train_ds, val_ds = splits.aoi_split(
 > **Tip: Creating AOI files interactively**  
 > In a Jupyter notebook, simply display your dataset variable (`ds`) to see an interactive map showing all image and label extents. You can use this map to visually identify regions, then draw and export polygons using the draw tool of the folium map that appears.
 
-### 3. Data Loading with `SegmentationDataModule`
+### 3. Data Loading with `RasterDataModule`
 
-The data module wraps your datasets for PyTorch Lightning training:
+The data module wraps your datasets for PyTorch Lightning training, for both segmentation and regression:
 
 ```python
-from eotorch.data import SegmentationDataModule
+from eotorch.data import RasterDataModule
 
-module = SegmentationDataModule(
+module = RasterDataModule(
     train_dataset=train_ds,
     val_dataset=val_ds,
     batch_size=16,
     patch_size=224,         # Size of patches sampled from images
-    num_workers=4,
+    num_workers=4,          # Also works on Windows
     pin_memory=True,
 )
 ```
@@ -263,26 +269,89 @@ module = SegmentationDataModule(
 Control how patches are sampled during training:
 
 ```python
-module = SegmentationDataModule(
+module = RasterDataModule(
     train_dataset=train_ds,
-    # Default: GridGeoSampler with stride=patch_size/2
+    # Default: GriddedPatchSampler with stride=patch_size/2
     # For random sampling:
-    train_sampler_config={"type": "RandomGeoSampler", "length": 5000},
+    train_sampler_config={"type": "RandomPatchSampler", "length": 5000},
     # ...
 )
 ```
 
-### 4. Inference with `SemanticSegmentationTask.predict_on_tif_file()`
+#### On-the-fly Normalization
+
+Instead of writing normalized copies of your images, pass the mean and standard deviation of each band. The images are then normalized on the GPU as `(image - mean) / std`, and the same is done automatically when predicting with the trained model:
+
+```python
+from eotorch.processing.normalize import band_statistics
+
+mean, std = band_statistics(train_ds)  # ignores nodata pixels
+module = RasterDataModule(train_dataset=train_ds, val_dataset=val_ds, mean=mean, std=std)
+```
+
+To scale a fixed range `(low, high)` of each band to `(0, 1)`, use `mean=low` and `std=high - low`.
+
+#### Pre-patched Data
+
+If your data is already split into patches, one patch per file (see [Patch Generation](#patch-generation)), load the patch directories like any other dataset and set `patch_size=None` to use each file as one sample:
+
+```python
+train_ds = get_segmentation_dataset(
+    images_dir="patches/train", labels_dir="patches/train",
+    image_glob="*_image.tif", label_glob="*_label.tif", ...
+)
+val_ds = get_segmentation_dataset(images_dir="patches/val", labels_dir="patches/val", ...)
+
+module = RasterDataModule(train_dataset=train_ds, val_dataset=val_ds, patch_size=None, batch_size=16)
+```
+
+### 4. Training with `SegmentationTask` and `RegressionTask`
+
+Both tasks are based on the corresponding TorchGeo tasks and can be trained with a Lightning `Trainer`:
+
+```python
+from lightning.pytorch import Trainer
+from eotorch.data import SegmentationTask
+
+task = SegmentationTask(
+    num_classes=3,
+    in_channels=4,
+    model="unet",                # see below
+    backbone="resnet34",
+    loss={"ce": 0.5, "dice": 0.5},
+    ignore_index=-1,             # e.g. unlabelled pixels with reduce_zero_label=True
+    class_names=["Water", "Forest", "Urban"],
+)
+Trainer(max_epochs=50).fit(task, datamodule=module)
+```
+
+**Models**: `model` is one of the eotorch models (`"deepresunet"`, `"unet_lite"`, a small UNet whose size is set by `num_filters`, and `"dinov3_upernet"`), TorchGeo's `"fcn"`, or any architecture of [segmentation_models_pytorch](https://smp.readthedocs.io/en/latest/models.html) such as `"unet"`, `"unetplusplus"`, `"deeplabv3plus"`, `"upernet"`, `"segformer"` or `"dpt"`. Model-specific arguments go into `model_kwargs`, e.g. `model_kwargs={"decoder_channels": [128, 64, 32, 16, 8]}`. Pretrained encoders can be loaded with `weights` (`True` for ImageNet, or a TorchGeo weight enum), and frozen with `freeze_backbone=True`.
+
+**Losses**: `"ce"`, `"bce"`, `"dice"`, `"focal"`, `"tversky"`, `"boundary"` and `"boundary_distance"` (Kervadec et al.), or a weighted combination of them as a dict. Extra arguments per loss go into `loss_kwargs`, e.g. `loss_kwargs={"focal": {"gamma": 2.0}}`. The `LossWeightScheduler` callback in `eotorch.models.callbacks` can ramp up the weight of one term, which is useful for the boundary losses.
+
+**Binary segmentation**: use `num_classes=1, task="binary"` and e.g. `loss="bce"`.
+
+**Regression** works the same way. Pixels where the target equals `nodata_value` are left out of the loss and metrics, which allows training on sparse labels:
+
+```python
+from eotorch.data import RegressionTask, get_regression_dataset
+
+ds = get_regression_dataset(images_dir=..., labels_dir=..., nodata_value=-9999, ...)
+task = RegressionTask(in_channels=6, model="unet", loss="huber", nodata_value=-9999)
+```
+
+### 5. Inference with `predict_on_tif_file()`
 
 Run predictions on large rasters directly from a trained checkpoint. This method automatically handles patching, batching, and stitching, and reads configuration (patch size, class mapping, etc.) from the checkpoint:
 
 ```python
-from eotorch.data import SemanticSegmentationTask
+from eotorch.data import SegmentationTask
 
-result_path = SemanticSegmentationTask.predict_on_tif_file(
+result_path = SegmentationTask.predict_on_tif_file(
     tif_file_path="large_image.tif",
     checkpoint_path="checkpoints/best-model.ckpt",
     batch_size=8,
+    blend=True,               # Optional: blend overlapping patches to avoid seams
     show_results=True,        # Display preview in notebook
     out_file_path="predictions/output.tif",  # Optional, auto-generated if not set
 )
@@ -291,12 +360,15 @@ result_path = SemanticSegmentationTask.predict_on_tif_file(
 The method automatically:
 - Loads the model from the checkpoint
 - Reads `patch_size` and `class_mapping` from saved hyperparameters
+- Selects and normalizes the image bands as during training
 - Handles `reduce_zero_label` correction if it was used during training
 - Outputs a GeoTIFF with the same CRS and extent as the input
 
+With `blend=True`, overlapping patch predictions (class probabilities for segmentation) are averaged with weights that decrease towards the patch edges, instead of only keeping the center of each patch. `RegressionTask.predict_on_tif_file()` works the same way and writes float32 values.
+
 > **Note**: For custom models or more control, use `predict_on_tif_generic()` from `eotorch.inference.inference` which accepts any prediction function.
 
-### 5. Preprocessing with `eotorch.processing`
+### 6. Preprocessing with `eotorch.processing`
 
 EOTorch provides utilities for common preprocessing tasks:
 
@@ -328,6 +400,26 @@ normalize(
     out_res=10.0,              # Optional: resample to target resolution
 )
 ```
+
+#### Patch Generation
+
+Split an image and its labels into patch files once, e.g. to train on them repeatedly or to share a fixed training set. The labels may have a different extent, resolution or CRS than the image, and are reprojected onto the image grid:
+
+```python
+from eotorch.processing import generate_patches_from_files
+
+generate_patches_from_files(
+    img_path="image.tif",
+    label_path="labels.tif",      # e.g. rasterized vector labels, see below
+    out_dir="patches",            # creates patches/train and patches/val
+    patch_size=256,
+    val_fraction=0.2,             # random blocks of the image held out for validation
+    n_random_offsets=2,           # extra, randomly shifted training patches per block
+    empty_label_threshold=0.99,   # skip patches with (almost) no labels
+)
+```
+
+See [Pre-patched Data](#pre-patched-data) for training on the patches.
 
 #### Rasterization
 
@@ -418,7 +510,7 @@ ds.plot_samples(n=3)  # Verify everything looks correct
 train_ds, val_ds = splits.file_wise_split(ds, [0.8, 0.2])
 
 # Then pass instances to DataModule
-module = SegmentationDataModule(
+module = RasterDataModule(
     train_dataset=train_ds,  # Instance
     val_dataset=val_ds,      # Instance
 )
@@ -438,7 +530,10 @@ This pattern allows you to:
 | Function/Class | Description |
 |----------------|-------------|
 | `get_segmentation_dataset()` | Create a dataset from image/label directories |
-| `SegmentationDataModule` | Lightning DataModule for segmentation |
+| `get_regression_dataset()` | Create a dataset with continuous labels |
+| `RasterDataModule` | Lightning DataModule for segmentation and regression |
+| `SegmentationTask` | Semantic segmentation task |
+| `RegressionTask` | Pixelwise regression task |
 | `splits.file_wise_split()` | Split dataset by files (random or specified) |
 | `splits.aoi_split()` | Split dataset by geographic regions |
 
@@ -452,6 +547,8 @@ This pattern allows you to:
 
 | Function | Description |
 |----------|-------------|
+| `normalize.band_statistics()` | Per-band mean/std for on-the-fly normalization |
+| `generate_patches_from_files()` | Split an image and labels into patch files |
 | `zscore_normalize()` | Z-score normalization with stats export |
 | `normalize()` | Percentile-based normalization |
 
@@ -554,8 +651,8 @@ result = predict_on_tif_generic(
 
 #### Key Differences from EOTorch Models
 
-| Aspect | EOTorch `SemanticSegmentationTask` | TerraTorch `SemanticSegmentationTask` |
-|--------|-----------------------------------|--------------------------------------|
+| Aspect | EOTorch `SegmentationTask` | TerraTorch `SemanticSegmentationTask` |
+|--------|----------------------------|--------------------------------------|
 | **Inference method** | Built-in `predict_on_tif_file()` | Use `predict_on_tif_generic()` with custom function |
 | **Model output** | Direct tensor | `ModelOutput` object (access via `.output`) |
 | **Checkpoint storage** | Stores `datamodule_hyper_parameters` | Does not auto-store EOTorch params |
@@ -577,7 +674,7 @@ You can find usage examples in the [notebooks](notebooks/) directory:
 ```python
 from pathlib import Path
 from lightning.pytorch import Trainer
-from eotorch.data import get_segmentation_dataset, SegmentationDataModule, splits
+from eotorch.data import RasterDataModule, SegmentationTask, get_segmentation_dataset, splits
 
 # 1. Create dataset
 ds = get_segmentation_dataset(
@@ -596,7 +693,7 @@ ds.plot_samples(n=2, patch_size=256)
 train_ds, val_ds = splits.file_wise_split(ds, ratios_or_counts=[0.8, 0.2])
 
 # 4. Create data module
-module = SegmentationDataModule(
+module = RasterDataModule(
     train_dataset=train_ds,
     val_dataset=val_ds,
     batch_size=16,
@@ -604,9 +701,10 @@ module = SegmentationDataModule(
     num_workers=4,
 )
 
-# 5. Train (using your Lightning module)
+# 5. Train
+task = SegmentationTask(num_classes=2, in_channels=3, model="unet", ignore_index=-1)
 trainer = Trainer(max_epochs=10)
-trainer.fit(your_model, datamodule=module)
+trainer.fit(task, datamodule=module)
 ```
 
 ---
@@ -627,6 +725,6 @@ trainer.fit(your_model, datamodule=module)
 
 **Band ordering**: `all_image_bands` defines the order bands are stored in files; `rgb_bands` defines which bands to use for visualization.
 
-**Windows users**: Set `num_workers=0` and `persistent_workers=False` if you encounter multiprocessing issues.
+**Windows users**: Multiple data loading workers (`num_workers > 0`) are supported. In scripts, put the training code under `if __name__ == "__main__":`, as worker processes re-import the script on Windows.
 
 ---
