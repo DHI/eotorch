@@ -670,6 +670,7 @@ You can find usage examples in the [notebooks](notebooks/) directory:
 | Notebook | Description |
 |----------|-------------|
 | [segmentation.ipynb](notebooks/segmentation.ipynb) | End-to-end segmentation workflow with EOTorch |
+| [regression.ipynb](notebooks/regression.ipynb) | Predicting a continuous value per pixel, with targets that don't cover the whole image |
 | [pre_patched_segmentation.ipynb](notebooks/pre_patched_segmentation.ipynb) | Training on data split into patch files beforehand |
 | [class_probabilities.ipynb](notebooks/class_probabilities.ipynb) | Saving class probabilities next to the predicted classes |
 
