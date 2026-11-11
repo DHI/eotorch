@@ -37,6 +37,12 @@ from eotorch.utils import _format_filepaths, transform_index
 if TYPE_CHECKING:
     from torch import Tensor
 
+# TorchGeo's & would stack the images and labels of both datasets on top of each other
+INTERSECTION_NOT_SUPPORTED = (
+    "Datasets of images and labels can't be intersected with '&'. "
+    "Use '|' to combine their files."
+)
+
 
 def split_raster_into_dense_areas(
     file_path: str | Path,
@@ -964,15 +970,8 @@ class ClassificationRasterDataset(
             transforms=self.transforms,
         )
 
-    def __and__(
-        self, other: ClassificationRasterDataset
-    ) -> ClassificationRasterDataset:
-        return ClassificationRasterDataset(
-            IntersectionDataset(self.datasets[0], other.datasets[0]),
-            IntersectionDataset(self.datasets[1], other.datasets[1]),
-            collate_fn=self.collate_fn,
-            transforms=self.transforms,
-        )
+    def __and__(self, other):
+        raise TypeError(INTERSECTION_NOT_SUPPORTED)
 
     @property
     def crs(self) -> CRS:
@@ -1077,13 +1076,8 @@ class RegressionRasterDataset(
             transforms=self.transforms,
         )
 
-    def __and__(self, other: RegressionRasterDataset) -> RegressionRasterDataset:
-        return RegressionRasterDataset(
-            IntersectionDataset(self.datasets[0], other.datasets[0]),
-            IntersectionDataset(self.datasets[1], other.datasets[1]),
-            collate_fn=self.collate_fn,
-            transforms=self.transforms,
-        )
+    def __and__(self, other):
+        raise TypeError(INTERSECTION_NOT_SUPPORTED)
 
     @property
     def crs(self) -> CRS:

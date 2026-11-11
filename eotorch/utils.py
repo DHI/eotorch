@@ -657,19 +657,6 @@ def union_paired_datasets(ds1: "IntersectionDataset", ds2: "IntersectionDataset"
     )
 
 
-def intersect_paired_datasets(ds1: "IntersectionDataset", ds2: "IntersectionDataset"):
-    """Intersection of two image/label datasets, intersecting the images and the labels separately."""
-    from torchgeo.datasets import IntersectionDataset
-
-    _check_same_type(ds1, ds2, "intersect")
-    return type(ds1)(
-        IntersectionDataset(ds1.datasets[0], ds2.datasets[0]),
-        IntersectionDataset(ds1.datasets[1], ds2.datasets[1]),
-        collate_fn=ds1.collate_fn,
-        transforms=ds1.transforms,
-    )
-
-
 def window_to_np_idc(window: Window) -> tuple[slice, slice]:
     """Convert a window to numpy array indices."""
     return (

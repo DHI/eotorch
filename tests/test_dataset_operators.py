@@ -61,9 +61,10 @@ def test_union_rejects_other_types():
         ds.datasets[0] | ds
 
 
-def test_intersection():
-    ds = _dataset(get_segmentation_dataset, 0)
-    intersection = ds & ds
-
-    assert type(intersection) is type(ds)
-    assert len(intersection) == len(ds)
+@pytest.mark.parametrize(
+    "get_dataset", [get_segmentation_dataset, get_regression_dataset]
+)
+def test_intersection_is_not_supported(get_dataset):
+    ds = _dataset(get_dataset, 0)
+    with pytest.raises(TypeError, match="can't be intersected"):
+        ds & ds
