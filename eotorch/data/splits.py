@@ -371,24 +371,19 @@ def _convert_buffer_to_crs_units(buffer_meters: float, dataset_crs: str) -> floa
     if buffer_meters == 0:
         return 0
 
-    try:
-        crs_obj = CRS.from_user_input(dataset_crs)
+    crs_obj = CRS.from_user_input(dataset_crs)
 
-        # If CRS is already in meters, return as-is
-        if crs_obj.axis_info[0].unit_name in ["metre", "meter", "m"]:
-            return buffer_meters
-
-        # If CRS is in degrees (like EPSG:4326), convert meters to degrees
-        # Using rough approximation: 1 degree ≈ 111,320 meters at equator
-        if crs_obj.axis_info[0].unit_name in ["degree", "degrees"]:
-            return buffer_meters / 111320.0
-
-        # For other units, return the buffer as-is (user's responsibility)
+    # If CRS is already in meters, return as-is
+    if crs_obj.axis_info[0].unit_name in ["metre", "meter", "m"]:
         return buffer_meters
 
-    except Exception:
-        # If we can't determine the CRS units, assume it's in the same units as provided
-        return buffer_meters
+    # If CRS is in degrees (like EPSG:4326), convert meters to degrees
+    # Using rough approximation: 1 degree ≈ 111,320 meters at equator
+    if crs_obj.axis_info[0].unit_name in ["degree", "degrees"]:
+        return buffer_meters / 111320.0
+
+    # For other units, return the buffer as-is (user's responsibility)
+    return buffer_meters
 
 
 def _split_geometry_into_boxes(

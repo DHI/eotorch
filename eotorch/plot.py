@@ -353,29 +353,18 @@ def plot_samplers_on_map(
         # Add the sample feature group to the map
         sample_group.add_to(map)
 
-    # Fit map bounds to encompass all datasets
-    try:
-        all_bounds = []
-        for dataset in datasets:
-            if not dataset.index.empty:
-                # (minx, miny, maxx, maxy) in WGS84 (EPSG:4326) for folium
-                all_bounds.append(dataset.index.to_crs("EPSG:4326").total_bounds)
-
-        if all_bounds:
-            # Calculate the overall bounds encompassing all datasets
-            min_x = min(bounds[0] for bounds in all_bounds)
-            min_y = min(bounds[1] for bounds in all_bounds)
-            max_x = max(bounds[2] for bounds in all_bounds)
-            max_y = max(bounds[3] for bounds in all_bounds)
-
-            # Convert to folium format: ((lat1, lon1), (lat2, lon2))
-            # Note: folium expects (lat, lon) which is (y, x)
-            folium_bounds = ((min_y, min_x), (max_y, max_x))
-            map.fit_bounds(bounds=folium_bounds)
-
-    except Exception as e:
-        print(f"Warning: Could not fit map bounds for datasets. Error: {e}")
-        # Continue without fitting bounds
+    # Fit the map to all datasets, in WGS84 (EPSG:4326) for folium
+    all_bounds = [
+        dataset.index.to_crs("EPSG:4326").total_bounds
+        for dataset in datasets
+        if not dataset.index.empty
+    ]
+    if all_bounds:
+        bounds = np.array(all_bounds)  # rows of (minx, miny, maxx, maxy)
+        min_x, min_y = bounds[:, :2].min(axis=0)
+        max_x, max_y = bounds[:, 2:].max(axis=0)
+        # folium expects (lat, lon), which is (y, x)
+        map.fit_bounds(bounds=((min_y, min_x), (max_y, max_x)))
 
     # Always add the layer control
     folium.LayerControl().add_to(map)

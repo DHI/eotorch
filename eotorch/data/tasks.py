@@ -168,8 +168,6 @@ class _TaskMixin:
             fig = datamodule.plot({k: v.detach().cpu() for k, v in sample.items()})
         except RGBBandsMissingError:
             pass
-        except Exception as e:
-            print(f"Error plotting sample from batch {batch_idx}: {e}")
         if fig:
             experiment.add_figure(
                 f"image/{batch_idx}", fig, global_step=self.global_step
