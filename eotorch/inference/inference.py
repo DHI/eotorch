@@ -19,7 +19,6 @@ def predict_on_tif_generic(
     data_and_window_generator: Generator | None = None,
     patch_size: int = 256,
     class_mapping: dict[int, str] | None = None,
-    func_supports_batching: bool = True,
     batch_size: int = 8,
     out_file_path: str | Path | None = None,
     show_results: bool = False,
@@ -59,10 +58,8 @@ def predict_on_tif_generic(
         Overlap factor between patches (larger values increase overlap).
     class_mapping : dict[int, str], optional
         Mapping from predicted class indices to class names for visualization.
-    func_supports_batching : bool
-        Whether the prediction_func supports batched processing.
     batch_size : int
-        The batch size used for prediction (ignored if func_supports_batching is False).
+        The batch size used for prediction. Use 1 if prediction_func can't handle batches.
     out_file_path : str | Path, optional
         Output path for saving the results. Writes to a "predictions" subfolder if None.
     show_results : bool
@@ -102,8 +99,6 @@ def predict_on_tif_generic(
         old_no_data = meta["nodata"]
 
     meta.update({"driver": "GTiff", "dtype": dtype, "count": count, "nodata": nodata})
-    batch_size = batch_size if func_supports_batching else 1
-
     if out_file_path is None:
         out_file_path = (
             tif_file_path.parent / "predictions" / f"{tif_file_path.stem}_pred.tif"

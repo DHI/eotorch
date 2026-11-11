@@ -10,50 +10,12 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 import torch
-from pyproj import CRS, Transformer
+from pyproj import CRS
 from shapely.geometry import Polygon, box
 from shapely.ops import unary_union
 from torch import Generator, default_generator, randperm
 from torchgeo.datasets import GeoDataset, IntersectionDataset, RasterDataset
 from torchgeo.datasets.splits import _fractions_to_lengths
-
-
-def _transform_bounds_to_crs(bounds, source_crs, target_crs):
-    """Transform bounding box coordinates from source CRS to target CRS.
-
-    Args:
-        bounds: Tuple of (minx, miny, maxx, maxy) in source CRS
-        source_crs: Source CRS as string (e.g., "EPSG:4326")
-        target_crs: Target CRS as string (e.g., "EPSG:3857")
-
-    Returns:
-        Tuple of (minx, miny, maxx, maxy) in target CRS
-    """
-    if source_crs == target_crs:
-        return bounds
-
-    try:
-        transformer = Transformer.from_crs(source_crs, target_crs, always_xy=True)
-        minx, miny, maxx, maxy = bounds
-
-        # Transform all four corners to handle potential rotation/skew
-        corners = [
-            (minx, miny),  # bottom-left
-            (minx, maxy),  # top-left
-            (maxx, miny),  # bottom-right
-            (maxx, maxy),  # top-right
-        ]
-
-        transformed_corners = [transformer.transform(x, y) for x, y in corners]
-
-        # Get new bounds from transformed corners
-        xs, ys = zip(*transformed_corners)
-        return (min(xs), min(ys), max(xs), max(ys))
-
-    except Exception as e:
-        raise ValueError(
-            f"Error transforming bounds from {source_crs} to {target_crs}: {str(e)}"
-        )
 
 
 def _format_paths(files: str | Path | list[str] | list[Path] | None) -> list[Path]:

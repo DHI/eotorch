@@ -1,5 +1,4 @@
 import random
-from glob import glob
 from pathlib import Path
 from typing import Any
 
@@ -206,17 +205,3 @@ def generate_patches_from_files(
             ) as dst:
                 dst.write(label_patch, 1)
             n += 1
-
-
-def clear_patches(wildcard: str, patch_dir: str | Path) -> None:
-    """
-    Deletes existing patches matching the scene name.
-
-    Parameters:
-        wildcard (str):
-            Glob wildcard used to match patch files.
-        patch_dir (str | Path):
-            Patch directory.
-    """
-    for path in glob(str(Path(patch_dir) / wildcard)):
-        Path(path).unlink()
