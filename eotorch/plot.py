@@ -536,7 +536,9 @@ def plot_numpy_array(
         )
 
     numeric_data_values = {
-        v for v in potential_data_values if isinstance(v, (int, float, np.integer, np.floating))
+        v
+        for v in potential_data_values
+        if isinstance(v, (int, float, np.integer, np.floating))
     }
 
     cmap = plt.get_cmap(colormap).copy()
@@ -559,6 +561,10 @@ def plot_numpy_array(
             bounds = np.arange(min_val - 0.5, max_val + 1.5)
             if len(bounds) < 2:
                 bounds = np.array([min_val - 0.5, min_val + 0.5])
+            n_classes = len(bounds) - 1
+            if n_classes > cmap.N:
+                # More classes than colors in the colormap, e.g. tab20 has 20
+                cmap = plt.get_cmap("turbo", n_classes).with_extremes(bad=nodata_color)
             norm = plt.matplotlib.colors.BoundaryNorm(bounds, cmap.N)
         else:
             # For continuous data (regression)
@@ -584,8 +590,10 @@ def plot_numpy_array(
             effective_class_mapping[v] = str(v)
 
     # For continuous data, create a colorbar instead of discrete legend patches
-    is_continuous = not all(isinstance(v, (int, np.integer)) for v in numeric_data_values)
-    
+    is_continuous = not all(
+        isinstance(v, (int, np.integer)) for v in numeric_data_values
+    )
+
     if is_continuous:
         # For continuous data (regression), position colorbar without resizing axes
         divider = make_axes_locatable(ax)
@@ -596,7 +604,7 @@ def plot_numpy_array(
         present_data_values = sorted(
             list(set(v for v in data_values if isinstance(v, (int, np.integer))))
         )
-        
+
         if norm:
             for i in present_data_values:
                 if isinstance(norm, plt.matplotlib.colors.BoundaryNorm):
@@ -627,7 +635,7 @@ def plot_samples(
     patch_size: int = 256,
     nodata_val: int = 0,
     show_filepaths: bool = False,
-    dataset_type: str = 'classification',
+    dataset_type: str = "classification",
 ):
     assert hasattr(dataset, "plot"), "Dataset must have a plot method"
     # Sample a random patch from a random file. TorchGeo's RandomPatchSampler samples
@@ -643,17 +651,19 @@ def plot_samples(
             x = rng.uniform(xmin, max(xmin, xmax - width))
             y = rng.uniform(ymin, max(ymin, ymax - height))
             sample = dataset[x : x + width, y : y + height]
-            if dataset_type == 'classification':
+            if dataset_type == "classification":
                 if (
                     (("image" in sample) and (sample["image"] == 0).all())
                     or ("mask" in sample and (sample["mask"] == nodata_val).all())
                     or ("mask" in sample and (sample["mask"] == -1).all())
                 ):
                     continue
-            elif dataset_type == 'regression':
-                if (
-                    (("image" in sample) and (sample["image"] == 0).all())
-                    or ("mask" in sample and torch.equal(sample["mask"], torch.full_like(sample["mask"], nodata_val)))
+            elif dataset_type == "regression":
+                if (("image" in sample) and (sample["image"] == 0).all()) or (
+                    "mask" in sample
+                    and torch.equal(
+                        sample["mask"], torch.full_like(sample["mask"], nodata_val)
+                    )
                 ):
                     continue
             samples.append(sample)

@@ -177,3 +177,80 @@ def test_plotting_does_not_change_the_sample(labels):
     assert sample.keys() == original.keys()
     for key, value in original.items():
         assert (sample[key] == value).all(), key
+
+
+def test_plot_numpy_array_with_more_classes_than_colors():
+    array = np.arange(30).reshape(5, 6)
+
+    fig, ax = plt.subplots()
+    plot_numpy_array(array, ax=ax, nodata_value=0)
+
+    assert len(ax.get_legend().get_texts()) >= 29
+    plt.close(fig)
+
+
+def _segmentation_dataset(**kwargs):
+    from pathlib import Path
+
+    from eotorch.data import get_segmentation_dataset
+
+    data = Path(__file__).parent / "data"
+    return get_segmentation_dataset(
+        images_dir=data / "image_0.tif",
+        labels_dir=data / "label_0.tif",
+        all_image_bands=("red", "green", "blue"),
+        **kwargs,
+    )
+
+
+def _plotted_image(image_dataset) -> np.ndarray:
+    sample = image_dataset[image_dataset.bounds]
+    fig, ax = plt.subplots()
+    image_dataset.plot(sample, ax=ax)
+    plotted = ax.get_images()[0].get_array()
+    plt.close(fig)
+    return plotted
+
+
+def test_image_plot_finds_rgb_bands_among_the_selected_bands():
+    images = _segmentation_dataset().datasets[0]
+    reordered = _segmentation_dataset(bands_to_return=("blue", "green", "red"))
+    np.testing.assert_array_equal(
+        _plotted_image(reordered.datasets[0]), _plotted_image(images)
+    )
+
+
+def test_image_plot_without_rgb_bands_raises():
+    from torchgeo.datasets import RGBBandsMissingError
+
+    images = _segmentation_dataset(bands_to_return=("blue", "green")).datasets[0]
+    with pytest.raises(RGBBandsMissingError):
+        images.plot(images[images.bounds])
+    plt.close("all")
+
+
+@pytest.mark.parametrize("labels", ["label", "target"])
+def test_plots_show_filepaths_without_given_axes(labels):
+    from pathlib import Path
+
+    from eotorch.data import get_regression_dataset
+
+    if labels == "label":
+        ds = _segmentation_dataset()
+    else:
+        data = Path(__file__).parent / "data"
+        ds = get_regression_dataset(
+            images_dir=data / "image_0.tif",
+            labels_dir=data / "target_0.tif",
+            all_image_bands=("red", "green", "blue"),
+            nodata_value=-9999.0,
+        )
+    sample = ds[ds.bounds]
+    image_ds, label_ds = ds.datasets
+
+    label_ds.plot(sample, show_filepaths=True)
+    assert f"{labels}_0.tif" in plt.gcf().axes[0].get_title()
+
+    image_ds.plot({**sample, "prediction": sample["mask"]}, show_filepaths=True)
+    assert "image_0.tif" in plt.gcf().axes[0].get_title()
+    plt.close("all")

@@ -25,6 +25,7 @@ from torchgeo.datasets import (
     GeoDataset,
     IntersectionDataset,
     RasterDataset,
+    RGBBandsMissingError,
     concat_samples,
 )
 from torchgeo.datasets.utils import GeoSlice, array_to_tensor
@@ -573,24 +574,26 @@ class PlottableImageDataset(CustomCacheRasterDataset):
         predictions = sample.get("prediction")
 
         if ax is None:
-            # _, ax = plt.subplots()
             n_cols = 2 if predictions is not None else 1
             fig, ax = plt.subplots(1, n_cols, figsize=(n_cols * 4, 4))
+        image_ax = ax if predictions is None else ax[0]
 
-        rgb_indices = []
-        for band in self.rgb_bands:
-            rgb_indices.append(self.all_bands.index(band))
+        # The sample only holds the selected bands, in the order of self.bands
+        try:
+            rgb_indices = [self.bands.index(band) for band in self.rgb_bands]
+        except ValueError as e:
+            raise RGBBandsMissingError() from e
 
         image = sample["image"][rgb_indices]
 
         if show_filepaths := kwargs.pop("show_filepaths", False):
             filepaths = self.filepaths_at(sample["bounds"])
             formatted_paths = _format_filepaths(filepaths)
-            ax.set_title(formatted_paths, fontsize=8, wrap=True)
+            image_ax.set_title(formatted_paths, fontsize=8, wrap=True)
 
         show(
             image.numpy(),
-            ax=ax if predictions is None else ax[0],
+            ax=image_ax,
             adjust=True,
             title="Image" if not show_filepaths else None,
             **kwargs,
@@ -640,6 +643,8 @@ class PlottableClassificationDataset(CustomCacheRasterDataset):
         return sample
 
     def plot(self, sample, ax=None, **kwargs):
+        if ax is None:
+            _, ax = plt.subplots()
         vals = sample["mask"].numpy()
         if self.reduce_zero_label:
             vals = vals + 1  # not +=, which would change the sample's tensor
@@ -779,6 +784,8 @@ class PlottableRegressionDataset(CustomCacheRasterDataset):
             self.nodata_value = nodata_value
 
     def plot(self, sample, ax=None, **kwargs):
+        if ax is None:
+            _, ax = plt.subplots()
         vals = sample["mask"].numpy()
         if show_filepaths := kwargs.pop("show_filepaths", False):
             filepaths = self.filepaths_at(sample["bounds"])
