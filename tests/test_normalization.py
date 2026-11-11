@@ -10,26 +10,9 @@ import rasterio as rst
 import torch
 
 from eotorch.data import RasterDataModule, SegmentationTask, get_segmentation_dataset
-from eotorch.data.geodatasets import (
-    PlottableClassificationDataset,
-    PlottableImageDataset,
-)
 from eotorch.processing.normalize import band_statistics
 
 TEST_DATA = Path(__file__).parent / "data"
-
-
-@pytest.fixture(autouse=True)
-def _restore_class_attrs():
-    """get_segmentation_dataset configures the dataset classes, so restore them."""
-    saved = {
-        cls: {k: getattr(cls, k) for k in cls._class_config if hasattr(cls, k)}
-        for cls in (PlottableImageDataset, PlottableClassificationDataset)
-    }
-    yield
-    for cls, attrs in saved.items():
-        for k, v in attrs.items():
-            setattr(cls, k, v)
 
 
 @pytest.fixture

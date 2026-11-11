@@ -16,35 +16,28 @@ from eotorch.data.geodatasets import (
 TEST_DATA = Path(__file__).parent / "data"
 
 
-@pytest.fixture(autouse=True)
-def _restore_class_attrs():
-    """Save and restore class-level attributes modified by tests."""
-    saved = {
-        "img_glob": PlottableImageDataset.filename_glob,
-        "img_all_bands": PlottableImageDataset.all_bands,
-        "img_rgb_bands": PlottableImageDataset.rgb_bands,
-        "lbl_glob": PlottableClassificationDataset.filename_glob,
-    }
-    yield
-    PlottableImageDataset.filename_glob = saved["img_glob"]
-    PlottableImageDataset.all_bands = saved["img_all_bands"]
-    PlottableImageDataset.rgb_bands = saved["img_rgb_bands"]
-    PlottableClassificationDataset.filename_glob = saved["lbl_glob"]
+def _image_dataset(filename_glob: str = "image_*.tif") -> PlottableImageDataset:
+    return PlottableImageDataset(
+        paths=str(TEST_DATA),
+        filename_glob=filename_glob,
+        all_bands=["red", "green", "blue"],
+        rgb_bands=["red", "green", "blue"],
+        cache_size=1,
+    )
 
 
 @pytest.fixture
 def image_dataset():
-    PlottableImageDataset.filename_glob = "image_*.tif"
-    PlottableImageDataset.all_bands = ["red", "green", "blue"]
-    PlottableImageDataset.rgb_bands = ["red", "green", "blue"]
-    return PlottableImageDataset(paths=str(TEST_DATA), cache_size=1)
+    return _image_dataset()
 
 
 @pytest.fixture
 def label_dataset():
-    PlottableClassificationDataset.filename_glob = "label_*.tif"
     return PlottableClassificationDataset(
-        paths=str(TEST_DATA), cache_size=1, reduce_zero_label=False
+        paths=str(TEST_DATA),
+        filename_glob="label_*.tif",
+        cache_size=1,
+        reduce_zero_label=False,
     )
 
 
@@ -87,9 +80,8 @@ def test_datamodule_val_split_none_raises(segmentation_dataset):
         )
 
 
-def test_datamodule_single_file_without_val_raises(image_dataset):
-    PlottableImageDataset.filename_glob = "image_0.tif"
-    single_file_dataset = PlottableImageDataset(paths=str(TEST_DATA), cache_size=1)
+def test_datamodule_single_file_without_val_raises():
+    single_file_dataset = _image_dataset("image_0.tif")
     assert len(single_file_dataset) == 1
     with pytest.raises(ValueError, match="at least 2"):
         RasterDataModule(train_dataset=single_file_dataset, patch_size=32)

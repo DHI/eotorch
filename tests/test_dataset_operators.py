@@ -8,8 +8,6 @@ DATA_DIR = Path(__file__).parent / "data"
 
 
 def _dataset(get_dataset, i: int, **kwargs):
-    # Selecting files by path rather than glob, as get_*_dataset stores the globs on
-    # the dataset classes, which would leak into other tests
     labels = "target" if get_dataset is get_regression_dataset else "label"
     return get_dataset(
         images_dir=DATA_DIR / f"image_{i}.tif",
@@ -33,11 +31,26 @@ def test_union(get_dataset):
     union[union.bounds]
 
 
+def test_datasets_keep_their_own_settings():
+    ds1 = _dataset(
+        get_segmentation_dataset, 0, class_mapping={1: "a"}, rgb_bands=("b", "g", "r")
+    )
+    ds2 = _dataset(get_segmentation_dataset, 1, class_mapping={5: "z"})
+    assert ds1.datasets[0].rgb_bands == ("b", "g", "r")
+    assert ds1.datasets[1].class_mapping == {1: "a"}
+    assert ds2.datasets[1].class_mapping == {5: "z"}
+
+
 def test_union_keeps_label_settings():
     ds1, ds2 = (
-        _dataset(get_segmentation_dataset, i, reduce_zero_label=False) for i in range(2)
+        _dataset(
+            get_segmentation_dataset, i, reduce_zero_label=False, class_mapping={1: "a"}
+        )
+        for i in range(2)
     )
-    assert not (ds1 | ds2).datasets[1].reduce_zero_label
+    union_labels = (ds1 | ds2).datasets[1]
+    assert not union_labels.reduce_zero_label
+    assert union_labels.class_mapping == {1: "a"}
 
 
 def test_union_rejects_other_types():

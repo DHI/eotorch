@@ -342,7 +342,27 @@ class CustomCacheRasterDataset(RasterDataset, SamplePlotMixin):
         bands: Sequence[str] | None = None,
         transforms: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
         cache_size: int = 20,
+        filename_glob: str | None = None,
+        filename_regex: str | None = None,
+        date_format: str | None = None,
+        all_bands: Sequence[str] | None = None,
+        rgb_bands: Sequence[str] | None = None,
+        separate_files: bool | None = None,
     ) -> None:
+        # TorchGeo defines these as class attributes, to be overridden by subclassing.
+        # Set on the instance instead, so each dataset keeps its own. None keeps the
+        # class attribute, so subclassing still works.
+        settings = {
+            "filename_glob": filename_glob,
+            "filename_regex": filename_regex,
+            "date_format": date_format,
+            "all_bands": all_bands,
+            "rgb_bands": rgb_bands,
+            "separate_files": separate_files,
+        }
+        for name, value in settings.items():
+            if value is not None:
+                setattr(self, name, value)
         super().__init__(paths, crs, res, bands, transforms, cache=cache_size > 0)
         self.cache_size = cache_size
         # If True, a query matching the footprint of a file exactly reads only that
@@ -361,26 +381,10 @@ class CustomCacheRasterDataset(RasterDataset, SamplePlotMixin):
         self._footprints: dict[tuple[int, ...], list[tuple[pd.Interval, str]]] = {}
         self._footprints_index = None
 
-    # Configured on the class by get_*_dataset, so they would revert to their defaults
-    # in a freshly spawned process unless pickled along with the instance.
-    _class_config = (
-        "filename_glob",
-        "filename_regex",
-        "date_format",
-        "all_bands",
-        "rgb_bands",
-        "separate_files",
-        "is_image",
-        "class_mapping",
-        "dataset_type",
-        "nodata_value",
-    )
-
     def __getstate__(self) -> dict[str, Any]:
         # DataLoader workers started with "spawn" (the only option on Windows) pickle the
         # dataset. The per-instance lru_cache can't be pickled, so rebuild it afterwards.
-        state = {k: getattr(self, k) for k in self._class_config if hasattr(self, k)}
-        state.update(self.__dict__)
+        state = self.__dict__.copy()
         for cache in ("_cached_load_warp_file", "_footprints", "_footprints_index"):
             del state[cache]
         return state
@@ -478,7 +482,7 @@ class CustomCacheRasterDataset(RasterDataset, SamplePlotMixin):
         The 'other' dataset's index will be transformed to 'self.crs' using GeoDataset's
         built-in CRS transformation logic if their CRSs differ.
 
-        The new dataset inherits transforms and cache_size from 'self'.
+        The new dataset inherits all other settings, e.g. transforms and cache_size, from 'self'.
         The index of the new dataset is a combination of the indices from 'self' and
         the (potentially transformed) index from 'other'.
 
@@ -551,29 +555,10 @@ class CustomCacheRasterDataset(RasterDataset, SamplePlotMixin):
             list(set(map(str, self_paths_list + other_paths_list)))
         )
 
-        # Create the new CustomCacheRasterDataset instance.
-        # It will initially build an index based on combined_constructor_paths and new_crs.
-
-        new_ds_class = self.__class__
-        new_ds_class.all_bands = self.all_bands
-        new_ds_class.rgb_bands = self.rgb_bands
-        new_ds_class.separate_files = self.separate_files
-        new_ds_class.is_image = self.is_image
-        new_dataset = new_ds_class(
-            paths=combined_constructor_paths,  # type: ignore[arg-type]
-            crs=self.crs,
-            res=self.res,
-            bands=self.bands,  # Bands (checked for equality)
-            transforms=self.transforms,  # Inherit from self
-            cache_size=self.cache_size,  # Inherit from self
-        )
-        # Set per instance by label datasets, so not passed on by the class attributes above
-        if hasattr(self, "reduce_zero_label"):
-            new_dataset.reduce_zero_label = self.reduce_zero_label
-
-        # Replace the automatically generated index with our carefully constructed one.
+        # A copy keeps all settings of 'self', only the files change
+        new_dataset = copy.deepcopy(self)
+        new_dataset.paths = combined_constructor_paths
         new_dataset.index = combined_index
-
         return new_dataset
 
 
@@ -618,25 +603,27 @@ class PlottableImageDataset(CustomCacheRasterDataset):
 class PlottableClassificationDataset(CustomCacheRasterDataset):
     colormap = cm.tab20
     nodata_value = 0
-    class_mapping: dict = None
+    class_mapping: dict | None = None
     is_image = False
+    dataset_type = "classification"
 
     def __init__(
         self,
-        paths: str | Path | Iterable[str] | Iterable[Path] = "data",
-        crs: CRS | None = None,
-        res: float | None = None,
-        bands: Sequence[str] | None = None,
-        transforms: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
-        cache_size: int = 20,
+        *args,
         reduce_zero_label: bool = True,
+        class_mapping: dict[int, str] | None = None,
+        **kwargs,
     ) -> None:
         """
         reduce_zero_label (bool): Subtract 1 from all labels. Useful when labels start from 1 instead of the
-        expected 0. Defaults to True."""
+        expected 0. Defaults to True.
+        class_mapping (dict): Mapping of class indices to class names. Used for visualization.
+        Other arguments are passed on to CustomCacheRasterDataset."""
 
-        super().__init__(paths, crs, res, bands, transforms, cache_size)
+        super().__init__(*args, **kwargs)
         self.reduce_zero_label = reduce_zero_label
+        if class_mapping is not None:
+            self.class_mapping = class_mapping
 
     def __getitem__(self, index) -> dict[str, Any]:
         sample = super().__getitem__(index)
@@ -768,23 +755,22 @@ class PlottableClassificationDataset(CustomCacheRasterDataset):
 
 class PlottableRegressionDataset(CustomCacheRasterDataset):
     colormap = cm.viridis
+    nodata_value: float = 0.0
     is_image = False
+    dataset_type = "regression"
 
     @property
     def dtype(self) -> torch.dtype:
         """Override base RasterDataset dtype to use float32 for regression values."""
         return torch.float32
 
-    def __init__(
-        self,
-        paths: str | Path | Iterable[str] | Iterable[Path] = "data",
-        crs: CRS | None = None,
-        res: float | None = None,
-        bands: Sequence[str] | None = None,
-        transforms: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
-        cache_size: int = 20,
-    ) -> None:
-        super().__init__(paths, crs, res, bands, transforms, cache_size)
+    def __init__(self, *args, nodata_value: float | None = None, **kwargs) -> None:
+        """
+        nodata_value (float): Label value of pixels without a target.
+        Other arguments are passed on to CustomCacheRasterDataset."""
+        super().__init__(*args, **kwargs)
+        if nodata_value is not None:
+            self.nodata_value = nodata_value
 
     def plot(self, sample, ax=None, **kwargs):
         vals = sample["mask"].numpy()
@@ -1191,21 +1177,14 @@ def get_segmentation_dataset(
             print("Warning: param res will be ignored as sensor_name is provided")
         res = BAND_INDEX[sensor_name]["res"]
 
-    image_filename_regex = image_filename_regex or r".*"
-    label_filename_regex = label_filename_regex or r".*"
-    image_date_format = image_date_format or "%Y%m%d"
-    label_date_format = label_date_format or "%Y%m%d"
-
-    image_ds_class = PlottableImageDataset
-    image_ds_class.filename_glob = image_glob
-    image_ds_class.all_bands = all_image_bands
-    image_ds_class.rgb_bands = rgb_bands
-    image_ds_class.separate_files = image_separate_files
-    image_ds_class.filename_regex = image_filename_regex
-    image_ds_class.date_format = image_date_format
-
-    image_ds = image_ds_class(
+    image_ds = PlottableImageDataset(
         paths=images_dir,
+        filename_glob=image_glob,
+        filename_regex=image_filename_regex,
+        date_format=image_date_format,
+        all_bands=all_image_bands,
+        rgb_bands=rgb_bands,
+        separate_files=image_separate_files,
         bands=bands_to_return,
         transforms=image_transforms,
         cache_size=cache_size,
@@ -1214,18 +1193,15 @@ def get_segmentation_dataset(
     )
 
     if labels_dir:
-        label_ds_class = PlottableClassificationDataset
-        label_ds_class.filename_glob = label_glob
-        label_ds_class.class_mapping = class_mapping
-        label_ds_class.filename_regex = label_filename_regex
-        label_ds_class.date_format = label_date_format
-        label_ds_class.dataset_type = "classification"
-
-        label_ds = label_ds_class(
+        label_ds = PlottableClassificationDataset(
             paths=labels_dir,
+            filename_glob=label_glob,
+            filename_regex=label_filename_regex,
+            date_format=label_date_format,
+            class_mapping=class_mapping,
+            reduce_zero_label=reduce_zero_label,
             transforms=label_transforms,
             cache_size=cache_size,
-            reduce_zero_label=reduce_zero_label,
             res=res,
             crs=crs,
         )
@@ -1309,21 +1285,14 @@ def get_regression_dataset(
             print("Warning: param res will be ignored as sensor_name is provided")
         res = BAND_INDEX[sensor_name]["res"]
 
-    image_filename_regex = image_filename_regex or r".*"
-    label_filename_regex = label_filename_regex or r".*"
-    image_date_format = image_date_format or "%Y%m%d"
-    label_date_format = label_date_format or "%Y%m%d"
-
-    image_ds_class = PlottableImageDataset
-    image_ds_class.filename_glob = image_glob
-    image_ds_class.all_bands = all_image_bands
-    image_ds_class.rgb_bands = rgb_bands
-    image_ds_class.separate_files = image_separate_files
-    image_ds_class.filename_regex = image_filename_regex
-    image_ds_class.date_format = image_date_format
-
-    image_ds = image_ds_class(
+    image_ds = PlottableImageDataset(
         paths=images_dir,
+        filename_glob=image_glob,
+        filename_regex=image_filename_regex,
+        date_format=image_date_format,
+        all_bands=all_image_bands,
+        rgb_bands=rgb_bands,
+        separate_files=image_separate_files,
         bands=bands_to_return,
         transforms=image_transforms,
         cache_size=cache_size,
@@ -1332,15 +1301,12 @@ def get_regression_dataset(
     )
 
     if labels_dir:
-        label_ds_class = PlottableRegressionDataset
-        label_ds_class.filename_glob = label_glob
-        label_ds_class.filename_regex = label_filename_regex
-        label_ds_class.date_format = label_date_format
-        label_ds_class.nodata_value = nodata_value
-        label_ds_class.dataset_type = "regression"
-
-        label_ds = label_ds_class(
+        label_ds = PlottableRegressionDataset(
             paths=labels_dir,
+            filename_glob=label_glob,
+            filename_regex=label_filename_regex,
+            date_format=label_date_format,
+            nodata_value=nodata_value,
             transforms=label_transforms,
             cache_size=cache_size,
             res=res,

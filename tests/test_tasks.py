@@ -15,32 +15,9 @@ from eotorch.data import (
     get_regression_dataset,
     get_segmentation_dataset,
 )
-from eotorch.data.geodatasets import (
-    PlottableClassificationDataset,
-    PlottableImageDataset,
-    PlottableRegressionDataset,
-)
 
 TEST_DATA = Path(__file__).parent / "data"
 NODATA = -9999.0
-
-
-@pytest.fixture(autouse=True)
-def _restore_class_attrs():
-    """get_*_dataset configures the dataset classes, so restore them."""
-    classes = (
-        PlottableImageDataset,
-        PlottableClassificationDataset,
-        PlottableRegressionDataset,
-    )
-    saved = {
-        cls: {k: getattr(cls, k) for k in cls._class_config if hasattr(cls, k)}
-        for cls in classes
-    }
-    yield
-    for cls, attrs in saved.items():
-        for k, v in attrs.items():
-            setattr(cls, k, v)
 
 
 def _fit(task, dataset, tmp_path) -> Path:

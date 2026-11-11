@@ -120,20 +120,6 @@ def test_plot_samples_with_patches_as_large_as_the_files(monkeypatch, labels):
     from pathlib import Path
 
     from eotorch.data import get_regression_dataset, get_segmentation_dataset
-    from eotorch.data.geodatasets import (
-        PlottableClassificationDataset,
-        PlottableImageDataset,
-        PlottableRegressionDataset,
-    )
-
-    for cls in (
-        PlottableImageDataset,
-        PlottableClassificationDataset,
-        PlottableRegressionDataset,
-    ):
-        for k in cls._class_config:
-            if hasattr(cls, k):
-                monkeypatch.setattr(cls, k, getattr(cls, k))
 
     # Segmentation labels (label_*.tif) or regression labels with nodata (target_*.tif)
     get_dataset = get_segmentation_dataset
