@@ -169,6 +169,47 @@ def test_file_sampler_samples_each_image_file_once(patch_dir):
         assert dataset[index]["image"].shape == (3, PATCH_SIZE, PATCH_SIZE)
 
 
+def test_file_sampler_skips_image_files_without_labels(patch_dir):
+    labels = sorted((patch_dir / "train").glob("*_label.tif"))
+    labels[0].unlink()
+    dataset = _patch_dataset(patch_dir / "train")
+
+    sampler = FileSampler(dataset)
+    assert len(sampler) == len(labels) - 1
+    for index in sampler:
+        dataset[index]
+
+
+def test_file_sampler_samples_files_with_the_same_footprint_but_other_dates(
+    patch_dir, tmp_path
+):
+    image = next((patch_dir / "train").glob("*_image.tif"))
+    label = Path(str(image).replace("_image", "_label"))
+    dated_dir = tmp_path / "dated"
+    dated_dir.mkdir()
+    for value, date in enumerate(["20200101", "20210101"], start=1):
+        with rst.open(image) as src:
+            profile = src.profile
+            data = np.full((src.count, src.height, src.width), value, src.dtypes[0])
+        with rst.open(dated_dir / f"{date}_image.tif", "w", **profile) as dst:
+            dst.write(data)
+        (dated_dir / f"{date}_label.tif").write_bytes(label.read_bytes())
+
+    dated_regex = r"^(?P<date>\d{8})_.*"
+    dataset = _patch_dataset(
+        dated_dir,
+        image_filename_regex=dated_regex,
+        label_filename_regex=dated_regex,
+        image_date_format="%Y%m%d",
+        label_date_format="%Y%m%d",
+    )
+    for ds in dataset.datasets:
+        ds.single_file_reads = True
+
+    values = {int(dataset[index]["image"][0, 0, 0]) for index in FileSampler(dataset)}
+    assert values == {1, 2}
+
+
 def test_single_file_reads_return_only_the_matching_file(patch_dir):
     images = sorted((patch_dir / "train").glob("*_image.tif"))
     # Distinct values per file, so a merge with overlapping patches would show

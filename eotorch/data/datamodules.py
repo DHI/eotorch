@@ -152,7 +152,7 @@ class RasterDataModule(GeoDataModule):
         """
         self.file_sampling = patch_size is None
         if self.file_sampling:
-            _, ymin, _, ymax = FileSampler(train_dataset).bounds[0]
+            _, ymin, _, ymax = FileSampler(train_dataset).index.geometry.iloc[0].bounds
             patch_size = round((ymax - ymin) / train_dataset.res[1])
 
         super().__init__(

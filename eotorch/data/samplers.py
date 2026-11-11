@@ -29,18 +29,28 @@ class FileSampler(GeoSampler):
         # The index of an IntersectionDataset has a row for every overlapping pair of
         # image and label files, so use the index of the images.
         if isinstance(dataset, IntersectionDataset):
-            dataset = dataset.datasets[0]
-        self.bounds = [geometry.bounds for geometry in dataset.index.geometry]
+            images = dataset.datasets[0].index
+            labels = dataset.datasets[1].index.union_all()
+            # Image files without labels can't be read as a sample
+            self.index = images[images.geometry.intersection(labels).area > 0]
+        else:
+            self.index = dataset.index
         self.shuffle = shuffle
         self.generator = generator
 
-    def __iter__(self) -> Iterator[tuple[slice, slice]]:
+    def __iter__(self) -> Iterator[tuple[slice, slice, slice]]:
         order = range(len(self))
         if self.shuffle:
             order = torch.randperm(len(self), generator=self.generator).tolist()
         for i in order:
-            xmin, ymin, xmax, ymax = self.bounds[i]
-            yield slice(xmin, xmax), slice(ymin, ymax)
+            xmin, ymin, xmax, ymax = self.index.geometry.iloc[i].bounds
+            # The time interval tells apart files with the same footprint
+            interval = self.index.index[i]
+            yield (
+                slice(xmin, xmax),
+                slice(ymin, ymax),
+                slice(interval.left, interval.right),
+            )
 
     def __len__(self) -> int:
-        return len(self.bounds)
+        return len(self.index)
