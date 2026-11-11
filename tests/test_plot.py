@@ -283,3 +283,18 @@ def test_plot_samples_keeps_regression_targets_of_minus_one(tmp_path, monkeypatc
 
     assert len(shown) == 1
     plt.close("all")
+
+
+def test_plot_numpy_array_masks_nan_as_nodata():
+    array = np.arange(16, dtype="float32").reshape(4, 4) / 2
+    array[0] = np.nan
+
+    fig, ax = plt.subplots()
+    plot_numpy_array(array, ax=ax, nodata_value=np.nan, colormap="viridis")
+
+    plotted = ax.get_images()[0].get_array()
+    assert plotted.mask[0].all() and not plotted.mask[1:].any()
+    # The colors range over the values that are not nodata
+    norm = ax.get_images()[0].norm
+    assert (norm.vmin, norm.vmax) == (2.0, 7.5)
+    plt.close(fig)

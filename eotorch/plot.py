@@ -384,7 +384,8 @@ def plot_class_raster(
     **kwargs,
 ) -> plt.Axes:  # Return the axes object
     """
-    Plot a raster image with class labels. Manages figure creation and display.
+    Plot the first band of a raster: classes with a legend, or continuous values,
+    e.g. of regression, with a colorbar. Manages figure creation and display.
     """
     show_plot = False
     if ax is None:
@@ -392,17 +393,11 @@ def plot_class_raster(
         show_plot = True
 
     with rst.open(tif_file_path) as src:
-        array = src.read(1)
-        nodata = src.nodata  # Get nodata value from source
-
-        # Call plot_numpy_array, passing the determined ax and nodata value
         plot_numpy_array(
-            array,
-            ax=ax,  # Always pass an ax
+            src.read(1),
+            ax=ax,
             class_mapping=class_mapping,
-            nodata_value=int(nodata)
-            if nodata is not None
-            else None,  # Pass nodata value
+            nodata_value=src.nodata,
             colormap=colormap,
             data_window_only=data_window_only,
             **kwargs,
@@ -418,7 +413,7 @@ def plot_numpy_array(
     array: np.ndarray,
     ax: plt.Axes = None,
     class_mapping: dict[int, str] | None = None,
-    nodata_value: int | None = None,
+    nodata_value: float | None = None,
     colormap=cm.tab20,
     data_window_only: bool = False,
     nodata_color: str = "black",
@@ -431,7 +426,7 @@ def plot_numpy_array(
         array: The input array to plot
         ax: Matplotlib axes to plot on.
         class_mapping: Dictionary mapping class values to their string labels
-        nodata_value: Value to treat as no data. If None, treat as no nodata.
+        nodata_value: Value to treat as no data, may be NaN. If None, treat as no nodata.
         colormap: Matplotlib colormap to use for data values
         data_window_only: If True, crops to non-nodata region
         nodata_color: Color to use for the nodata value.
@@ -440,26 +435,22 @@ def plot_numpy_array(
     if ax is None:
         _, ax = plt.subplots()
 
+    if nodata_value is not None:
+        # NaN is never equal to itself, so it is found with isnan
+        is_nodata = np.isnan(array) if np.isnan(nodata_value) else array == nodata_value
+        array = np.ma.masked_array(array, mask=is_nodata)
+
     if data_window_only and nodata_value is not None:
-        window = get_data_window(array, nodata=nodata_value)
+        window = get_data_window(array)  # the window of the unmasked pixels
         plot_array = array[utils.window_to_np_idc(window)]
     else:
         plot_array = array
 
-    # Create a masked array if nodata_value is specified
-    if nodata_value is not None:
-        masked_array = np.ma.masked_equal(plot_array, nodata_value)
-        nodata_present = nodata_value in np.unique(plot_array.ravel())
-        array_to_plot = masked_array  # Plot the masked array
-    else:
-        # If no nodata value, plot the original array and don't use masking features
-        masked_array = plot_array  # Use unmasked array for calculations
-        nodata_present = False
-        array_to_plot = plot_array  # Plot the unmasked array
+    nodata_present = nodata_value is not None and bool(plot_array.mask.any())
 
     # Get unique values present in the data (excluding nodata if applicable)
     data_values = np.unique(
-        masked_array.compressed() if nodata_value is not None else masked_array.ravel()
+        plot_array.compressed() if nodata_value is not None else plot_array.ravel()
     ).tolist()
 
     # Determine min/max class values based *only* on data values and mapping
@@ -483,7 +474,7 @@ def plot_numpy_array(
         # Handle case with only nodata or empty array
         norm = None
         # Plot showing only nodata color or blank if no nodata
-        show(array_to_plot, ax=ax, cmap=cmap, vmin=-1, vmax=0, **kwargs)
+        show(plot_array, ax=ax, cmap=cmap, vmin=-1, vmax=0, **kwargs)
 
     else:
         min_val = min(numeric_data_values)
@@ -504,8 +495,7 @@ def plot_numpy_array(
             # For continuous data (regression)
             norm = plt.matplotlib.colors.Normalize(vmin=min_val, vmax=max_val)
 
-        # Pass the array_to_plot (masked or unmasked)
-        show(array_to_plot, ax=ax, cmap=cmap, norm=norm, **kwargs)
+        show(plot_array, ax=ax, cmap=cmap, norm=norm, **kwargs)
 
     # --- Legend Handling ---
     legend_patches = []

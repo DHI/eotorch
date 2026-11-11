@@ -253,3 +253,32 @@ def test_probabilities_are_not_saved_by_default(tmp_path):
         progress_bar=False,
     )
     assert not (tmp_path / "pred_probabilities.tif").exists()
+
+
+@pytest.mark.parametrize(
+    "dtype, nodata, colormap",
+    [
+        ("float32", np.nan, "viridis"),
+        ("float32", -9999.0, "viridis"),
+        ("uint8", 0, "tab20"),
+    ],
+)
+def test_show_results_uses_a_colormap_for_the_output_type(
+    tmp_path, monkeypatch, dtype, nodata, colormap
+):
+    """Float outputs, e.g. of regression, are continuous values, others are classes."""
+    import matplotlib.pyplot as plt
+
+    monkeypatch.setattr(plt, "show", lambda: None)
+    ax = predict_on_tif_generic(
+        TEST_IMAGE,
+        lambda batch: (batch[:, 0] // 50).astype(dtype),
+        patch_size=32,
+        dtype=dtype,
+        nodata=nodata,
+        out_file_path=tmp_path / "pred.tif",
+        progress_bar=False,
+        show_results=True,
+    )
+    assert ax.get_images()[0].get_cmap().name == colormap
+    plt.close("all")

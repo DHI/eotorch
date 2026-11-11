@@ -113,10 +113,13 @@ def predict_on_tif_generic(
 
     def _plot(data_window_only: bool):
         print(f"Showing results for {out_file_path}")
+        # Float outputs, e.g. of regression, are continuous values instead of classes
+        continuous = np.issubdtype(np.dtype(dtype), np.floating)
         return plot_class_raster(
             tif_file_path=out_file_path,
             class_mapping=class_mapping,
             ax=ax,
+            colormap="viridis" if continuous else "tab20",
             data_window_only=data_window_only,
         )
 
