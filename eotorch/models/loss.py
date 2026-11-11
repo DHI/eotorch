@@ -50,12 +50,20 @@ class GaussianNLL(nn.Module):
 def _probabilities_and_targets(
     logits: torch.Tensor, targets: torch.Tensor, ignore_index: int | None
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Probabilities and one-hot targets (B, C, H, W) and a mask of valid pixels (B, 1, H, W).
+    """Probabilities and one-hot targets (B, C, H, W) and a mask of valid pixels.
 
     Binary segmentation logits may come as (B, H, W), with C = 1 for the positive class.
+    Multilabel targets already have one binary band per class (B, C, H, W), so their
+    mask of valid pixels is per class too.
     """
     if logits.ndim == 3:
         logits = logits.unsqueeze(1)
+    if targets.shape == logits.shape:
+        valid = torch.ones_like(targets, dtype=torch.bool)
+        if ignore_index is not None:
+            valid = targets != ignore_index
+        return logits.sigmoid(), (targets * valid).float(), valid
+
     targets = targets.long()
     valid = torch.ones_like(targets, dtype=torch.bool)
     if ignore_index is not None:
@@ -135,9 +143,8 @@ class BoundaryDistanceLoss(nn.Module):
             # A class that is absent, or covers all valid pixels, has no boundary
             has_boundary = inside.flatten(2).any(-1) & outside.flatten(2).any(-1)
             distance *= has_boundary[..., None, None] / self.max_distance
-        return (probs * distance * valid).sum() / (valid.sum() * probs.shape[1]).clamp(
-            min=1
-        )
+        n_valid = valid.expand_as(probs).sum()
+        return (probs * distance * valid).sum() / n_valid.clamp(min=1)
 
 
 class CombinedLoss(nn.Module):

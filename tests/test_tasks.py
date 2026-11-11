@@ -74,6 +74,7 @@ def test_segmentation_fit_and_predict(tmp_path):
     with rst.open(out) as src:
         pred = src.read(1)
         assert src.dtypes[0] == "uint8"
+        assert src.nodata == 0
     assert pred.shape == (100, 100)
     # Trained with reduce_zero_label, so classes are shifted back to 1-4
     assert set(np.unique(pred)) <= {1, 2, 3, 4}
@@ -181,6 +182,15 @@ def test_binary_segmentation():
     assert torch.isfinite(loss)
     assert set(task.train_metrics.compute()) >= {"train/mIoU", "train/F1_Score"}
     assert task.predict_class(batch["image"]).shape == (2, 16, 16)
+
+
+@pytest.mark.parametrize("reduce_zero_label, nodata", [(True, 0), (False, None)])
+def test_class_0_is_only_nodata_with_reduce_zero_label(reduce_zero_label, nodata):
+    task = SegmentationTask(
+        num_classes=2, in_channels=3, model="unet_lite", num_filters=4
+    )
+    settings = task._inference_settings({"reduce_zero_label": reduce_zero_label})
+    assert settings["nodata"] == nodata
 
 
 def test_smp_model_with_kwargs_and_frozen_encoder():

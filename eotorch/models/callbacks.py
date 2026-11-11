@@ -21,6 +21,15 @@ class LossWeightScheduler(L.Callback):
         self.end = end
         self.warmup_epochs = warmup_epochs
 
+    def on_fit_start(self, trainer: L.Trainer, pl_module: L.LightningModule) -> None:
+        # A misspelled term would otherwise add a weight that no loss uses
+        terms = getattr(pl_module.criterion, "losses", {})
+        if self.term not in terms:
+            raise ValueError(
+                f"The loss has no term {self.term!r}. Give the loss as a dict of "
+                f"weights that includes it, e.g. loss={{'ce': 1.0, {self.term!r}: 0.0}}."
+            )
+
     def on_train_epoch_start(
         self, trainer: L.Trainer, pl_module: L.LightningModule
     ) -> None:

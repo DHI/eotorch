@@ -127,3 +127,41 @@ def test_loss_weight_scheduler_ramps_weight():
         scheduler.on_train_epoch_start(SimpleNamespace(current_epoch=epoch), module)
         assert criterion.weights["boundary"] == pytest.approx(expected)
     assert criterion.weights["ce"] == 1.0
+
+
+def test_loss_weight_scheduler_rejects_unknown_term():
+    criterion = segmentation_loss(
+        {"ce": 1.0, "boundary": 0.0}, "multiclass", num_classes=3
+    )
+    module = SimpleNamespace(criterion=criterion)
+    LossWeightScheduler("boundary").on_fit_start(None, module)
+    with pytest.raises(ValueError, match="no term 'boundray'"):
+        LossWeightScheduler("boundray").on_fit_start(None, module)
+
+
+@pytest.mark.parametrize(
+    "name", ["bce", "dice", "focal", "tversky", "boundary", "boundary_distance"]
+)
+def test_multilabel_losses_backpropagate(name):
+    """Multilabel targets have one binary band per label, like the logits."""
+    logits = torch.randn(2, 3, 32, 32, requires_grad=True)
+    targets = torch.randint(0, 2, (2, 3, 32, 32)).float()
+
+    loss = segmentation_loss(name, "multilabel", num_classes=3)(logits, targets)
+    loss.backward()
+
+    assert loss.ndim == 0 and torch.isfinite(loss)
+    assert torch.isfinite(logits.grad).all()
+
+
+def test_multilabel_boundary_losses_reward_correct_boundaries():
+    # Label 0 is the left half, label 1 the top half, so they overlap at the top left
+    targets = torch.zeros((1, 2, 40, 64))
+    targets[:, 0, :, :32] = 1
+    targets[:, 1, :20] = 1
+    correct = (targets * 2 - 1) * 10
+    shifted = correct.roll(shifts=12, dims=-1)
+
+    assert BoundaryLoss()(correct, targets) < 1e-3 < BoundaryLoss()(shifted, targets)
+    distance_loss = BoundaryDistanceLoss()
+    assert distance_loss(correct, targets) < distance_loss(shifted, targets)

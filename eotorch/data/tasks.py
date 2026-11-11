@@ -483,6 +483,8 @@ class SegmentationTask(_TaskMixin, SemanticSegmentation):
             "postprocess": self.classes_from_probabilities,
             "class_mapping": dataset_args.get("class_mapping"),
             "count": count,
+            # With reduce_zero_label, 0 marks unlabelled pixels, otherwise it is a class
+            "nodata": 0 if self.reduce_zero_label else None,
         }
 
 
