@@ -99,3 +99,35 @@ def test_split_explicit_files(dataset_files):
 
     # Check train (remainder)
     assert len(splits[0]) == 2
+
+
+def test_split_files_with_several_index_rows(dataset_files):
+    """A file can have several rows, e.g. after splitting sparse labels into boxes."""
+    import geopandas as gpd
+    import pandas as pd
+    from shapely.geometry import box
+
+    img_paths = [str(f[0]) for f in dataset_files]
+
+    class SimpleRasterDataset(RasterDataset):
+        filename_glob = "*.tif"
+
+    ds = SimpleRasterDataset(paths=img_paths)
+    # The first file as two rows, its left and right half
+    first = ds.index.iloc[[0]]
+    xmin, ymin, xmax, ymax = first.geometry.iloc[0].bounds
+    halves = pd.concat([first, first])
+    halves["geometry"] = gpd.GeoSeries(
+        [
+            box(xmin, ymin, (xmin + xmax) / 2, ymax),
+            box((xmin + xmax) / 2, ymin, xmax, ymax),
+        ],
+        crs=ds.index.crs,
+    ).values
+    ds.index = pd.concat([halves, ds.index.iloc[1:]])
+    first_file = first["filepath"].iloc[0]
+
+    train, val = file_wise_split(ds, val_img_files=[first_file])
+
+    assert first_file not in train.index["filepath"].tolist()
+    assert val.index["filepath"].tolist() == [first_file, first_file]

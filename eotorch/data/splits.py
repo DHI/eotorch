@@ -29,157 +29,49 @@ def _format_paths(files: str | Path | list[str] | list[Path] | None) -> list[Pat
     return [i.resolve() for i in files]
 
 
-def _get_split_items(
-    dataset_items: list[tuple[Any, Any]],  # (geometry, filepath) tuples
-    dataset_files: list[Path],
-    val_files: list[Path],
-    test_files: list[Path],
-) -> tuple[list[tuple[Any, Any]], list[tuple[Any, Any]], list[tuple[Any, Any]]]:
-    """Validates split files and returns items partitioned into train, val, test."""
-
-    def _validate_and_collect_items(files_param: list[Path]) -> list[tuple[Any, Any]]:
-        """Checks if files exist in the dataset and collects corresponding items."""
-        out_list = []
-        file_found = False
-        for f in files_param:
-            try:
-                idx = dataset_files.index(f)
-                out_list.append(dataset_items[idx])
-                file_found = True
-            except ValueError:
-                print(f"Warning: File {str(f)} not found in dataset. Skipping.")
-
-        if files_param and not file_found:
-            raise ValueError(
-                "None of the provided files were found in the dataset. Please check the files."
-            )
-        return out_list
-
-    val_items = _validate_and_collect_items(val_files)
-    test_items = _validate_and_collect_items(test_files)
-
-    val_test_items = set(val_items + test_items)
-    train_items = [item for item in dataset_items if item not in val_test_items]
-
-    return train_items, val_items, test_items
+def _rows_of_files(image_files: pd.Series, files: list[Path]) -> pd.Series:
+    """Rows of the image index whose (resolved) file is one of the given files."""
+    for f in files:
+        if f not in image_files.values:
+            print(f"Warning: File {str(f)} not found in dataset. Skipping.")
+    rows = image_files.isin(files)
+    if files and not rows.any():
+        raise ValueError(
+            "None of the provided files were found in the dataset. Please check the files."
+        )
+    return rows
 
 
-def _build_split_indexes(
-    train_items: list[tuple[Any, Any]],
-    val_items: list[tuple[Any, Any]],
-    test_items: list[tuple[Any, Any]],
-    original_index: gpd.GeoDataFrame,
-) -> list[gpd.GeoDataFrame]:
-    """Builds GeoPandas GeoDataFrame indexes for train, validation, and test splits."""
-    new_indexes = []
-
-    def _create_index(items: list[tuple[Any, Any]]) -> gpd.GeoDataFrame:
-        """Helper to create and populate a GeoPandas index."""
-        if not items:
-            # Return empty GeoDataFrame with correct structure and temporal index
-            empty_gdf = gpd.GeoDataFrame(
-                {"filepath": []}, geometry=[], crs=original_index.crs
-            )
-            # Create empty IntervalIndex to match original structure
-            empty_temporal_index = pd.IntervalIndex.from_tuples(
-                [], closed="both", name="datetime"
-            )
-            empty_gdf.index = empty_temporal_index
-            return empty_gdf
-
-        # Extract filepaths from items to find corresponding rows in original index
-        item_filepaths = {filepath for _, filepath in items}
-
-        # Find matching rows in original index
-        mask = original_index["filepath"].isin(item_filepaths)
-        filtered_index = original_index[mask].copy()
-
-        return filtered_index
-
-    if train_items:
-        new_indexes.append(_create_index(train_items))
-    if val_items:
-        new_indexes.append(_create_index(val_items))
-    if test_items:
-        new_indexes.append(_create_index(test_items))
-
-    return new_indexes
+def _with_rows(dataset: RasterDataset, index: gpd.GeoDataFrame) -> RasterDataset:
+    """Copy of a raster dataset with only the given rows of its index."""
+    split = deepcopy(dataset)
+    split.index = index.copy()
+    split.paths = index["filepath"].unique().tolist()
+    return split
 
 
 def _build_split_datasets[DatasetT: GeoDataset](
-    original_dataset: DatasetT, new_indexes: list[gpd.GeoDataFrame]
+    dataset: DatasetT, image_indexes: list[gpd.GeoDataFrame]
 ) -> list[DatasetT]:
-    """Builds the final list of split datasets using the provided indexes."""
-    new_datasets = []
-    for index in new_indexes:
-        if isinstance(original_dataset, IntersectionDataset):
-            # Handle IntersectionDataset (e.g., LabelledRasterDataset)
-            img_ds_orig = original_dataset.datasets[0]
-            label_ds_orig = original_dataset.datasets[1]
+    """One dataset for each index of image rows, with the settings of dataset.
 
-            # Create new image dataset for the split
-            img_ds_new = deepcopy(img_ds_orig)
-            img_ds_new.index = index
-            if len(index) > 0:
-                img_ds_new.paths = index["filepath"].tolist()
-            else:
-                img_ds_new.paths = []
+    The split of a dataset of images and labels keeps the labels that overlap its images.
+    """
+    if not isinstance(dataset, IntersectionDataset):
+        return [_with_rows(dataset, index) for index in image_indexes]
 
-            # Create new label dataset index based on intersection with new image dataset bounds
-            img_bounds = img_ds_new.bounds  # tuple of (x_slice, y_slice, t_slice)
-
-            # For GeoPandas, we need to intersect with the image bounds
-            if not label_ds_orig.index.empty:
-                # Create bounding box geometry for intersection
-                x_slice, y_slice, _ = img_bounds
-                img_bbox_geom = box(
-                    x_slice.start, y_slice.start, x_slice.stop, y_slice.stop
-                )
-
-                # Find labels that intersect with the image bounds
-                label_intersections = label_ds_orig.index[
-                    label_ds_orig.index.geometry.intersects(img_bbox_geom)
-                ]
-
-                # Create new label dataset for the split
-                label_ds_new = deepcopy(label_ds_orig)
-                label_ds_new.index = label_intersections.copy()
-                if len(label_intersections) > 0:
-                    label_ds_new.paths = label_intersections["filepath"].tolist()
-                else:
-                    label_ds_new.paths = []
-            else:
-                # Empty label dataset
-                label_ds_new = deepcopy(label_ds_orig)
-                empty_gdf = gpd.GeoDataFrame(
-                    {"filepath": []}, geometry=[], crs=label_ds_orig.index.crs
-                )
-                # Create empty IntervalIndex to match original structure
-                empty_temporal_index = pd.IntervalIndex.from_tuples(
-                    [], closed="both", name="datetime"
-                )
-                empty_gdf.index = empty_temporal_index
-                label_ds_new.index = empty_gdf
-                label_ds_new.paths = []
-
-            # Create the final IntersectionDataset for the split
-            ds = original_dataset.__class__(
-                img_ds_new,
-                label_ds_new,
-                collate_fn=original_dataset.collate_fn,
-                transforms=original_dataset.transforms,
-            )
-        else:
-            # Handle single RasterDataset
-            ds = deepcopy(original_dataset)
-            ds.index = index
-            if len(index) > 0:
-                ds.paths = index["filepath"].tolist()
-            else:
-                ds.paths = []
-
-        new_datasets.append(ds)
-    return new_datasets
+    images, labels = dataset.datasets
+    splits = []
+    for index in image_indexes:
+        overlapping = labels.index.geometry.intersects(index.union_all())
+        split = type(dataset)(
+            _with_rows(images, index),
+            _with_rows(labels, labels.index[overlapping]),
+            collate_fn=dataset.collate_fn,
+            transforms=dataset.transforms,
+        )
+        splits.append(split)
+    return splits
 
 
 def file_wise_split[DatasetT: GeoDataset](
@@ -261,26 +153,18 @@ def file_wise_split[DatasetT: GeoDataset](
             "Dataset must be a RasterDataset or IntersectionDataset subclass."
         )
 
-    # Get all items and corresponding file paths from the image dataset index
-    dataset_items = [
-        (row["geometry"], row["filepath"]) for _, row in img_dataset.index.iterrows()
-    ]
-    dataset_files = [Path(filepath).resolve() for _, filepath in dataset_items]
+    # All rows of a file go to the same split
+    image_index = img_dataset.index
+    image_files = image_index["filepath"].map(lambda f: Path(f).resolve())
+    val_rows = _rows_of_files(image_files, val_files)
+    test_rows = _rows_of_files(image_files, test_files)
 
-    # Partition items into train, validation, and test sets
-    train_items, val_items, test_items = _get_split_items(
-        dataset_items, dataset_files, val_files, test_files
-    )
-
-    # Build GeoPandas indexes for each split
-    new_indexes = _build_split_indexes(
-        train_items, val_items, test_items, img_dataset.index
-    )
-
-    # Build the final datasets using the original dataset structure and new indexes
-    new_datasets = _build_split_datasets(dataset, new_indexes)
-
-    return new_datasets
+    image_indexes = [image_index[~(val_rows | test_rows)]]
+    if val_files:
+        image_indexes.append(image_index[val_rows])
+    if test_files:
+        image_indexes.append(image_index[test_rows])
+    return _build_split_datasets(dataset, image_indexes)
 
 
 def random_bbox_assignment[DatasetT: GeoDataset](
@@ -335,42 +219,13 @@ def random_bbox_assignment[DatasetT: GeoDataset](
                     "Please provide a larger dataset or reduce the number of splits."
                 )
 
-    # Get all items from the dataset index
-    items_data = [
-        (row["geometry"], row["filepath"]) for _, row in split_dataset.index.iterrows()
-    ]
-
-    # Randomly permute the items
-    indices = randperm(len(items_data), generator=generator)
-    shuffled_items = [items_data[i] for i in indices]
-
-    # Create new indexes by filtering the original index
+    # Randomly assign the rows of the index to the splits
+    order = randperm(len(split_dataset.index), generator=generator).tolist()
     new_indexes = []
-    start_idx = 0
-
+    start = 0
     for length in lengths:
-        end_idx = start_idx + length
-        split_items = shuffled_items[start_idx:end_idx]
-
-        if split_items:
-            # Extract filepaths to filter original index
-            split_filepaths = {filepath for _, filepath in split_items}
-            mask = split_dataset.index["filepath"].isin(split_filepaths)
-            filtered_index = split_dataset.index[mask].copy()
-        else:
-            # Create empty GeoDataFrame with correct structure
-            empty_gdf = gpd.GeoDataFrame(
-                {"filepath": []}, geometry=[], crs=split_dataset.index.crs
-            )
-            # Create empty IntervalIndex to match original structure
-            empty_temporal_index = pd.IntervalIndex.from_tuples(
-                [], closed="both", name="datetime"
-            )
-            empty_gdf.index = empty_temporal_index
-            filtered_index = empty_gdf
-
-        new_indexes.append(filtered_index)
-        start_idx = end_idx
+        new_indexes.append(split_dataset.index.iloc[order[start : start + length]])
+        start += length
 
     return _build_split_datasets(dataset, new_indexes)
 
