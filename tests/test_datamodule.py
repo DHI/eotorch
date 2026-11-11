@@ -219,3 +219,20 @@ def test_datamodule_invalid_sampler(segmentation_dataset):
     )
     with pytest.raises(ValueError, match="not found in torchgeo.samplers"):
         dm.setup(stage="fit")
+
+
+def test_preview_data_sampling(datamodule, monkeypatch):
+    import folium
+    import matplotlib.pyplot as plt
+
+    shown = []
+    monkeypatch.setattr(plt, "show", lambda: shown.append(plt.gcf()))
+
+    preview = datamodule.preview_data_sampling(max_samples=4, count_labels=True)
+
+    assert isinstance(preview, folium.Map)
+    # One pie chart of the label distribution for training and one for validation
+    (figure,) = shown
+    titles = [ax.get_title() for ax in figure.axes]
+    assert titles == ["Label Distribution - Train", "Label Distribution - Validation"]
+    plt.close("all")

@@ -2,11 +2,11 @@ from pathlib import Path
 
 import folium
 import geopandas as gpd
+import matplotlib.colors as mcolors
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import pyproj
 import rasterio as rst
 from folium.plugins import Draw, MeasureControl
 from folium.raster_layers import ImageOverlay
@@ -358,24 +358,8 @@ def plot_samplers_on_map(
         all_bounds = []
         for dataset in datasets:
             if not dataset.index.empty:
-                # Get bounds in the dataset's original CRS
-                dataset_bounds = (
-                    dataset.index.total_bounds
-                )  # [minx, miny, maxx, maxy] numpy array
-
-                # Convert to WGS84 (EPSG:4326) for folium
-                if dataset.crs != pyproj.CRS("EPSG:4326"):
-                    # Convert numpy array to tuple to ensure correct format interpretation
-                    # total_bounds returns [minx, miny, maxx, maxy], convert to tuple for correct handling
-                    bounds_tuple = tuple(dataset_bounds)  # (minx, miny, maxx, maxy)
-                    bounds_poly = utils.torchgeo_bb_to_shapely(
-                        bounds_tuple, bbox_crs=dataset.crs, target_crs="EPSG:4326"
-                    )
-                    transformed_bounds = bounds_poly.bounds  # (minx, miny, maxx, maxy)
-                else:
-                    transformed_bounds = tuple(dataset_bounds)
-
-                all_bounds.append(transformed_bounds)
+                # (minx, miny, maxx, maxy) in WGS84 (EPSG:4326) for folium
+                all_bounds.append(dataset.index.to_crs("EPSG:4326").total_bounds)
 
         if all_bounds:
             # Calculate the overall bounds encompassing all datasets
@@ -600,6 +584,50 @@ def plot_numpy_array(
                 loc=2,
                 borderaxespad=0.0,
             )
+
+
+def plot_label_distribution(
+    label_counts_per_dataset: dict[str, dict], class_mapping: dict | None = None
+) -> None:
+    """Show a pie chart of the label pixel counts of each dataset.
+
+    Each class has the same color in all pie charts.
+    """
+    counts_per_dataset = {
+        name: counts for name, counts in label_counts_per_dataset.items() if counts
+    }
+    if not counts_per_dataset:
+        print("No labels found in datasets.")
+        return
+
+    all_classes = sorted(set().union(*counts_per_dataset.values()))
+    colors = list(mcolors.TABLEAU_COLORS.values())
+    class_colors = {c: colors[i % len(colors)] for i, c in enumerate(all_classes)}
+    class_mapping = class_mapping or {}
+
+    n_datasets = len(counts_per_dataset)
+    fig, axes = plt.subplots(1, n_datasets, figsize=(n_datasets * 6, 6), squeeze=False)
+    for ax, (name, counts) in zip(axes[0], counts_per_dataset.items()):
+        ax.pie(
+            list(counts.values()),
+            labels=[class_mapping.get(c, f"Class {c}") for c in counts],
+            colors=[class_colors[c] for c in counts],
+            autopct=_percentage_and_count(total=sum(counts.values())),
+            startangle=90,
+        )
+        ax.axis("equal")
+        ax.set_title(f"Label Distribution - {name}")
+    plt.tight_layout()
+    plt.show()
+
+
+def _percentage_and_count(total: int):
+    """Label of a pie chart wedge, e.g. "25.0%\n(1,000)"."""
+
+    def label(percentage: float) -> str:
+        return f"{percentage:.1f}%\n({round(percentage * total / 100):,})"
+
+    return label
 
 
 def plot_samples(

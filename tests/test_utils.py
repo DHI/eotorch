@@ -1,15 +1,14 @@
 import pyproj
 import shapely.geometry
 import torch
-from torchgeo.datasets.utils import BoundingBox
 
 from eotorch.utils import slice_image, torchgeo_bb_to_shapely
 
 
 def test_torchgeo_bb_to_shapely_simple_conversion():
-    """Test basic conversion of BoundingBox to Shapely Polygon without CRS change."""
+    """Test basic conversion of bounds to Shapely Polygon without CRS change."""
     # Create a sample bounding box
-    bbox = BoundingBox(minx=10.0, maxx=20.0, miny=30.0, maxy=40.0, mint=0.0, maxt=1.0)
+    bbox = (10.0, 30.0, 20.0, 40.0)
 
     # Convert to shapely with same CRS
     polygon = torchgeo_bb_to_shapely(bbox, "EPSG:4326", "EPSG:4326")
@@ -23,9 +22,7 @@ def test_torchgeo_bb_to_shapely_crs_conversion():
     """Test conversion with CRS transformation."""
     # Create a bounding box in UTM Zone 32N (EPSG:32632)
     # Coordinates approximately cover an area near Copenhagen, Denmark
-    bbox = BoundingBox(
-        minx=700000.0, maxx=710000.0, miny=6175000.0, maxy=6185000.0, mint=0.0, maxt=1.0
-    )
+    bbox = (700000.0, 6175000.0, 710000.0, 6185000.0)
 
     # Convert to WGS84 (EPSG:4326)
     polygon = torchgeo_bb_to_shapely(bbox, "EPSG:32632", "EPSG:4326")
@@ -47,7 +44,7 @@ def test_torchgeo_bb_to_shapely_crs_conversion():
 def test_torchgeo_bb_to_shapely_pyproj_crs_objects():
     """Test using pyproj.CRS objects instead of strings."""
     # Create a sample bounding box
-    bbox = BoundingBox(minx=10.0, maxx=20.0, miny=30.0, maxy=40.0, mint=0.0, maxt=1.0)
+    bbox = (10.0, 30.0, 20.0, 40.0)
 
     # Create pyproj.CRS objects
     crs1 = pyproj.CRS("EPSG:4326")
@@ -64,14 +61,7 @@ def test_torchgeo_bb_to_shapely_pyproj_crs_objects():
 def test_torchgeo_bb_to_shapely_default_target_crs():
     """Test using the default target CRS (WGS84)."""
     # Create a bounding box in Web Mercator (EPSG:3857)
-    bbox = BoundingBox(
-        minx=1113194.9,
-        maxx=2226389.8,
-        miny=5635549.2,
-        maxy=6671175.8,
-        mint=0.0,
-        maxt=1.0,
-    )
+    bbox = (1113194.9, 5635549.2, 2226389.8, 6671175.8)
 
     # Convert to default (WGS84)
     polygon = torchgeo_bb_to_shapely(bbox, "EPSG:3857")
@@ -91,7 +81,7 @@ def test_torchgeo_bb_to_shapely_default_target_crs():
 
 
 def test_torchgeo_bb_to_shapely_tensor():
-    """Test conversion of a torchgeo v0.9 Tensor bounds to Shapely Polygon."""
+    """Test conversion of the bounds Tensor of a TorchGeo sample to Shapely Polygon."""
     # Tensor format: [xmin, xmax, xres, ymin, ymax, yres, tmin, tmax, tres]
     bounds_tensor = torch.tensor([10.0, 20.0, 0.1, 30.0, 40.0, 0.1, 0.0, 1.0, 1.0])
 

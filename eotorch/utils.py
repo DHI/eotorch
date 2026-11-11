@@ -2,7 +2,6 @@ import inspect
 from collections.abc import Sequence
 from pathlib import Path
 
-import numpy as np
 import pyproj
 import shapely
 import shapely.geometry
@@ -163,84 +162,34 @@ def _format_filepaths(filepaths):
 
 
 def torchgeo_bb_to_shapely(
-    bbox,
+    bounds,
     bbox_crs: str | pyproj.CRS,
     target_crs: str | pyproj.CRS = "EPSG:4326",
-):
+) -> shapely.geometry.Polygon:
     """
-    Convert a list of bound coordinates, tuple, Tensor, or a BoundingBox object to a Shapely Polygon.
+    Box of the given bounds as a Shapely Polygon in target_crs.
 
     Parameters:
-        bbox (list, tuple, Tensor, or BoundingBox):
-            The bounding box to convert.
-            - If a Tensor: expected format [xmin, xmax, xres, ymin, ymax, yres, tmin, tmax, tres]
-              (torchgeo v0.9 _slice_to_tensor format)
-            - If a list: should be in the format [minx, maxx, miny, maxy] (torchgeo format)
-            - If a tuple: should be in the format (minx, miny, maxx, maxy) (geopandas bounds format)
-            - If a BoundingBox object: should have the attributes minx, maxx, miny, maxy.
-            May contain more than 4 values (e.g. mint, maxt).
+        bounds (tuple or Tensor):
+            Bounds as (minx, miny, maxx, maxy), e.g. of a shapely geometry, or the
+            "bounds" Tensor of a TorchGeo sample.
         bbox_crs (str or pyproj.CRS):
-            The coordinate reference system of the input bounding box.
+            The coordinate reference system of the bounds.
         target_crs (str or pyproj.CRS, optional):
             The target coordinate reference system. Defaults to "EPSG:4326".
-
-    Returns:
-        shapely.geometry.Polygon:
-            The converted Shapely Polygon.
     """
     import torch
 
-    if isinstance(target_crs, str):
-        target_crs = pyproj.CRS(target_crs)
+    if isinstance(bounds, torch.Tensor):
+        # TorchGeo samples: [xmin, xmax, xres, ymin, ymax, yres, tmin, tmax, tres]
+        xmin, xmax, _, ymin, ymax = bounds[:5].tolist()
+        bounds = (xmin, ymin, xmax, ymax)
+    polygon = shapely.geometry.box(*bounds)
 
-    if isinstance(bbox_crs, str):
-        bbox_crs = pyproj.CRS(bbox_crs)
-
-    # Create a shapely polygon from the bbox coordinates
-    if isinstance(bbox, torch.Tensor):
-        # torchgeo v0.9 _slice_to_tensor format: [xmin, xmax, xres, ymin, ymax, yres, tmin, tmax, tres]
-        polygon = shapely.geometry.box(
-            minx=bbox[0].item(),
-            miny=bbox[3].item(),
-            maxx=bbox[1].item(),
-            maxy=bbox[4].item(),
-        )
-    elif isinstance(bbox, (list, tuple, np.ndarray)):
-        # Handle both list and tuple formats
-        # For geopandas geometry.bounds: (minx, miny, maxx, maxy)
-        # For torchgeo list format: [minx, maxx, miny, maxy]
-        if len(bbox) >= 4:
-            if isinstance(bbox, tuple):
-                # geopandas bounds format: (minx, miny, maxx, maxy)
-                polygon = shapely.geometry.box(
-                    minx=bbox[0], miny=bbox[1], maxx=bbox[2], maxy=bbox[3]
-                )
-            else:
-                # torchgeo list format: [minx, maxx, miny, maxy]
-                polygon = shapely.geometry.box(
-                    minx=bbox[0], miny=bbox[2], maxx=bbox[1], maxy=bbox[3]
-                )
-        else:
-            raise ValueError(
-                f"Bounding box must have at least 4 coordinates, got {len(bbox)}"
-            )
-    else:
-        # BoundingBox object with attributes
-        polygon = shapely.geometry.box(
-            minx=bbox.minx, miny=bbox.miny, maxx=bbox.maxx, maxy=bbox.maxy
-        )
-
-    # If the CRS is the same, no need to transform
-    if bbox_crs == target_crs:
+    if pyproj.CRS(bbox_crs) == pyproj.CRS(target_crs):
         return polygon
-
-    # Create transformer for the coordinate conversion
     transformer = pyproj.Transformer.from_crs(bbox_crs, target_crs, always_xy=True)
-
-    # Transform the polygon to the target CRS
-    transformed_polygon = shapely.ops.transform(transformer.transform, polygon)
-
-    return transformed_polygon
+    return shapely.ops.transform(transformer.transform, polygon)
 
 
 def convert_bounds(bbox, invert_y=False):
