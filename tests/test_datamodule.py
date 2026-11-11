@@ -3,8 +3,7 @@
 from pathlib import Path
 
 import pytest
-import torch
-from torchgeo.datasets import IntersectionDataset, RasterDataset
+from torchgeo.datasets import RasterDataset
 
 from eotorch.data.datamodules import RasterDataModule, get_dataset_args
 from eotorch.data.geodatasets import (

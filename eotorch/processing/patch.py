@@ -44,11 +44,11 @@ def _read_aligned(
 def _should_skip_patch(
     image: np.ndarray,
     labels: np.ndarray,
-    image_nodata: float | int | None,
-    label_nodata: float | int,
+    image_nodata: float | None,
+    label_nodata: float,
     empty_img_threshold: float | None,
     empty_label_threshold: float | None,
-    value_threshold: float | int | None,
+    value_threshold: float | None,
 ) -> bool:
     """Whether a patch is too empty to be useful for training."""
     empty_img = (image == (0 if image_nodata is None else image_nodata)).all(axis=0)
@@ -82,7 +82,7 @@ def generate_patches_from_files(
     random_seed: int = 42,
     empty_img_threshold: float | None = 0.5,
     empty_label_threshold: float | None = None,
-    value_threshold: float | int | None = None,
+    value_threshold: float | None = None,
     resampling: str = "nearest",
     show_progress: bool = True,
 ) -> None:

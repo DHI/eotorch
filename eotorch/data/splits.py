@@ -33,7 +33,7 @@ def _rows_of_files(image_files: pd.Series, files: list[Path]) -> pd.Series:
     """Rows of the image index whose (resolved) file is one of the given files."""
     for f in files:
         if f not in image_files.values:
-            print(f"Warning: File {str(f)} not found in dataset. Skipping.")
+            print(f"Warning: File {f} not found in dataset. Skipping.")
     rows = image_files.isin(files)
     if files and not rows.any():
         raise ValueError(

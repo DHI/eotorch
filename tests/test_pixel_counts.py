@@ -75,35 +75,25 @@ def test_label_dataset_temporal_bounds_structure(label_dataset):
 def test_label_dataset_get_pixel_counts(label_dataset):
     """Test that get_pixel_counts works with proper temporal bounds."""
     # This should not raise the pandas datetime comparison error
-    try:
-        pixel_counts = label_dataset.get_pixel_counts()
-        assert isinstance(pixel_counts, dict), "Should return a dictionary"
-        assert len(pixel_counts) > 0, "Should have some pixel counts"
+    pixel_counts = label_dataset.get_pixel_counts()
+    assert isinstance(pixel_counts, dict), "Should return a dictionary"
+    assert len(pixel_counts) > 0, "Should have some pixel counts"
 
-        # Check that all keys are valid (integers or class names)
-        for key, count in pixel_counts.items():
-            assert isinstance(count, int), f"Count should be integer, got {type(count)}"
-            assert count >= 0, f"Count should be non-negative, got {count}"
-
-    except Exception as e:
-        pytest.fail(f"get_pixel_counts raised an unexpected exception: {e}")
+    for count in pixel_counts.values():
+        assert isinstance(count, int), f"Count should be integer, got {type(count)}"
+        assert count >= 0, f"Count should be non-negative, got {count}"
 
 
 def test_labelled_dataset_get_label_pixel_counts(labelled_dataset):
     """Test that get_label_pixel_counts works with proper temporal bounds."""
     # This should not raise the pandas datetime comparison error
-    try:
-        pixel_counts = labelled_dataset.get_label_pixel_counts()
-        assert isinstance(pixel_counts, dict), "Should return a dictionary"
-        assert len(pixel_counts) > 0, "Should have some pixel counts"
+    pixel_counts = labelled_dataset.get_label_pixel_counts()
+    assert isinstance(pixel_counts, dict), "Should return a dictionary"
+    assert len(pixel_counts) > 0, "Should have some pixel counts"
 
-        # Check that all keys are valid (integers or class names)
-        for key, count in pixel_counts.items():
-            assert isinstance(count, int), f"Count should be integer, got {type(count)}"
-            assert count >= 0, f"Count should be non-negative, got {count}"
-
-    except Exception as e:
-        pytest.fail(f"get_label_pixel_counts raised an unexpected exception: {e}")
+    for count in pixel_counts.values():
+        assert isinstance(count, int), f"Count should be integer, got {type(count)}"
+        assert count >= 0, f"Count should be non-negative, got {count}"
 
 
 def test_geoslice_temporal_bounds_consistency(label_dataset):
@@ -181,11 +171,8 @@ def test_integration_with_get_segmentation_dataset(sparse_raster_path):
     )
 
     # Test that pixel counting works without errors
-    try:
-        pixel_counts = dataset.get_label_pixel_counts()
-        assert isinstance(pixel_counts, dict), "Should return a dictionary"
-    except Exception as e:
-        pytest.fail(f"Integration test failed with exception: {e}")
+    pixel_counts = dataset.get_label_pixel_counts()
+    assert isinstance(pixel_counts, dict), "Should return a dictionary"
 
 
 def test_temporal_bounds_types(label_dataset):

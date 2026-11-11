@@ -12,8 +12,8 @@ from rasterio.windows import Window
 def window_to_np_idc(window: Window) -> tuple[slice, slice]:
     """Convert a window to numpy array indices."""
     return (
-        slice(int(round(window.row_off)), int(round(window.row_off + window.height))),
-        slice(int(round(window.col_off)), int(round(window.col_off + window.width))),
+        slice(round(window.row_off), round(window.row_off + window.height)),
+        slice(round(window.col_off), round(window.col_off + window.width)),
     )
 
 
@@ -70,10 +70,7 @@ def slice_image(
                 bounds = (b, b + size)
                 # Moved back to end at the edge, but not before the start of the array
                 bounds = (max(dim - size, 0), dim) if bounds[1] > dim else bounds
-                try:
-                    if not bounds == dim_bounds[-1]:
-                        dim_bounds.append(bounds)
-                except IndexError:
+                if not dim_bounds or bounds != dim_bounds[-1]:
                     dim_bounds.append(bounds)
             elif (b + (size // stride)) < dim:
                 bounds = (b, b + size)
@@ -86,12 +83,12 @@ def slice_image(
         dims.append(out_bounds)
 
     slices = []
-    for width in dims[1]:
-        for height in dims[0]:
+    for cols in dims[1]:
+        for rows in dims[0]:
             if as_windows:
-                slices.append(Window.from_slices(slice(*height), slice(*width)))
+                slices.append(Window.from_slices(slice(*rows), slice(*cols)))
             else:
-                slices.append((slice(*height), slice(*width)))
+                slices.append((slice(*rows), slice(*cols)))
 
     return slices
 

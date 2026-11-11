@@ -24,7 +24,7 @@ def normalize(
     out_res: float | None = None,
     bands: list | None = None,
     out_path: str | Path | None = None,
-    sample_size: int | float = 0.5,
+    sample_size: float = 0.5,
 ) -> Path:
     """
     Normalizes images within given bounds (percentile or fixed) and converts it to float values in range (0, 1).
@@ -121,7 +121,7 @@ def normalize(
 def sample_limits(
     img_path: Path | str,
     limits: tuple,
-    sample_size: int | float,
+    sample_size: float,
     band_list: list | None = None,
 ) -> dict:
     """

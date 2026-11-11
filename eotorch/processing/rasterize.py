@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING
 import geopandas as gpd
 import numpy as np
 import rasterio as rst
-from pyogrio import read_dataframe
 from rasterio.features import rasterize
 from rasterio.windows import Window, get_data_window
 from rasterio.windows import transform as window_transform
@@ -17,9 +16,8 @@ from rasterio.windows import transform as window_transform
 from eotorch import utils
 
 if TYPE_CHECKING:
-    import rasterio.CRS
     from affine import Affine
-    from shapely.geometry import MultiPolygon, Polygon
+    from rasterio.crs import CRS
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +31,7 @@ class VectorSource(ABC):
         self,
         transform: Affine | None = None,
         shape: tuple[int, int] | None = None,
-        crs: rasterio.CRS | str | None = None,
+        crs: CRS | str | None = None,
     ):
         self.transform = transform
         self.shape = shape
@@ -75,7 +73,7 @@ class VectorSource(ABC):
 
         class_order = [c for c in class_order if c in geoms]
 
-        idc_not_in_class_order = [i for i in geoms.keys() if i not in class_order]
+        idc_not_in_class_order = [i for i in geoms if i not in class_order]
 
         for i in idc_not_in_class_order:
             geom = geoms[i]
@@ -134,7 +132,7 @@ class FileSource(VectorSource):
         img_path: Path | str | None = None,
         transform: Affine | None = None,
         shape: tuple[int, int] | None = None,
-        crs: rasterio.CRS | str | None = None,
+        crs: CRS | str | None = None,
     ):
         if img_path is not None and None in [transform, shape, crs]:
             transform, shape, crs = infer_meta(img_path)
@@ -165,9 +163,9 @@ class DataframeSource(VectorSource):
         dataframe: gpd.GeoDataFrame,
         class_column: str,
         img_path: Path | str | None = None,
-        transform: rasterio.Affine | None = None,
+        transform: Affine | None = None,
         shape: tuple[int, int] | None = None,
-        crs: rasterio.CRS | str | None = None,
+        crs: CRS | str | None = None,
     ):
         if img_path is not None and None in [transform, shape, crs]:
             transform, shape, crs = infer_meta(img_path)
@@ -182,7 +180,7 @@ class DataframeSource(VectorSource):
         return features
 
 
-def infer_meta(img_path: Path | str) -> tuple[rasterio.Affine, tuple, rasterio.CRS]:
+def infer_meta(img_path: Path | str) -> tuple[Affine, tuple, CRS]:
     """
     Infer basic raster metadata information from a raster path.
 
@@ -191,7 +189,7 @@ def infer_meta(img_path: Path | str) -> tuple[rasterio.Affine, tuple, rasterio.C
             Raster image path.
 
     Returns:
-        tuple[rasterio.Affine, tuple, rasterio.CRS]:
+        tuple[Affine, tuple, CRS]:
             Tuple of raster transform, shape, and coordinate system.
     """
     img_path = Path(img_path)

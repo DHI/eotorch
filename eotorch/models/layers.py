@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
-import torch.nn as nn
+from torch import nn
 
 if TYPE_CHECKING:
     import torch
@@ -56,7 +57,7 @@ class ResBlock(nn.Module):
         self,
         in_channels: int,
         out_channels: int,
-        kernel_sizes: list[int] | list[tuple] = [3, 3, 1],
+        kernel_sizes: Sequence[int | tuple[int, int]] = (3, 3, 1),
         norm_layer: nn.Module = nn.BatchNorm2d,
         norm_momentum: float = 0.1,  # Add momentum parameter
         **kwargs,

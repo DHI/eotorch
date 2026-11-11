@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from segmentation_models_pytorch.base import SegmentationHead
 from segmentation_models_pytorch.decoders.upernet.decoder import UPerNetDecoder
+from torch import nn
 
 
 class _ViTFeaturePyramid(nn.Module):

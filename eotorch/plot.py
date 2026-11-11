@@ -89,9 +89,14 @@ def plot_dataset_index(dataset, map=None, color="olive", name=None):
 
     feature_group = folium.FeatureGroup(name=feature_group_name, show=True)
 
-    style_dict = dict(
-        fill=True, fillColor=color, fillOpacity=0.3, weight=2, opacity=0.7, color=color
-    )
+    style_dict = {
+        "fill": True,
+        "fillColor": color,
+        "fillOpacity": 0.3,
+        "weight": 2,
+        "opacity": 0.7,
+        "color": color,
+    }
 
     current_bounds = None
     index_gdf = dataset.index
@@ -192,7 +197,6 @@ def plot_samplers_on_map(
         If count_labels is True:
             tuple: (folium.Map, dict) containing the map and label counts per dataset
     """
-    import torch
     from alive_progress import alive_it
     from torch.utils.data import DataLoader
     from torchgeo.datasets import stack_samples, unbind_samples
@@ -231,7 +235,7 @@ def plot_samplers_on_map(
         boundary_group = folium.FeatureGroup(name=name)
 
         # Add dataset boundaries to the feature group
-        style_dict = dict(fill=False, weight=5, opacity=0.7, color=color)
+        style_dict = {"fill": False, "weight": 5, "opacity": 0.7, "color": color}
 
         # Add dataset boundaries without progress bar
         for _, row in dataset.index.iterrows():
@@ -278,7 +282,8 @@ def plot_samplers_on_map(
             title=f"Adding {feature_group_name}",
             force_tty=True,
             max_cols=100,
-            finalize=lambda bar: bar.title(f"Added {feature_group_name}"),
+            # The name is bound now, as the bar may finish after the loop moved on
+            finalize=lambda bar, name=feature_group_name: bar.title(f"Added {name}"),
         )
 
         for batch in dataloader_with_progress:
@@ -306,39 +311,23 @@ def plot_samplers_on_map(
                     tooltip=f"Sample from {current_dataset_name}",
                 ).add_to(sample_group)
 
-                # Count label pixels if requested
+                # Count the label values as stored in the files, without nodata
                 if count_labels and "mask" in sample:
-                    mask = sample["mask"]
-                    # Skip -1 values which are typically ignored or no-data values
-                    valid_mask = mask != -1
-
-                    # Adjust mask values if IntersectionDataset with reduce_zero_label=True was used
-                    # This ensures label counts match the original class values if 0 was mapped to -1
-                    current_dataset = datasets[dataset_idx]
-                    if isinstance(current_dataset, IntersectionDataset) and hasattr(
-                        current_dataset.datasets[1], "reduce_zero_label"
-                    ):
-                        if current_dataset.datasets[1].reduce_zero_label:
-                            mask = mask + 1  # Shift labels back up by 1
-
-                    if torch.any(valid_mask):
-                        # Only count valid (non -1) pixels
-                        filtered_mask = mask[valid_mask]
-                        unique_values, counts = torch.unique(
-                            filtered_mask, return_counts=True
+                    dataset = datasets[dataset_idx]
+                    label_ds = (
+                        dataset.datasets[1]
+                        if isinstance(dataset, IntersectionDataset)
+                        else dataset
+                    )
+                    labels = label_ds.values_as_in_files(sample["mask"])
+                    labels = labels[labels != label_ds.nodata_value]
+                    dataset_label_counts = label_counts_per_dataset[
+                        current_dataset_name
+                    ]
+                    for value, count in zip(*np.unique(labels, return_counts=True)):
+                        dataset_label_counts[value] = (
+                            dataset_label_counts.get(value, 0) + count
                         )
-
-                        # Update counts for this dataset
-                        dataset_label_counts = label_counts_per_dataset[
-                            current_dataset_name
-                        ]
-                        for val, count in zip(
-                            unique_values.cpu().numpy(), counts.cpu().numpy()
-                        ):
-                            # Aggregate counts for each label value
-                            dataset_label_counts[val] = (
-                                dataset_label_counts.get(val, 0) + count
-                            )
 
                 sample_count += 1
 
@@ -400,7 +389,7 @@ def plot_class_raster(
     """
     show_plot = False
     if ax is None:
-        fig, ax = plt.subplots()
+        _, ax = plt.subplots()
         show_plot = True
 
     with rst.open(tif_file_path) as src:
@@ -450,7 +439,7 @@ def plot_numpy_array(
         **kwargs: Additional arguments for rasterio's show function
     """
     if ax is None:
-        fig, ax = plt.subplots()
+        _, ax = plt.subplots()
 
     if data_window_only and nodata_value is not None:
         window = get_data_window(array, nodata=nodata_value)
@@ -478,7 +467,7 @@ def plot_numpy_array(
     potential_data_values = set(data_values)
     if class_mapping:
         potential_data_values.update(
-            k for k in class_mapping.keys() if nodata_value is None or k != nodata_value
+            k for k in class_mapping if nodata_value is None or k != nodata_value
         )
 
     numeric_data_values = {
@@ -548,7 +537,7 @@ def plot_numpy_array(
     else:
         # For discrete data, create legend patches
         present_data_values = sorted(
-            list(set(v for v in data_values if isinstance(v, (int, np.integer))))
+            {v for v in data_values if isinstance(v, (int, np.integer))}
         )
 
         if norm:
@@ -595,7 +584,7 @@ def plot_label_distribution(
     class_mapping = class_mapping or {}
 
     n_datasets = len(counts_per_dataset)
-    fig, axes = plt.subplots(1, n_datasets, figsize=(n_datasets * 6, 6), squeeze=False)
+    _, axes = plt.subplots(1, n_datasets, figsize=(n_datasets * 6, 6), squeeze=False)
     for ax, (name, counts) in zip(axes[0], counts_per_dataset.items()):
         ax.pie(
             list(counts.values()),
@@ -707,13 +696,12 @@ def label_map(label_file_paths: str | list, map: folium.Map = None):
 
     # Process files in a single loop
     for label_file_path in label_file_paths:
-        with rst.open(label_file_path) as src:
-            # Read the data and get bounds in a single operation with VRT
-            with WarpedVRT(src, crs="EPSG:4326") as vrt:
-                bounds = utils.convert_bounds(
-                    vrt.bounds
-                )  # Convert directly to save a step
-                array = vrt.read(1)
+        with (
+            rst.open(label_file_path) as src,
+            WarpedVRT(src, crs="EPSG:4326") as vrt,
+        ):
+            bounds = utils.convert_bounds(vrt.bounds)
+            array = vrt.read(1)
 
         # Store bounds for map fitting
         bounds_list.append(bounds)

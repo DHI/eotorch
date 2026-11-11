@@ -4,11 +4,10 @@ import copy
 import functools
 import logging
 import os
-import re
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 import geopandas as gpd
 import matplotlib.pyplot as plt
@@ -41,7 +40,7 @@ def split_raster_into_dense_areas(
     file_path: str | Path,
     polygon: Polygon,
     min_length: int,
-    nodata_value: int | float,
+    nodata_value: float,
     polygon_crs: CRS = None,
 ) -> list[Polygon]:
     """Split a raster into multiple areas with higher label density.
@@ -536,7 +535,7 @@ class CustomCacheRasterDataset(RasterDataset, SamplePlotMixin):
         other_paths_list = _ensure_list_of_paths(other.paths)
         # Ensure paths in constructor_paths are strings, as expected by some internal logic.
         combined_constructor_paths = sorted(
-            list(set(map(str, self_paths_list + other_paths_list)))
+            set(map(str, self_paths_list + other_paths_list))
         )
 
         # A copy keeps all settings of 'self', only the files change
@@ -552,7 +551,7 @@ class PlottableImageDataset(CustomCacheRasterDataset):
 
         if ax is None:
             n_cols = 2 if predictions is not None else 1
-            fig, ax = plt.subplots(1, n_cols, figsize=(n_cols * 4, 4))
+            _, ax = plt.subplots(1, n_cols, figsize=(n_cols * 4, 4))
         image_ax = ax if predictions is None else ax[0]
 
         # The sample only holds the selected bands, in the order of self.bands

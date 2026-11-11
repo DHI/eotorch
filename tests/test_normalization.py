@@ -59,8 +59,9 @@ def test_datamodule_normalizes_batches(dataset):
 @pytest.mark.parametrize("stage", ["training", "validating"])
 def test_augmentations_are_applied_after_normalization(dataset, stage):
     """Augmentations are set as in TorchGeo, e.g. train_aug for training only."""
-    import kornia.augmentation as K
     from types import SimpleNamespace
+
+    import kornia.augmentation as K
 
     datamodule = RasterDataModule(
         train_dataset=dataset, patch_size=32, mean=[10.0, 20.0], std=[2, 4]

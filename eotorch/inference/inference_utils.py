@@ -33,16 +33,14 @@ def prediction_to_numpy(pred: Any) -> np.ndarray:
         return pred.numpy()
 
     else:
-        raise ValueError(
-            "Invalid prediction type. Must be numpy array or torch tensor."
-        )
+        raise TypeError("Invalid prediction type. Must be numpy array or torch tensor.")
 
 
 def crop_np_to_window(arr: np.ndarray, w_buffered: Window, w_unbuffered: Window):
-    left = int(round(w_unbuffered.col_off - w_buffered.col_off))
-    top = int(round(w_unbuffered.row_off - w_buffered.row_off))
-    right = left + int(round(w_unbuffered.width))
-    bottom = top + int(round(w_unbuffered.height))
+    left = round(w_unbuffered.col_off - w_buffered.col_off)
+    top = round(w_unbuffered.row_off - w_buffered.row_off)
+    right = left + round(w_unbuffered.width)
+    bottom = top + round(w_unbuffered.height)
 
     return arr[..., top:bottom, left:right]
 
