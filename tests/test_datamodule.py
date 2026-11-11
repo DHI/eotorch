@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 import torch
-from torchgeo.datasets import IntersectionDataset
+from torchgeo.datasets import IntersectionDataset, RasterDataset
 
 from eotorch.data.datamodules import RasterDataModule, get_dataset_args
 from eotorch.data.geodatasets import (
@@ -147,6 +147,65 @@ def test_datamodule_custom_sampler(segmentation_dataset):
     batches = list(loader)
     # With length=10 and batch_size=2, we should get 5 batches
     assert len(batches) == 5
+
+
+def test_datamodule_batch_sampler(segmentation_dataset):
+    dm = RasterDataModule(
+        train_dataset=segmentation_dataset,
+        val_dataset=segmentation_dataset,
+        batch_size=2,
+        patch_size=32,
+        num_workers=0,
+        drop_last=True,
+        train_sampler_config={"type": "RandomBatchGeoSampler", "length": 6},
+    )
+    dm.setup(stage="fit")
+    batches = list(dm.train_dataloader())
+    assert len(batches) == 3
+    assert all(batch["image"].shape[0] == 2 for batch in batches)
+
+
+def test_datamodule_tuple_patch_size(segmentation_dataset, image_dataset):
+    dm = RasterDataModule(
+        train_dataset=segmentation_dataset,
+        val_dataset=segmentation_dataset,
+        predict_dataset=image_dataset,
+        batch_size=2,
+        patch_size=(32, 16),
+        num_workers=0,
+    )
+    dm.setup(stage="fit")
+    dm.setup(stage="predict")
+    batch = next(iter(dm.train_dataloader()))
+    assert batch["image"].shape[-2:] == (32, 16)
+    assert next(iter(dm.predict_dataloader()))["image"].shape[-2:] == (32, 16)
+
+
+class _TorchGeoImages(RasterDataset):
+    filename_glob = "image_*.tif"
+
+
+class _TorchGeoLabels(RasterDataset):
+    filename_glob = "label_*.tif"
+    is_image = False
+
+
+def test_dataset_args_of_torchgeo_datasets():
+    """Plain TorchGeo datasets lack some eotorch settings, but their args are saved."""
+    images = _TorchGeoImages(str(TEST_DATA))
+    args = get_dataset_args(images & _TorchGeoLabels(str(TEST_DATA)))
+    assert args["image_glob"] == "image_*.tif"
+    assert args["label_glob"] == "label_*.tif"
+    assert args["cache_size"] is None
+    assert "class_mapping" not in args
+
+    dm = RasterDataModule(train_dataset=images, val_dataset=images, patch_size=32)
+    assert dm.hparams["dataset_args"]["image_glob"] == "image_*.tif"
+
+
+def test_dataset_args_of_other_datasets_raise():
+    with pytest.raises(TypeError, match="RasterDataset or IntersectionDataset"):
+        get_dataset_args(object())
 
 
 def test_datamodule_invalid_sampler(segmentation_dataset):

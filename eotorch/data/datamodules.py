@@ -12,11 +12,11 @@ from torchgeo.datasets import (
     IntersectionDataset,
     RasterDataset,
 )
+from torchgeo.samplers.utils import _to_tuple
 
 from eotorch.data.geodatasets import (
     CustomCacheRasterDataset,
     PlottableClassificationDataset,
-    PlottableImageDataset,
 )
 from eotorch.data.samplers import FileSampler
 from eotorch.data.splits import file_wise_split
@@ -31,22 +31,30 @@ def normalize_image(
     return (image.float() - mean.view(-1, 1, 1)) / std.view(-1, 1, 1)
 
 
-def get_dataset_args(ds):
+def get_dataset_args(ds: RasterDataset | IntersectionDataset) -> dict[str, Any]:
+    """Settings of a dataset, saved in the checkpoint so inference can load data the same way.
+
+    Plain TorchGeo datasets don't have the settings that only eotorch datasets have,
+    such as class_mapping, so these are left out or set to None.
+    """
     args = {}
     if isinstance(ds, RasterDataset):
         image_ds = ds
     elif isinstance(ds, IntersectionDataset):
-        image_ds: PlottableImageDataset = ds.datasets[0]
-        label_ds: PlottableClassificationDataset = ds.datasets[1]
+        image_ds, label_ds = ds.datasets
 
         args["labels_dir"] = label_ds.paths
         args["label_glob"] = label_ds.filename_glob
         args["label_transforms"] = label_ds.transforms
         args["label_filename_regex"] = label_ds.filename_regex
         args["label_date_format"] = label_ds.date_format
-        if label_ds.dataset_type == "classification":
+        if isinstance(label_ds, PlottableClassificationDataset):
             args["class_mapping"] = label_ds.class_mapping
             args["reduce_zero_label"] = label_ds.reduce_zero_label
+    else:
+        raise TypeError(
+            f"Expected a RasterDataset or IntersectionDataset, got {type(ds).__name__}"
+        )
 
     args["images_dir"] = image_ds.paths
     args["all_image_bands"] = image_ds.all_bands
@@ -54,7 +62,7 @@ def get_dataset_args(ds):
     args["image_glob"] = image_ds.filename_glob
     args["bands_to_return"] = image_ds.bands
     args["image_transforms"] = image_ds.transforms
-    args["cache_size"] = image_ds.cache_size
+    args["cache_size"] = getattr(image_ds, "cache_size", None)
     args["image_separate_files"] = image_ds.separate_files
     args["image_filename_regex"] = image_ds.filename_regex
     args["image_date_format"] = image_ds.date_format
@@ -126,9 +134,12 @@ class RasterDataModule(GeoDataModule):
 
                 Patch size does not need to be specified here, as it is already a parameter of the data module.
                 It will be passed to the sampler as the 'size' arg automatically.
-                Any sampler from torchgeo.samplers can be used here. The sampler will be initialized with the following parameters.
+                Any sampler from torchgeo.samplers can be used here. Batch samplers, such
+                as RandomBatchGeoSampler, also get the batch_size of the data module,
+                unless it is given in the configuration.
                 Example of some other sampler configurations:
                 train_sampler_config = {"type": "RandomPatchSampler", "length": length}
+                train_sampler_config = {"type": "RandomBatchGeoSampler", "length": length}
             mean: Mean of each image band. If given together with std, images are
                 normalized on the fly as (image - mean) / std, which is also applied when
                 predicting with the trained model. See
@@ -180,13 +191,7 @@ class RasterDataModule(GeoDataModule):
             return out_dict
 
         if self.train_dataset is not None:
-            try:
-                dataset_args = get_dataset_args(self.train_dataset)
-            except Exception:
-                print(
-                    "Could not get dataset args from train_dataset, not saving to disk."
-                )
-                dataset_args = {}
+            dataset_args = get_dataset_args(self.train_dataset)
             self.save_hyperparameters(
                 {
                     "dataset_args": _format_dict_for_yaml(dataset_args),
@@ -245,7 +250,9 @@ class RasterDataModule(GeoDataModule):
                 )
             elif self.train_sampler_config is None:
                 self.train_sampler = samplers.GriddedPatchSampler(
-                    self.train_dataset, size=self.patch_size, stride=self.patch_size / 2
+                    self.train_dataset,
+                    size=self.patch_size,
+                    stride=self._half_patch_size(),
                 )
             else:
                 # Initialize the sampler based on the provided configuration
@@ -253,6 +260,8 @@ class RasterDataModule(GeoDataModule):
                 sampler_type = local_config.pop("type")
                 if hasattr(samplers, sampler_type):
                     sampler_class = getattr(samplers, sampler_type)
+                    if issubclass(sampler_class, samplers.BatchGeoSampler):
+                        local_config.setdefault("batch_size", self.batch_size)
                     self.train_sampler = sampler_class(
                         self.train_dataset,
                         size=self.patch_size,
@@ -267,8 +276,12 @@ class RasterDataModule(GeoDataModule):
             self.test_sampler = self._eval_sampler(self.test_dataset)
         if stage in ["predict"]:
             self.predict_sampler = self._eval_sampler(
-                self.predict_dataset, stride=self.patch_size / 2
+                self.predict_dataset, stride=self._half_patch_size()
             )
+
+    def _half_patch_size(self) -> tuple[float, float]:
+        height, width = _to_tuple(self.patch_size)
+        return height / 2, width / 2
 
     def _eval_sampler(self, dataset: GeoDataset, stride: float | None = None):
         if self.file_sampling:
@@ -465,7 +478,8 @@ class RasterDataModule(GeoDataModule):
 
     def _dataloader_factory(self, split: str) -> DataLoader[dict[str, Tensor]]:
         """
-        Same as GeoDataModule._dataloader_factory but allows for customization of dataloader behavior.
+        Same as GeoDataModule._dataloader_factory, but with the persistent_workers,
+        pin_memory and drop_last settings of this data module.
 
         Args:
             split: Either 'train', 'val', 'test', or 'predict'.
@@ -481,15 +495,22 @@ class RasterDataModule(GeoDataModule):
         sampler = self._valid_attribute(f"{split}_sampler", "sampler")
         batch_size = self._valid_attribute(f"{split}_batch_size", "batch_size")
 
+        # A batch sampler yields whole batches, so it replaces sampler and batch_size
+        batch_sampler = None
+        if isinstance(sampler, samplers.BatchGeoSampler):
+            batch_size, batch_sampler, sampler = 1, sampler, None
+
         return DataLoader(
             dataset=dataset,
             batch_size=batch_size,
             sampler=sampler,
+            batch_sampler=batch_sampler,
             num_workers=self.num_workers,
             collate_fn=self.collate_fn,
             persistent_workers=self.persistent_workers,
             pin_memory=self.pin_memory,
-            drop_last=self.drop_last if split == "train" else False,
+            # drop_last can't be used together with a batch sampler
+            drop_last=split == "train" and self.drop_last and batch_sampler is None,
         )
 
     def on_after_batch_transfer(
