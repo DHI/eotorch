@@ -99,18 +99,15 @@ class VectorSource(ABC):
         self.profile.update(dtype="uint8")
 
         if exclude_nodata_bounds:
-            window = get_data_window(labels, nodata=0)
-            # make sure the window is at least of size min_size
-            window_height = max(window.height + 50, min_size)
-            window_width = max(window.width + 50, min_size)
-            col_off = max(0, window.col_off - 50)
-            row_off = max(0, window.row_off - 50)
-            window = Window(
-                col_off=col_off,
-                row_off=row_off,
-                height=window_height,
-                width=window_width,
-            )
+            # Crop to the labels with a margin on all sides, and to at least min_size
+            # pixels. Rows and columns past the end of the array are left out by numpy.
+            margin = 50
+            data = get_data_window(labels, nodata=0)
+            top = max(data.row_off - margin, 0)
+            left = max(data.col_off - margin, 0)
+            bottom = max(data.row_off + data.height + margin, top + min_size)
+            right = max(data.col_off + data.width + margin, left + min_size)
+            window = Window.from_slices((top, bottom), (left, right))
 
             labels = labels[utils.window_to_np_idc(window)]
             # Update the transform to reflect the new origin after cropping
@@ -149,7 +146,11 @@ class FileSource(VectorSource):
     def _get_geoms(self) -> list:
         features = []
         for c in self.classes:
-            features.append(read_vector(os.path.join(self.root_dir, f"{c}.shp")).to_crs(self.crs).geometry)
+            features.append(
+                read_vector(os.path.join(self.root_dir, f"{c}.shp"))
+                .to_crs(self.crs)
+                .geometry
+            )
         features = {i: f for i, f in enumerate(features, start=1)}
         return features
 
@@ -215,7 +216,7 @@ def read_vector(path: str | Path) -> gpd.GeoDataFrame:
         GeoDataFrame with geometry and attributes from the input file.
     """
     path = Path(path)
-    if path.suffix == '.parquet':
+    if path.suffix == ".parquet":
         return gpd.read_parquet(path)
     else:
         return gpd.read_file(path)
