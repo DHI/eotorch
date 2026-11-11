@@ -200,7 +200,6 @@ def split_raster_into_dense_areas(
                             row_min + cell_row_max,
                         )
 
-                        # Create polygon
                         cell_polygon = shapely_box(
                             geo_minx, geo_miny, geo_maxx, geo_maxy
                         )

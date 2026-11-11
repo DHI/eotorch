@@ -59,7 +59,6 @@ def plot_dataset_index(dataset, map=None, color="olive", name=None):
     """
     if map is None:
         map = folium.Map()
-        # map = folium.Map(crs="EPSG4326")
         # Assume a new map needs controls
         has_draw_control, has_measure_control = False, False
     else:
@@ -419,7 +418,7 @@ def plot_numpy_array(
     array: np.ndarray,
     ax: plt.Axes = None,
     class_mapping: dict[int, str] | None = None,
-    nodata_value: int | None = None,  # Changed: Allow None
+    nodata_value: int | None = None,
     colormap=cm.tab20,
     data_window_only: bool = False,
     nodata_color: str = "black",

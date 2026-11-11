@@ -189,13 +189,9 @@ def band_scaling(
     ----------
         img (np.ndarray):
             The array/image to be rescaled. Can be either 2D or 3D.
-        limits (Dict, optional):
+        limits (tuple | dict):
             Either a dictionary of manually defined bounds for each band given in the format {band : (lower, upper)}
-            or a tuple of the percentile cutoffs. Defaults to (2, 98).
-        heuristic (bool, optional):
-            Reduce the memory overhead by calculating statistics from a random subset of pixels. Defaults to False.
-        n_samples (int, optional):
-            Number of sample pixels to use when applying heuristics to find the limits. Defaults to 1e5.
+            or a tuple of the percentile cutoffs, e.g. (2, 98).
 
     Returns
     ----------

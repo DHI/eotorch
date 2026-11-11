@@ -18,7 +18,7 @@ class Conv2d(nn.Module):
         stride: tuple | int = 1,
         padding: tuple | int | str = "same",
         norm_layer: nn.Module = nn.BatchNorm2d,
-        norm_momentum: float = 0.1,  # Add momentum parameter
+        norm_momentum: float = 0.1,
         bn: bool = True,
         relu: bool = True,
         dropout_rate: float = 0.0,
@@ -37,9 +37,7 @@ class Conv2d(nn.Module):
             padding=padding,
             **kwargs,
         )
-        self.batchnorm = norm_layer(
-            num_features=out_channels, momentum=norm_momentum
-        )  # Pass momentum
+        self.batchnorm = norm_layer(num_features=out_channels, momentum=norm_momentum)
 
     def forward(self, inputs: torch.Tensor):
         x = self.conv(inputs)
@@ -59,7 +57,7 @@ class ResBlock(nn.Module):
         out_channels: int,
         kernel_sizes: Sequence[int | tuple[int, int]] = (3, 3, 1),
         norm_layer: nn.Module = nn.BatchNorm2d,
-        norm_momentum: float = 0.1,  # Add momentum parameter
+        norm_momentum: float = 0.1,
         **kwargs,
     ):
         super().__init__()
@@ -75,7 +73,7 @@ class ResBlock(nn.Module):
                 relu=False,
                 bn=True,
                 norm_layer=norm_layer,
-                norm_momentum=norm_momentum,  # Pass momentum
+                norm_momentum=norm_momentum,
                 **kwargs,
             )
 
@@ -87,7 +85,7 @@ class ResBlock(nn.Module):
             relu=True,
             bn=True,
             norm_layer=norm_layer,
-            norm_momentum=norm_momentum,  # Pass momentum
+            norm_momentum=norm_momentum,
             **kwargs,
         )
         self.conv2 = Conv2d(
@@ -97,7 +95,7 @@ class ResBlock(nn.Module):
             relu=True,
             bn=True,
             norm_layer=norm_layer,
-            norm_momentum=norm_momentum,  # Pass momentum
+            norm_momentum=norm_momentum,
             **kwargs,
         )
         self.conv3 = Conv2d(
@@ -107,7 +105,7 @@ class ResBlock(nn.Module):
             relu=False,
             bn=True,
             norm_layer=norm_layer,
-            norm_momentum=norm_momentum,  # Pass momentum
+            norm_momentum=norm_momentum,
             **kwargs,
         )
         self.ReLU = nn.ReLU(inplace=True)
