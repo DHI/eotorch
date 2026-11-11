@@ -4,11 +4,11 @@ from typing import Any
 
 import numpy as np
 import rasterio as rst
+from alive_progress import alive_it
 from rasterio.enums import Resampling
 from rasterio.warp import reproject
 from rasterio.windows import Window
 from rasterio.windows import transform as window_transform
-from tqdm import tqdm
 
 
 def _read_aligned(
@@ -169,7 +169,9 @@ def generate_patches_from_files(
         split_dir = Path(out_dir) / split
         split_dir.mkdir(parents=True, exist_ok=True)
         n = 0
-        for r, c in tqdm(locations, desc=split, disable=not show_progress):
+        for r, c in alive_it(
+            locations, title=split, force_tty=True, disable=not show_progress
+        ):
             rows, cols = slice(r, r + patch_size), slice(c, c + patch_size)
             image_patch, label_patch = image[:, rows, cols], labels[rows, cols]
             if _should_skip_patch(
