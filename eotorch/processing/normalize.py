@@ -393,7 +393,8 @@ def zscore_normalize(
     # First pass: compute mean and std across all files
     band_sums = np.zeros(len(bands), dtype=np.float64)
     band_sq_sums = np.zeros(len(bands), dtype=np.float64)
-    total_pixels = 0
+    # Counted per band, as each band can have its own invalid pixels
+    band_counts = np.zeros(len(bands), dtype=np.int64)
 
     with alive_bar(len(file_list), title="Computing statistics", unit="files") as bar:
         for file_path in file_list:
@@ -422,25 +423,25 @@ def zscore_normalize(
 
                     # Compute sums per band
                     for i in range(len(bands)):
-                        valid_pixels = ~np.isnan(data[i])
-                        if i == 0:  # Count pixels only once
-                            total_pixels += np.sum(valid_pixels)
+                        band_counts[i] += np.sum(~np.isnan(data[i]))
                         band_sums[i] += np.nansum(data[i])
                         band_sq_sums[i] += np.nansum(data[i] ** 2)
 
             bar()
 
-    if total_pixels == 0:
-        raise ValueError("No valid pixels found in input files")
+    if (band_counts == 0).any():
+        raise ValueError(
+            f"No valid pixels found in input files for bands {np.array(bands)[band_counts == 0]}"
+        )
 
     # Compute mean and std
-    means = band_sums / total_pixels
-    stds = np.sqrt((band_sq_sums / total_pixels) - (means**2))
+    means = band_sums / band_counts
+    stds = np.sqrt((band_sq_sums / band_counts) - (means**2))
 
     # Avoid division by zero
     stds[stds < 1e-10] = 1.0
 
-    logger.info(f"Computed statistics from {total_pixels:,} pixels")
+    logger.info(f"Computed statistics from {band_counts.tolist()} pixels per band")
     logger.info(f"Means: {means}")
     logger.info(f"Stds: {stds}")
 
@@ -452,7 +453,7 @@ def zscore_normalize(
             "stds": stds.tolist(),
             "bands": bands,
             "n_files": len(file_list),
-            "total_pixels": int(total_pixels),
+            "valid_pixels_per_band": band_counts.tolist(),
         }
         with open(stats_file, "w") as f:
             json.dump(stats_dict, f, indent=2)
@@ -466,10 +467,7 @@ def zscore_normalize(
 
             with rst.open(file_path) as src:
                 profile = src.profile.copy()
-                profile.update(
-                    dtype="float32",
-                    # nodata=np.nan,
-                )
+                profile.update(dtype="float32", count=len(bands))
 
                 # Determine the fill value for nodata pixels
                 nodata_fill = src.nodata if src.nodata is not None else 0.0
@@ -506,7 +504,9 @@ def zscore_normalize(
     return {"mean": means, "std": stds}
 
 
-def band_statistics(dataset, nodata: float | None = 0) -> tuple[list[float], list[float]]:
+def band_statistics(
+    dataset, nodata: float | None = 0
+) -> tuple[list[float], list[float]]:
     """
     Computes the mean and standard deviation of each band over all image files of a dataset.
 

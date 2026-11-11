@@ -716,7 +716,8 @@ def slice_image(
         for b in range(0, dim, size // stride):
             if (overlap and stride == 1) or (stride > 1):
                 bounds = (b, b + size)
-                bounds = (dim - size, dim) if bounds[1] > dim else bounds
+                # Moved back to end at the edge, but not before the start of the array
+                bounds = (max(dim - size, 0), dim) if bounds[1] > dim else bounds
                 try:
                     if not bounds == dim_bounds[-1]:
                         dim_bounds.append(bounds)
@@ -724,7 +725,8 @@ def slice_image(
                     dim_bounds.append(bounds)
             elif (b + (size // stride)) < dim:
                 bounds = (b, b + size)
-                bounds = (dim - size, dim) if bounds[1] > dim else bounds
+                # Moved back to end at the edge, but not before the start of the array
+                bounds = (max(dim - size, 0), dim) if bounds[1] > dim else bounds
                 dim_bounds.append(bounds)
 
         out_bounds = [(i + offset, j + offset) for i, j in dim_bounds[:-1]]

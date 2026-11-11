@@ -3,7 +3,7 @@ import shapely.geometry
 import torch
 from torchgeo.datasets.utils import BoundingBox
 
-from eotorch.utils import torchgeo_bb_to_shapely
+from eotorch.utils import slice_image, torchgeo_bb_to_shapely
 
 
 def test_torchgeo_bb_to_shapely_simple_conversion():
@@ -99,3 +99,10 @@ def test_torchgeo_bb_to_shapely_tensor():
 
     assert isinstance(polygon, shapely.geometry.Polygon)
     assert polygon.bounds == (10.0, 30.0, 20.0, 40.0)
+
+
+def test_slice_image_smaller_than_a_slice():
+    assert slice_image(100, 300, size=256) == [
+        (slice(0, 100), slice(0, 256)),
+        (slice(0, 100), slice(44, 300)),
+    ]

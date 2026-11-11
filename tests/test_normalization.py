@@ -1,4 +1,4 @@
-"""Tests for on-the-fly normalization, during training and inference."""
+"""Tests for normalization, on the fly during training and inference, and of files."""
 
 import glob
 from pathlib import Path
@@ -10,7 +10,7 @@ import rasterio as rst
 import torch
 
 from eotorch.data import RasterDataModule, SegmentationTask, get_segmentation_dataset
-from eotorch.processing.normalize import band_statistics
+from eotorch.processing.normalize import band_statistics, zscore_normalize
 
 TEST_DATA = Path(__file__).parent / "data"
 
@@ -101,3 +101,24 @@ def test_inference_selects_and_normalizes_bands(dataset, tmp_path):
     )
     with rst.open(out) as src:
         assert src.shape == (100, 100)
+
+
+def test_zscore_normalize_counts_valid_pixels_per_band(tmp_path):
+    """The image is smaller than the 256 px windows the files are read in."""
+    with rst.open(TEST_DATA / "image_0.tif") as src:
+        profile = src.profile
+        data = src.read().astype("float64")
+    data[1, :50] = 0  # zeros are left out, here only in the second band
+    image = tmp_path / "image.tif"
+    with rst.open(image, "w", **profile) as dst:
+        dst.write(data.astype(profile["dtype"]))
+
+    stats = zscore_normalize(image, tmp_path / "out", bands=[1, 2])
+
+    valid = np.where(data[:2] == 0, np.nan, data[:2])
+    np.testing.assert_allclose(stats["mean"], np.nanmean(valid, axis=(1, 2)))
+    np.testing.assert_allclose(stats["std"], np.nanstd(valid, axis=(1, 2)))
+    with rst.open(tmp_path / "out" / "image_zscore.tif") as src:
+        assert src.count == 2
+        normalized = src.read(2)[50:]
+    np.testing.assert_allclose(normalized.mean(), 0, atol=1e-4)
