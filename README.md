@@ -372,9 +372,11 @@ With `blend=True`, overlapping patch predictions (class probabilities for segmen
 
 EOTorch provides utilities for common preprocessing tasks:
 
-#### Normalization
+#### Normalizing Files
 
-**Z-score normalization** (recommended for foundation models like Prithvi):
+For training with eotorch, normalize on the fly instead (see [On-the-fly Normalization](#on-the-fly-normalization)): the images stay as they are, and the trained model normalizes new images the same way. Writing normalized copies is only needed when they are used outside eotorch.
+
+**Z-score normalization**:
 ```python
 from eotorch.processing import zscore_normalize
 
