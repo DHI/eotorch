@@ -8,7 +8,6 @@ import numpy as np
 import pandas as pd
 import pyproj
 import rasterio as rst
-import torch
 from folium.plugins import Draw, MeasureControl
 from folium.raster_layers import ImageOverlay
 from matplotlib import cm
@@ -607,11 +606,23 @@ def plot_samples(
     dataset,
     n: int = 3,
     patch_size: int = 256,
-    nodata_val: int = 0,
     show_filepaths: bool = False,
-    dataset_type: str = "classification",
 ):
+    """Plot n random samples of a dataset, leaving out samples without data."""
     assert hasattr(dataset, "plot"), "Dataset must have a plot method"
+    # The labels of a dataset of images and labels are in its second dataset
+    label_ds = (
+        dataset.datasets[1] if isinstance(dataset, IntersectionDataset) else dataset
+    )
+
+    def is_empty(sample: dict) -> bool:
+        if "image" in sample and (sample["image"] == 0).all():
+            return True
+        if "mask" in sample:
+            labels = label_ds.values_as_in_files(sample["mask"])
+            return bool((labels == label_ds.nodata_value).all())
+        return False
+
     # Sample a random patch from a random file. TorchGeo's RandomPatchSampler samples
     # from the combined area of all files shrunk by half a patch, which leaves nothing
     # to sample from files that are about the size of a patch.
@@ -625,21 +636,8 @@ def plot_samples(
             x = rng.uniform(xmin, max(xmin, xmax - width))
             y = rng.uniform(ymin, max(ymin, ymax - height))
             sample = dataset[x : x + width, y : y + height]
-            if dataset_type == "classification":
-                if (
-                    (("image" in sample) and (sample["image"] == 0).all())
-                    or ("mask" in sample and (sample["mask"] == nodata_val).all())
-                    or ("mask" in sample and (sample["mask"] == -1).all())
-                ):
-                    continue
-            elif dataset_type == "regression":
-                if (("image" in sample) and (sample["image"] == 0).all()) or (
-                    "mask" in sample
-                    and torch.equal(
-                        sample["mask"], torch.full_like(sample["mask"], nodata_val)
-                    )
-                ):
-                    continue
+            if is_empty(sample):
+                continue
             samples.append(sample)
             if len(samples) == n:
                 break

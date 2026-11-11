@@ -254,3 +254,32 @@ def test_plots_show_filepaths_without_given_axes(labels):
     image_ds.plot({**sample, "prediction": sample["mask"]}, show_filepaths=True)
     assert "image_0.tif" in plt.gcf().axes[0].get_title()
     plt.close("all")
+
+
+def test_plot_samples_keeps_regression_targets_of_minus_one(tmp_path, monkeypatch):
+    """-1 is only nodata for classification labels with reduce_zero_label."""
+    from pathlib import Path
+
+    import rasterio as rst
+
+    from eotorch.data import get_regression_dataset
+
+    data = Path(__file__).parent / "data"
+    with rst.open(data / "target_0.tif") as src:
+        profile = src.profile
+    target = tmp_path / "target.tif"
+    with rst.open(target, "w", **profile) as dst:
+        dst.write(np.full((1, profile["height"], profile["width"]), -1.0))
+    ds = get_regression_dataset(
+        images_dir=data / "image_0.tif",
+        labels_dir=target,
+        all_image_bands=("red", "green", "blue"),
+        nodata_value=-9999.0,
+    )
+    shown = []
+    monkeypatch.setattr(plt, "show", lambda: shown.append(plt.gcf()))
+
+    ds.plot_samples(n=1, patch_size=100)
+
+    assert len(shown) == 1
+    plt.close("all")

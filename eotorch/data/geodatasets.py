@@ -305,26 +305,11 @@ class SamplePlotMixin:
     """Mixin class for datasets that can plot samples."""
 
     def plot_samples(
-        self,
-        n: int = 3,
-        patch_size: int = 256,
-        show_filepaths: bool = False,
-        nodata_val: int | float = 0,
-        dataset_type: str = "classification",
+        self, n: int = 3, patch_size: int = 256, show_filepaths: bool = False
     ):
-        # if the dataset is an IntersectionDataset, get the nodata value from the label dataset
-        if isinstance(self, IntersectionDataset) and hasattr(
-            self.datasets[1], "nodata_value"
-        ):
-            nodata_val = self.datasets[1].nodata_value
-
+        """Plot n random samples, leaving out samples without data."""
         return plot_samples(
-            self,
-            n=n,
-            patch_size=patch_size,
-            nodata_val=nodata_val,
-            show_filepaths=show_filepaths,
-            dataset_type=dataset_type,
+            self, n=n, patch_size=patch_size, show_filepaths=show_filepaths
         )
 
 
