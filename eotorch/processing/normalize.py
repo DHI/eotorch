@@ -187,15 +187,16 @@ def band_scaling(
 
     Parameters
     ----------
-        img (np.ndarray):
-            The array/image to be rescaled. Can be either 2D or 3D.
-        limits (tuple | dict):
-            Either a dictionary of manually defined bounds for each band given in the format {band : (lower, upper)}
-            or a tuple of the percentile cutoffs, e.g. (2, 98).
+    img : np.ndarray
+        The array/image to be rescaled. Can be either 2D or 3D.
+    limits : tuple | dict
+        Either a dictionary of manually defined bounds for each band given in the format {band : (lower, upper)}
+        or a tuple of the percentile cutoffs, e.g. (2, 98).
 
     Returns
-    ----------
-        np.ndarray: Rescaled image as float in range 0, 1
+    -------
+    np.ndarray
+        Rescaled image as float in range 0, 1
     """
     if isinstance(limits, tuple):
         lower, upper = limits

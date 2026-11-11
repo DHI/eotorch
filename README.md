@@ -213,17 +213,18 @@ train_ds, val_ds, test_ds = splits.file_wise_split(
 
 **Option 2: Specify exact files**
 ```python
-# Explicitly assign files to validation set (remaining go to train)
+# Explicitly assign files to validation set (remaining go to train).
+# Relative paths are relative to the working directory, not to the data folder.
 train_ds, val_ds = splits.file_wise_split(
     dataset=ds,
-    val_img_files=["scene1.tif", "scene2.tif"]
+    val_img_files=["/path/to/data/scene1.tif", "/path/to/data/scene2.tif"]
 )
 
 # Specify both validation and test files
 train_ds, val_ds, test_ds = splits.file_wise_split(
     dataset=ds,
-    val_img_files=["val_scene1.tif", "val_scene2.tif"],
-    test_img_files=["test_scene1.tif"]
+    val_img_files=["/path/to/data/val_scene1.tif", "/path/to/data/val_scene2.tif"],
+    test_img_files=["/path/to/data/test_scene1.tif"]
 )
 
 # Or use glob patterns to select files
@@ -669,7 +670,8 @@ You can find usage examples in the [notebooks](notebooks/) directory:
 | Notebook | Description |
 |----------|-------------|
 | [segmentation.ipynb](notebooks/segmentation.ipynb) | End-to-end segmentation workflow with EOTorch |
-| [prithvi_eo_2.ipynb](notebooks/prithvi_eo_2.ipynb) | Fine-tuning Prithvi-EO-2.0 with TerraTorch |
+| [pre_patched_segmentation.ipynb](notebooks/pre_patched_segmentation.ipynb) | Training on data split into patch files beforehand |
+| [class_probabilities.ipynb](notebooks/class_probabilities.ipynb) | Saving class probabilities next to the predicted classes |
 
 ### Minimal Example (EOTorch only)
 
