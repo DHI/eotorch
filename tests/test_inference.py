@@ -1,6 +1,8 @@
 """Tests for patch-wise inference on TIF files."""
 
+import math
 import random
+from contextlib import nullcontext
 from pathlib import Path
 
 import numpy as np
@@ -13,6 +15,7 @@ from eotorch.inference.inference_utils import (
     PatchBlender,
     blend_weights,
     patch_generator,
+    patches_along_axis,
 )
 
 TEST_IMAGE = Path(__file__).parent / "data" / "image_0.tif"
@@ -23,9 +26,103 @@ def _first_band(batch: np.ndarray) -> np.ndarray:
     return batch[:, 0].astype("float32")
 
 
+def _distance_to_patch_edge(batch: np.ndarray) -> np.ndarray:
+    """A "model" whose prediction is the distance of each pixel to the patch edge."""
+    patch_size = batch.shape[-1]
+    distance = np.minimum(np.arange(patch_size), np.arange(patch_size)[::-1])
+    distance_2d = np.minimum.outer(distance, distance).astype("float32")
+    return np.broadcast_to(distance_2d, (len(batch), patch_size, patch_size))
+
+
 def _read(path) -> np.ndarray:
     with rst.open(path) as src:
         return src.read(1)
+
+
+def _write_image(path: Path, height: int, width: int) -> Path:
+    data = np.arange(height * width, dtype="float32").reshape(1, height, width)
+    profile = {
+        "driver": "GTiff",
+        "height": height,
+        "width": width,
+        "count": 1,
+        "dtype": "float32",
+        "crs": "EPSG:32632",
+        "transform": rst.transform.from_origin(0, height, 1, 1),
+    }
+    with rst.open(path, "w", **profile) as dst:
+        dst.write(data)
+    return path
+
+
+@pytest.mark.parametrize(
+    "height, width, patch_size, overlap, batch_size",
+    [
+        (128, 128, 64, 2, 4),  # patches end exactly at the image edge
+        (100, 100, 64, 2, 4),  # the last row and column are moved back
+        (128, 128, 64, 1, 3),  # no overlap, last batch only partly filled
+        (128, 128, 64, 4, 8),
+        (250, 180, 64, 2, 5),
+        (20, 100, 64, 2, 4),  # smaller than a patch, padded
+    ],
+)
+def test_patch_generator_covers_image_once(
+    tmp_path, height, width, patch_size, overlap, batch_size
+):
+    image = _write_image(tmp_path / "image.tif", height, width)
+    with pytest.warns(UserWarning) if height < patch_size else nullcontext():
+        batches = list(patch_generator(image, patch_size, overlap, batch_size))
+
+    windows = [
+        (w.row_off, w.col_off) for _, batch_windows in batches for w in batch_windows
+    ]
+    assert len(windows) == len(set(windows))
+    covered = np.zeros((height, width), dtype=bool)
+    for row, col in windows:
+        covered[row : row + patch_size, col : col + patch_size] = True
+    assert covered.all()
+
+    stride = patch_size // overlap
+    n_patches = patches_along_axis(height, patch_size, stride) * patches_along_axis(
+        width, patch_size, stride
+    )
+    assert len(windows) == n_patches
+    assert len(batches) == math.ceil(n_patches / batch_size)
+    assert all(batch.shape[1:] == (1, patch_size, patch_size) for batch, _ in batches)
+
+
+@pytest.mark.parametrize("overlap", [2, 4])
+def test_only_the_center_of_patches_is_kept(tmp_path, overlap):
+    out = predict_on_tif_generic(
+        TEST_IMAGE,
+        _distance_to_patch_edge,
+        patch_size=32,
+        overlap=overlap,
+        dtype="float32",
+        nodata=None,
+        out_file_path=tmp_path / "pred.tif",
+        progress_bar=False,
+    )
+    # Half of the overlap is cut from each side of a patch, except at the image border
+    buffer = (32 - 32 // overlap) // 2
+    assert _read(out)[buffer:-buffer, buffer:-buffer].min() >= buffer
+
+
+@pytest.mark.parametrize("blend", [False, True])
+def test_images_smaller_than_a_patch_are_padded(tmp_path, blend):
+    image = _write_image(tmp_path / "small.tif", height=20, width=30)
+    with pytest.warns(UserWarning, match="smaller than the patch size"):
+        out = predict_on_tif_generic(
+            image,
+            _first_band,
+            patch_size=32,
+            dtype="float32",
+            nodata=None,
+            out_file_path=tmp_path / "pred.tif",
+            progress_bar=False,
+            blend=blend,
+        )
+    np.testing.assert_allclose(_read(out), _read(image), rtol=1e-6)
 
 
 @pytest.fixture
@@ -54,12 +151,14 @@ def test_patch_blender_averages_overlapping_patches(tmp_path):
     assert 1 < values[0, 4, 4] < values[0, 4, 7] < 3
 
 
+@pytest.mark.parametrize("overlap", [1, 2, 4])
 @pytest.mark.parametrize("blend", [False, True])
-def test_predictions_are_stitched_correctly(tmp_path, first_band, blend):
+def test_predictions_are_stitched_correctly(tmp_path, first_band, blend, overlap):
     out = predict_on_tif_generic(
         TEST_IMAGE,
         _first_band,
         patch_size=32,
+        overlap=overlap,
         dtype="float32",
         out_file_path=tmp_path / "pred.tif",
         progress_bar=False,

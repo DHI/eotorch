@@ -1,3 +1,4 @@
+import math
 import tempfile
 from collections.abc import Callable, Generator
 from contextlib import ExitStack
@@ -110,12 +111,10 @@ def predict_on_tif_generic(
     out_file_path = Path(out_file_path)
     out_file_path.parent.mkdir(exist_ok=True, parents=True)
 
-    # roughly estimate how many batches we will have
-    total_windows = int(
-        (meta["height"] / (patch_size / overlap))
-        * (meta["width"] / (patch_size / overlap))
-        / batch_size
-    )
+    stride = patch_size // overlap
+    patch_rows = iu.patches_along_axis(meta["height"], patch_size, stride)
+    patch_cols = iu.patches_along_axis(meta["width"], patch_size, stride)
+    total_batches = math.ceil(patch_rows * patch_cols / batch_size)
 
     def _plot(data_window_only: bool):
         print(f"Showing results for {out_file_path}")
@@ -184,7 +183,7 @@ def predict_on_tif_generic(
             for batch, windows in (
                 alive_it(
                     data_and_window_generator,
-                    total=total_windows,
+                    total=total_batches,
                     force_tty=True,
                     monitor_end=False,
                     finalize=lambda bar: bar.title("Inference finished."),
@@ -201,9 +200,10 @@ def predict_on_tif_generic(
                     if blend:
                         blender.add(patch_pred, window)
                         continue
+                    # Half of the overlap is cut from each side, so neighbouring patches meet
                     unbuffered_window = iu.buffered_to_unbuffered(
                         window,
-                        buffer=int(patch_size * (1 / (2 * overlap))),
+                        buffer=(patch_size - stride) // 2,
                         img_height=meta["height"],
                         img_width=meta["width"],
                     )

@@ -1,3 +1,5 @@
+import math
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -84,10 +86,14 @@ class PatchBlender:
                 shape=(len(prediction), *self.shape),
             )
         row, col = int(window.row_off), int(window.col_off)
-        rows = slice(row, row + prediction.shape[-2])
-        cols = slice(col, col + prediction.shape[-1])
-        self.sums[:, rows, cols] += prediction * self.patch_weights
-        self.weights[rows, cols] += self.patch_weights
+        # Patches of padded images extend past the image, only their image part is kept
+        height = min(prediction.shape[-2], self.shape[0] - row)
+        width = min(prediction.shape[-1], self.shape[1] - col)
+        rows = slice(row, row + height)
+        cols = slice(col, col + width)
+        weights = self.patch_weights[:height, :width]
+        self.sums[:, rows, cols] += prediction[:, :height, :width] * weights
+        self.weights[rows, cols] += weights
 
     def chunks(self, chunk_height: int = 256):
         """Yield the window, blended values and covered pixels for each chunk of rows."""
@@ -158,24 +164,36 @@ def buffered_to_unbuffered(
     return Window(left, top, window_width, window_height)
 
 
+def patches_along_axis(image_size: int, patch_size: int, stride: int) -> int:
+    """Number of patches that patch_generator places along one axis of an image."""
+    if image_size <= patch_size:
+        return 1
+    return math.ceil((image_size - patch_size) / stride) + 1
+
+
 def patch_generator(
     tif_file_path: str | Path,
-    patch_size: int | None = 64,
-    overlap: int | None = 2,
-    batch_size: int | None = 32,
+    patch_size: int = 64,
+    overlap: int = 2,
+    batch_size: int = 32,
 ):
     """
     Generator that yields patches of a tif file.
+
+    The patches of the last row and column are moved back to end at the edge of the
+    image. Images smaller than a patch are padded with their nodata value (or 0) at the
+    bottom and right, so the windows of their patches extend past the image.
 
     Parameters
     ----------
         tif_file_path: path to tif file
         patch_size: size of the patches to use for prediction
         overlap: overlap between patches, 2 means 50% overlap
+        batch_size: number of patches per batch, the last batch may be smaller
 
     Yields
     ----------
-        batch: numpy array of shape (batch_size, patch_size, patch_size, n_channels)
+        batch: numpy array of shape (batch_size, n_channels, patch_size, patch_size)
         windows: list of rasterio windows, indicating the location of each patch
                 in the original tif file
     """
@@ -183,26 +201,33 @@ def patch_generator(
         height = src.height
         width = src.width
 
+        needs_padding = height < patch_size or width < patch_size
+        fill_value = src.nodata if src.nodata is not None else 0
+        if needs_padding:
+            warnings.warn(
+                f"The image ({height}x{width} px) is smaller than the patch size "
+                f"({patch_size} px), so it is padded with {fill_value} for inference."
+            )
+
         batch, windows = [], []
         last_row = False
         nan_inputs_logged = False
         for top in range(0, height, patch_size // overlap):
             row_finished = False
-            bottom = top + patch_size
-            if bottom > height:
-                bottom = height
-                top = bottom - patch_size
+            if top + patch_size >= height:
+                top = max(height - patch_size, 0)
                 last_row = True
             for left in range(0, width, patch_size // overlap):
-                right = left + patch_size
-                if right > width:
-                    right = width
-                    left = right - patch_size
+                if left + patch_size >= width:
+                    left = max(width - patch_size, 0)
                     row_finished = True
 
                 window = Window(left, top, patch_size, patch_size)
                 windows.append(window)
-                img_data = src.read(window=window)
+                # Boundless reads are slow, so only used when padding is needed
+                img_data = src.read(
+                    window=window, boundless=needs_padding, fill_value=fill_value
+                )
                 if np.isnan(img_data).any():
                     if not nan_inputs_logged:
                         print(
@@ -217,7 +242,7 @@ def patch_generator(
                 if row_finished:
                     break
             if last_row:
-                if len(batch) > 0:
-                    yield np.array(batch), windows
-                else:
-                    break
+                break
+
+        if batch:
+            yield np.array(batch), windows
