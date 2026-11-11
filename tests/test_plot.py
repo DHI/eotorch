@@ -144,3 +144,36 @@ def test_plot_samples_with_patches_as_large_as_the_files(monkeypatch, labels):
 
     assert len(shown) == 2
     plt.close("all")
+
+
+@pytest.mark.parametrize("labels", ["label", "target"])
+def test_plotting_does_not_change_the_sample(labels):
+    from pathlib import Path
+
+    from eotorch.data import get_regression_dataset, get_segmentation_dataset
+
+    get_dataset = get_segmentation_dataset
+    kwargs = {"reduce_zero_label": True}
+    if labels == "target":
+        get_dataset = get_regression_dataset
+        kwargs = {"nodata_value": -9999.0}
+    data = Path(__file__).parent / "data"
+    ds = get_dataset(
+        images_dir=data,
+        labels_dir=data,
+        image_glob="image_0.tif",
+        label_glob=f"{labels}_0.tif",
+        all_image_bands=("red", "green", "blue"),
+        **kwargs,
+    )
+    sample = ds[ds.bounds]
+    sample["prediction"] = sample["mask"].clone()
+    original = {k: v.clone() for k, v in sample.items()}
+
+    for _ in range(2):
+        ds.plot(sample)
+        plt.close("all")
+
+    assert sample.keys() == original.keys()
+    for key, value in original.items():
+        assert (sample[key] == value).all(), key

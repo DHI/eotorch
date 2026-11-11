@@ -636,7 +636,7 @@ class PlottableClassificationDataset(CustomCacheRasterDataset):
     def plot(self, sample, ax=None, **kwargs):
         vals = sample["mask"].numpy()
         if self.reduce_zero_label:
-            vals += 1
+            vals = vals + 1  # not +=, which would change the sample's tensor
         if show_filepaths := kwargs.pop("show_filepaths", False):
             filepaths = self.filepaths_at(sample["bounds"])
             formatted_paths = _format_filepaths(filepaths)
@@ -861,13 +861,17 @@ class ClassificationRasterDataset(
         )
 
     def plot(self, sample: dict[str, Any], **kwargs):
-        predictions = sample.pop("prediction", None)
+        predictions = sample.get("prediction")
         n_cols = 3 if predictions is not None else 2
         fig, axes = plt.subplots(1, n_cols, figsize=(n_cols * 4, 4))
 
+        # The image dataset would plot the prediction itself, so it is left out here
+        sample_without_prediction = {
+            k: v for k, v in sample.items() if k != "prediction"
+        }
         for i, dataset in enumerate(self.datasets):
             if hasattr(dataset, "plot"):
-                dataset.plot(sample, ax=axes[i], **kwargs)
+                dataset.plot(sample_without_prediction, ax=axes[i], **kwargs)
             else:
                 raise NotImplementedError("Dataset must be plottable")
 
@@ -875,7 +879,7 @@ class ClassificationRasterDataset(
             label_ds: PlottableClassificationDataset = self.datasets[-1]
             data = predictions.numpy()
             if label_ds.reduce_zero_label:
-                data += 1
+                data = data + 1  # not +=, which would change the prediction tensor
             plot_numpy_array(
                 array=data,
                 ax=axes[-1],
@@ -1000,13 +1004,17 @@ class RegressionRasterDataset(
     SamplePlotMixin,
 ):
     def plot(self, sample: dict[str, Any], **kwargs):
-        predictions = sample.pop("prediction", None)
+        predictions = sample.get("prediction")
         n_cols = 3 if predictions is not None else 2
         fig, axes = plt.subplots(1, n_cols, figsize=(n_cols * 4, 4))
 
+        # The image dataset would plot the prediction itself, so it is left out here
+        sample_without_prediction = {
+            k: v for k, v in sample.items() if k != "prediction"
+        }
         for i, dataset in enumerate(self.datasets):
             if hasattr(dataset, "plot"):
-                dataset.plot(sample, ax=axes[i], **kwargs)
+                dataset.plot(sample_without_prediction, ax=axes[i], **kwargs)
             else:
                 raise NotImplementedError("Dataset must be plottable")
 
