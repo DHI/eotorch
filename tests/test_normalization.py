@@ -56,6 +56,32 @@ def test_datamodule_normalizes_batches(dataset):
     assert datamodule.hparams["std"] == [2.0, 4.0]
 
 
+@pytest.mark.parametrize("stage", ["training", "validating"])
+def test_augmentations_are_applied_after_normalization(dataset, stage):
+    """Augmentations are set as in TorchGeo, e.g. train_aug for training only."""
+    import kornia.augmentation as K
+    from types import SimpleNamespace
+
+    datamodule = RasterDataModule(
+        train_dataset=dataset, patch_size=32, mean=[10.0, 20.0], std=[2, 4]
+    )
+    datamodule.train_aug = K.AugmentationSequential(
+        K.RandomHorizontalFlip(p=1.0), data_keys=None, keepdim=True
+    )
+    trainer_state = dict.fromkeys(
+        ["training", "validating", "sanity_checking", "testing", "predicting"], False
+    )
+    datamodule.trainer = SimpleNamespace(**{**trainer_state, stage: True})
+    image = torch.arange(8.0).expand(2, 2, 8, 8) + 10
+
+    batch = datamodule.on_after_batch_transfer({"image": image.clone()}, 0)
+
+    normalized = (image[:, 0] - 10) / 2
+    if stage == "training":
+        normalized = normalized.flip(-1)
+    torch.testing.assert_close(batch["image"][:, 0], normalized)
+
+
 def test_inference_selects_and_normalizes_bands(dataset, tmp_path):
     mean, std = band_statistics(dataset)
     datamodule = RasterDataModule(

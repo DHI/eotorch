@@ -88,6 +88,10 @@ class RasterDataModule(GeoDataModule):
     - The dataset arguments are saved in the checkpoint, so inference can load data the same way.
     - If no validation dataset is given, a file-wise validation split is held out from the
       training dataset when the data module is created (see val_split).
+    - Images are normalized with the given mean and std instead of being divided by 255.
+      Augmentations are applied after that and can be set as in TorchGeo, e.g.
+      datamodule.train_aug = K.AugmentationSequential(K.RandomHorizontalFlip(),
+      data_keys=None, keepdim=True).
 
     """
 
@@ -180,6 +184,10 @@ class RasterDataModule(GeoDataModule):
         mean = None if mean is None else [float(m) for m in mean]
         std = None if std is None else [float(s) for s in std]
         self.mean, self.std = mean, std
+        # Images are normalized with mean and std in on_after_batch_transfer. TorchGeo's
+        # default aug would also divide them by 255, so it is replaced by doing nothing.
+        # Augmentations can be set as in TorchGeo, e.g. as train_aug.
+        self.aug = torch.nn.Identity()
 
         def _format_dict_for_yaml(d: dict):
             out_dict = {}
@@ -516,7 +524,8 @@ class RasterDataModule(GeoDataModule):
     def on_after_batch_transfer(
         self, batch: dict[str, Tensor], dataloader_idx: int
     ) -> dict[str, Tensor]:
-        """Normalize the images after they are transferred to the device."""
+        """Normalize the images after they are transferred to the device, then apply
+        the augmentations of TorchGeo's data module."""
         if self.mean is not None:
             batch["image"] = normalize_image(batch["image"], self.mean, self.std)
-        return batch
+        return super().on_after_batch_transfer(batch, dataloader_idx)
