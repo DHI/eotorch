@@ -68,3 +68,15 @@ def test_intersection_is_not_supported(get_dataset):
     ds = _dataset(get_dataset, 0)
     with pytest.raises(TypeError, match="can't be intersected"):
         ds & ds
+
+
+@pytest.mark.parametrize(
+    "get_dataset", [get_segmentation_dataset, get_regression_dataset]
+)
+def test_changing_the_crs_reprojects_images_and_labels(get_dataset):
+    ds = _dataset(get_dataset, 0)
+    ds.crs = "EPSG:3857"
+
+    assert ds.crs == ds.index.crs == "EPSG:3857"
+    assert ds.datasets[0].crs == ds.datasets[1].crs == "EPSG:3857"
+    assert ds[ds.bounds]["image"].shape[0] == 3

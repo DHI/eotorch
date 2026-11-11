@@ -22,27 +22,19 @@ from rasterio.plot import show
 from shapely import Polygon
 from shapely.geometry import box as shapely_box
 from torchgeo.datasets import (
-    GeoDataset,
     IntersectionDataset,
     RasterDataset,
     RGBBandsMissingError,
-    concat_samples,
 )
 from torchgeo.datasets.utils import GeoSlice, array_to_tensor
 
 from eotorch.bandindex import BAND_INDEX
 from eotorch.inference.inference_utils import prediction_to_numpy
 from eotorch.plot import label_map, plot_dataset_index, plot_numpy_array, plot_samples
-from eotorch.utils import _format_filepaths, transform_index
+from eotorch.utils import _format_filepaths
 
 if TYPE_CHECKING:
     from torch import Tensor
-
-# TorchGeo's & would stack the images and labels of both datasets on top of each other
-INTERSECTION_NOT_SUPPORTED = (
-    "Datasets of images and labels can't be intersected with '&'. "
-    "Use '|' to combine their files."
-)
 
 
 def split_raster_into_dense_areas(
@@ -609,11 +601,92 @@ class PlottableImageDataset(CustomCacheRasterDataset):
         plt.tight_layout()
 
 
-class PlottableClassificationDataset(CustomCacheRasterDataset):
-    colormap = cm.tab20
-    nodata_value = 0
-    class_mapping: dict | None = None
+class PlottableLabelDataset(CustomCacheRasterDataset):
+    """Base class of the label datasets for classification and regression."""
+
     is_image = False
+    nodata_value: float = 0
+    class_mapping: dict | None = None
+    colormap = cm.viridis
+
+    def values_as_in_files(self, values: Tensor) -> np.ndarray:
+        """Label values of a mask or prediction as they are stored in the label files."""
+        return values.numpy()
+
+    def plot(self, sample, ax=None, **kwargs):
+        if ax is None:
+            _, ax = plt.subplots()
+        if show_filepaths := kwargs.pop("show_filepaths", False):
+            filepaths = self.filepaths_at(sample["bounds"])
+            formatted_paths = _format_filepaths(filepaths)
+            ax.set_title(formatted_paths, fontsize=8, wrap=True)
+
+        plot_numpy_array(
+            array=self.values_as_in_files(sample["mask"]),
+            ax=ax,
+            class_mapping=self.class_mapping,
+            colormap=self.colormap,
+            nodata_value=self.nodata_value,
+            title="Label" if not show_filepaths else None,
+            **kwargs,
+        )
+
+    def preview_labels(self):
+        """
+        Visualize the label rasters on an interactive map. This can be useful
+        for drawing rectangles for validation/test splitting based on where certain
+        raster values are present.
+
+        Can take a long time to load if have many/large label rasters.
+        """
+
+        return label_map(self.files)
+
+    def split_sparse_index(self, min_length: int = 300) -> None:
+        """Apply split index to create more densely labeled dataset rows.
+
+        Args:
+            min_length: Minimum length (in pixels) of the shortest side of polygon box
+        """
+        new_rows = []
+
+        for temporal_interval, row in self.index.iterrows():
+            filepath = row.filepath
+            polygon = row.geometry
+
+            # Split the area into more densely labeled regions
+            split_polygons = split_raster_into_dense_areas(
+                file_path=filepath,
+                polygon=polygon,
+                min_length=min_length,
+                nodata_value=self.nodata_value,
+                polygon_crs=self.index.crs,
+            )
+
+            # Create new rows for each split polygon
+            for split_polygon in split_polygons:
+                new_row = row.copy()
+                new_row.geometry = split_polygon
+                new_rows.append((temporal_interval, new_row))
+
+        # Create new index if we have split polygons
+        if new_rows:
+            # Create new GeoDataFrame
+            new_data = []
+            new_temporal_intervals = []
+
+            for temporal_interval, row in new_rows:
+                new_data.append(row)
+                new_temporal_intervals.append(temporal_interval)
+
+            new_gdf = gpd.GeoDataFrame(new_data, crs=self.index.crs)
+            new_gdf.index = pd.IntervalIndex(new_temporal_intervals, name="datetime")
+
+            self.index = new_gdf
+
+
+class PlottableClassificationDataset(PlottableLabelDataset):
+    colormap = cm.tab20
     dataset_type = "classification"
 
     def __init__(
@@ -642,37 +715,12 @@ class PlottableClassificationDataset(CustomCacheRasterDataset):
 
         return sample
 
-    def plot(self, sample, ax=None, **kwargs):
-        if ax is None:
-            _, ax = plt.subplots()
-        vals = sample["mask"].numpy()
+    def values_as_in_files(self, values: Tensor) -> np.ndarray:
+        """Label values of a mask or prediction as they are stored in the label files."""
+        values = values.numpy()
         if self.reduce_zero_label:
-            vals = vals + 1  # not +=, which would change the sample's tensor
-        if show_filepaths := kwargs.pop("show_filepaths", False):
-            filepaths = self.filepaths_at(sample["bounds"])
-            formatted_paths = _format_filepaths(filepaths)
-            ax.set_title(formatted_paths, fontsize=8, wrap=True)
-
-        plot_numpy_array(
-            array=vals,
-            ax=ax,
-            class_mapping=self.class_mapping,
-            colormap=self.colormap,
-            nodata_value=self.nodata_value,
-            title="Label" if not show_filepaths else None,
-            **kwargs,
-        )
-
-    def preview_labels(self):
-        """
-        Visualize the label rasters on an interactive map. This can be useful
-        for drawing rectangles for validation/test splitting based on where certain
-        raster values are present.
-
-        Can take a long time to load if have many/large label rasters.
-        """
-
-        return label_map(self.files)
+            values = values + 1  # not +=, which would change the tensor
+        return values
 
     def get_pixel_counts(self):
         """
@@ -685,7 +733,6 @@ class PlottableClassificationDataset(CustomCacheRasterDataset):
         """
         pixel_counts = defaultdict(int)
 
-        # Use GeoPandas iteration instead of R-tree intersection
         for temporal_interval, row in self.index.iterrows():
             # Create GeoSlice from geometry bounds and temporal interval
             bounds = row.geometry.bounds  # (minx, miny, maxx, maxy)
@@ -701,12 +748,7 @@ class PlottableClassificationDataset(CustomCacheRasterDataset):
 
     def _get_pixel_counts(self, index) -> dict[int, int]:
         out_dict = {}
-        sample = self.__getitem__(index)
-        mask = sample["mask"]
-        if hasattr(mask, "numpy"):
-            mask = mask.numpy()
-        if self.reduce_zero_label:
-            mask = mask + 1
+        mask = self.values_as_in_files(self.__getitem__(index)["mask"])
         if self.nodata_value is not None:
             mask = mask[mask != self.nodata_value]
         unique, counts = np.unique(mask, return_counts=True)
@@ -721,53 +763,9 @@ class PlottableClassificationDataset(CustomCacheRasterDataset):
 
         return out_dict
 
-    def split_sparse_index(self, min_length: int = 300) -> None:
-        """Apply split index to create more densely labeled dataset rows.
 
-        Args:
-            min_length: Minimum length (in pixels) of the shortest side of polygon box
-        """
-        new_rows = []
-
-        for temporal_interval, row in self.index.iterrows():
-            filepath = row.filepath
-            polygon = row.geometry
-
-            # Split the area into more densely labeled regions
-            split_polygons = split_raster_into_dense_areas(
-                file_path=filepath,
-                polygon=polygon,
-                min_length=min_length,
-                nodata_value=self.nodata_value,
-                polygon_crs=self.index.crs,
-            )
-
-            # Create new rows for each split polygon
-            for split_polygon in split_polygons:
-                new_row = row.copy()
-                new_row.geometry = split_polygon
-                new_rows.append((temporal_interval, new_row))
-
-        # Create new index if we have split polygons
-        if new_rows:
-            # Create new GeoDataFrame
-            new_data = []
-            new_temporal_intervals = []
-
-            for temporal_interval, row in new_rows:
-                new_data.append(row)
-                new_temporal_intervals.append(temporal_interval)
-
-            new_gdf = gpd.GeoDataFrame(new_data, crs=self.index.crs)
-            new_gdf.index = pd.IntervalIndex(new_temporal_intervals, name="datetime")
-
-            self.index = new_gdf
-
-
-class PlottableRegressionDataset(CustomCacheRasterDataset):
-    colormap = cm.viridis
+class PlottableRegressionDataset(PlottableLabelDataset):
     nodata_value: float = 0.0
-    is_image = False
     dataset_type = "regression"
 
     @property
@@ -783,95 +781,12 @@ class PlottableRegressionDataset(CustomCacheRasterDataset):
         if nodata_value is not None:
             self.nodata_value = nodata_value
 
-    def plot(self, sample, ax=None, **kwargs):
-        if ax is None:
-            _, ax = plt.subplots()
-        vals = sample["mask"].numpy()
-        if show_filepaths := kwargs.pop("show_filepaths", False):
-            filepaths = self.filepaths_at(sample["bounds"])
-            formatted_paths = _format_filepaths(filepaths)
-            ax.set_title(formatted_paths, fontsize=8, wrap=True)
 
-        plot_numpy_array(
-            array=vals,
-            ax=ax,
-            class_mapping=None,
-            colormap=self.colormap,
-            nodata_value=self.nodata_value,
-            title="Label" if not show_filepaths else None,
-            **kwargs,
-        )
+class LabelledRasterDataset(IntersectionDataset, SamplePlotMixin):
+    """Base class of the datasets of images and their labels.
 
-    def preview_labels(self):
-        """
-        Visualize the label rasters on an interactive map. This can be useful
-        for drawing rectangles for validation/test splitting based on where certain
-        raster values are present.
-
-        Can take a long time to load if have many/large label rasters.
-        """
-
-        return label_map(self.files)
-
-    def split_sparse_index(self, min_length: int = 300) -> None:
-        """Apply split index to create more densely labeled dataset rows.
-
-        Args:
-            min_length: Minimum length (in pixels) of the shortest side of polygon box
-        """
-        new_rows = []
-
-        for temporal_interval, row in self.index.iterrows():
-            filepath = row.filepath
-            polygon = row.geometry
-
-            # Split the area into more densely labeled regions
-            split_polygons = split_raster_into_dense_areas(
-                file_path=filepath,
-                polygon=polygon,
-                min_length=min_length,
-                nodata_value=self.nodata_value,
-                polygon_crs=self.index.crs,
-            )
-
-            # Create new rows for each split polygon
-            for split_polygon in split_polygons:
-                new_row = row.copy()
-                new_row.geometry = split_polygon
-                new_rows.append((temporal_interval, new_row))
-
-        # Create new index if we have split polygons
-        if new_rows:
-            # Create new GeoDataFrame
-            new_data = []
-            new_temporal_intervals = []
-
-            for temporal_interval, row in new_rows:
-                new_data.append(row)
-                new_temporal_intervals.append(temporal_interval)
-
-            new_gdf = gpd.GeoDataFrame(new_data, crs=self.index.crs)
-            new_gdf.index = pd.IntervalIndex(new_temporal_intervals, name="datetime")
-
-            self.index = new_gdf
-
-
-class ClassificationRasterDataset(
-    IntersectionDataset,
-    SamplePlotMixin,
-):
-    def __init__(
-        self,
-        dataset1: GeoDataset,
-        dataset2: GeoDataset,
-        collate_fn: Callable[
-            [Sequence[dict[str, Any]]], dict[str, Any]
-        ] = concat_samples,
-        transforms: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
-    ) -> None:
-        super().__init__(
-            dataset1, dataset2, collate_fn=collate_fn, transforms=transforms
-        )
+    The first dataset holds the images, the second one the labels.
+    """
 
     def plot(self, sample: dict[str, Any], **kwargs):
         predictions = sample.get("prediction")
@@ -889,12 +804,9 @@ class ClassificationRasterDataset(
                 raise NotImplementedError("Dataset must be plottable")
 
         if predictions is not None:
-            label_ds: PlottableClassificationDataset = self.datasets[-1]
-            data = predictions.numpy()
-            if label_ds.reduce_zero_label:
-                data = data + 1  # not +=, which would change the prediction tensor
+            label_ds: PlottableLabelDataset = self.datasets[1]
             plot_numpy_array(
-                array=data,
+                array=label_ds.values_as_in_files(predictions),
                 ax=axes[-1],
                 class_mapping=label_ds.class_mapping,
                 colormap=label_ds.colormap,
@@ -925,15 +837,33 @@ class ClassificationRasterDataset(
 
         Can take a long time to load if have many/large label rasters.
         """
+        return self.datasets[1].preview_labels()
 
-        if isinstance(self.datasets[-1], PlottableClassificationDataset):
-            label_ds: PlottableClassificationDataset = self.datasets[-1]
-            return label_ds.preview_labels()
-        else:
-            raise NotImplementedError(
-                "Label dataset must be of type PlottableClassificationDataset"
+    def __or__(self, other: LabelledRasterDataset) -> LabelledRasterDataset:
+        """Combine the files of two datasets of the same type, images with images and
+        labels with labels."""
+        if not isinstance(other, type(self)):
+            raise TypeError(
+                f"Cannot union {type(self).__name__} with {type(other).__name__}"
             )
 
+        return type(self)(
+            self.datasets[0] | other.datasets[0],
+            self.datasets[1] | other.datasets[1],
+            collate_fn=self.collate_fn,
+            transforms=self.transforms,
+        )
+
+    def __and__(self, other):
+        # TorchGeo's & would stack the images and labels of both datasets on top of
+        # each other
+        raise TypeError(
+            "Datasets of images and labels can't be intersected with '&'. "
+            "Use '|' to combine their files."
+        )
+
+
+class ClassificationRasterDataset(LabelledRasterDataset):
     def get_label_pixel_counts(self):
         """
         Get the pixel counts for each class in the label dataset.
@@ -941,174 +871,68 @@ class ClassificationRasterDataset(
         Returns:
             A dictionary mapping class indices or class names to pixel counts.
         """
-        if isinstance(self.datasets[-1], PlottableClassificationDataset):
-            label_ds: PlottableClassificationDataset = self.datasets[-1]
-            pixel_counts = defaultdict(int)
-            for temporal_interval, row in self.index.iterrows():
-                bounds = row.geometry.bounds  # (minx, miny, maxx, maxy)
-                geo_slice = (
-                    slice(bounds[0], bounds[2]),  # x: minx to maxx
-                    slice(bounds[1], bounds[3]),  # y: miny to maxy
-                    slice(temporal_interval.left, temporal_interval.right),  # t
-                )
-                counts = label_ds._get_pixel_counts(geo_slice)
-                for key, cnt in counts.items():
-                    pixel_counts[key] += cnt
-            return dict(pixel_counts)
-
-        else:
-            raise NotImplementedError(
-                "Label dataset must be of type PlottableClassificationDataset"
+        label_ds: PlottableClassificationDataset = self.datasets[1]
+        pixel_counts = defaultdict(int)
+        for temporal_interval, row in self.index.iterrows():
+            bounds = row.geometry.bounds  # (minx, miny, maxx, maxy)
+            geo_slice = (
+                slice(bounds[0], bounds[2]),  # x: minx to maxx
+                slice(bounds[1], bounds[3]),  # y: miny to maxy
+                slice(temporal_interval.left, temporal_interval.right),  # t
             )
+            counts = label_ds._get_pixel_counts(geo_slice)
+            for key, cnt in counts.items():
+                pixel_counts[key] += cnt
+        return dict(pixel_counts)
 
-    def __or__(self, other: ClassificationRasterDataset) -> ClassificationRasterDataset:
-        """
-        Overload the | operator to create a new ClassificationRasterDataset from two ClassificationRasterDataset.
-        """
-        if not isinstance(other, ClassificationRasterDataset):
-            raise TypeError(
-                f"Cannot union {type(self).__name__} with {type(other).__name__}"
+
+class RegressionRasterDataset(LabelledRasterDataset):
+    pass
+
+
+def _image_dataset(
+    *,
+    images_dir: str | Path | Iterable[str] | Iterable[Path],
+    image_glob: str,
+    image_filename_regex: str | None,
+    image_date_format: str | None,
+    all_image_bands: tuple[str],
+    rgb_bands: tuple[str],
+    sensor_name: str | None,
+    crs: CRS | None,
+    res: float | None,
+    bands_to_return: tuple[str] | None,
+    image_transforms: Callable[[dict[str, Any]], dict[str, Any]] | None,
+    cache_size: int,
+    image_separate_files: bool,
+) -> PlottableImageDataset:
+    """The image dataset of get_segmentation_dataset and get_regression_dataset."""
+    if sensor_name:
+        if sensor_name not in BAND_INDEX:
+            raise ValueError(f"Sensor {sensor_name} not found in BAND_INDEX")
+        if all_image_bands:
+            print(
+                "Warning: param all_image_bands will be ignored as sensor_name is provided"
             )
+        all_image_bands = tuple(BAND_INDEX[sensor_name]["bandmap"].keys())
+        if res:
+            print("Warning: param res will be ignored as sensor_name is provided")
+        res = BAND_INDEX[sensor_name]["res"]
 
-        return ClassificationRasterDataset(
-            self.datasets[0] | other.datasets[0],
-            self.datasets[1] | other.datasets[1],
-            collate_fn=self.collate_fn,
-            transforms=self.transforms,
-        )
-
-    def __and__(self, other):
-        raise TypeError(INTERSECTION_NOT_SUPPORTED)
-
-    @property
-    def crs(self) -> CRS:
-        """:term:`coordinate reference system (CRS)` of both datasets.
-
-        Returns:
-            The :term:`coordinate reference system (CRS)`.
-        """
-        return self.index.crs
-        # return self._crs
-
-    @crs.setter
-    def crs(self, new_crs: CRS) -> None:
-        # super().__setattr__("crs", new_crs)
-        old_crs = self.crs
-        index_needs_update = new_crs != old_crs
-        # self._crs = new_crs
-        self.datasets[0].crs = new_crs
-        self.datasets[1].crs = new_crs
-
-        if index_needs_update and len(self.index) > 0:
-            self.index = transform_index(
-                index=self.index, current_crs=old_crs, new_crs=new_crs
-            )
-
-
-class RegressionRasterDataset(
-    IntersectionDataset,
-    SamplePlotMixin,
-):
-    def plot(self, sample: dict[str, Any], **kwargs):
-        predictions = sample.get("prediction")
-        n_cols = 3 if predictions is not None else 2
-        fig, axes = plt.subplots(1, n_cols, figsize=(n_cols * 4, 4))
-
-        # The image dataset would plot the prediction itself, so it is left out here
-        sample_without_prediction = {
-            k: v for k, v in sample.items() if k != "prediction"
-        }
-        for i, dataset in enumerate(self.datasets):
-            if hasattr(dataset, "plot"):
-                dataset.plot(sample_without_prediction, ax=axes[i], **kwargs)
-            else:
-                raise NotImplementedError("Dataset must be plottable")
-
-        if predictions is not None:
-            label_ds: PlottableRegressionDataset = self.datasets[-1]
-            data = predictions.numpy()
-            plot_numpy_array(
-                array=data,
-                ax=axes[-1],
-                colormap=label_ds.colormap,
-                nodata_value=label_ds.nodata_value,
-                title="Prediction",
-                **kwargs,
-            )
-
-        plt.tight_layout()
-
-        return fig
-
-    def _repr_html_(self):
-        print(
-            f"Dataset containing {len(self)} items, crs: {self.crs.name}, res: {self.res}"
-        )
-        m = plot_dataset_index(self.datasets[0], name="Images", color="blue")
-        m = plot_dataset_index(self.datasets[1], m, name="Labels", color="green")
-        return plot_dataset_index(
-            self, m, name="Intersection", color="pink"
-        )._repr_html_()
-
-    def preview_labels(self):
-        """
-        Visualize the label rasters on an interactive map. This can be useful
-        for drawing rectangles for validation/test splitting based on where certain
-        raster values are present.
-
-        Can take a long time to load if have many/large label rasters.
-        """
-
-        if isinstance(self.datasets[-1], PlottableRegressionDataset):
-            label_ds: PlottableRegressionDataset = self.datasets[-1]
-            return label_ds.preview_labels()
-        else:
-            raise NotImplementedError(
-                "Label dataset must be of type PlottableRegressionDataset"
-            )
-
-    def __or__(self, other: RegressionRasterDataset) -> RegressionRasterDataset:
-        """
-        Overload the | operator to create a new ClassificationRasterDataset from two ClassificationRasterDataset.
-        """
-        if not isinstance(other, RegressionRasterDataset):
-            raise TypeError(
-                f"Cannot union {type(self).__name__} with {type(other).__name__}"
-            )
-
-        return RegressionRasterDataset(
-            self.datasets[0] | other.datasets[0],
-            self.datasets[1] | other.datasets[1],
-            collate_fn=self.collate_fn,
-            transforms=self.transforms,
-        )
-
-    def __and__(self, other):
-        raise TypeError(INTERSECTION_NOT_SUPPORTED)
-
-    @property
-    def crs(self) -> CRS:
-        """:term:`coordinate reference system (CRS)` of both datasets.
-
-        Returns:
-            The :term:`coordinate reference system (CRS)`.
-        """
-        return self.index.crs
-        # return self._crs
-
-    @crs.setter
-    def crs(self, new_crs: CRS) -> None:
-        # super().__setattr__("crs", new_crs)
-        old_crs = self.crs
-        index_needs_update = new_crs != old_crs
-        # self._crs = new_crs
-        self.datasets[0].crs = new_crs
-        self.datasets[1].crs = new_crs
-
-        if index_needs_update and len(self.index) > 0:
-            self.index = transform_index(
-                index=self.index, current_crs=old_crs, new_crs=new_crs
-            )
+    return PlottableImageDataset(
+        paths=images_dir,
+        filename_glob=image_glob,
+        filename_regex=image_filename_regex,
+        date_format=image_date_format,
+        all_bands=all_image_bands,
+        rgb_bands=rgb_bands,
+        separate_files=image_separate_files,
+        bands=bands_to_return,
+        transforms=image_transforms,
+        cache_size=cache_size,
+        res=res,
+        crs=crs,
+    )
 
 
 def get_segmentation_dataset(
@@ -1174,52 +998,41 @@ def get_segmentation_dataset(
         PlottableImageDataset or ClassificationRasterDataset: The dataset.
     """
 
-    if sensor_name:
-        if sensor_name not in BAND_INDEX:
-            raise ValueError(f"Sensor {sensor_name} not found in BAND_INDEX")
-        if all_image_bands:
-            print(
-                "Warning: param all_image_bands will be ignored as sensor_name is provided"
-            )
-        all_image_bands = tuple(BAND_INDEX[sensor_name]["bandmap"].keys())
-        if res:
-            print("Warning: param res will be ignored as sensor_name is provided")
-        res = BAND_INDEX[sensor_name]["res"]
-
-    image_ds = PlottableImageDataset(
-        paths=images_dir,
-        filename_glob=image_glob,
-        filename_regex=image_filename_regex,
-        date_format=image_date_format,
-        all_bands=all_image_bands,
+    image_ds = _image_dataset(
+        images_dir=images_dir,
+        image_glob=image_glob,
+        image_filename_regex=image_filename_regex,
+        image_date_format=image_date_format,
+        all_image_bands=all_image_bands,
         rgb_bands=rgb_bands,
-        separate_files=image_separate_files,
-        bands=bands_to_return,
-        transforms=image_transforms,
-        cache_size=cache_size,
-        res=res,
+        sensor_name=sensor_name,
         crs=crs,
+        res=res,
+        bands_to_return=bands_to_return,
+        image_transforms=image_transforms,
+        cache_size=cache_size,
+        image_separate_files=image_separate_files,
     )
+    if not labels_dir:
+        return image_ds
 
-    if labels_dir:
-        label_ds = PlottableClassificationDataset(
-            paths=labels_dir,
-            filename_glob=label_glob,
-            filename_regex=label_filename_regex,
-            date_format=label_date_format,
-            class_mapping=class_mapping,
-            reduce_zero_label=reduce_zero_label,
-            transforms=label_transforms,
-            cache_size=cache_size,
-            res=res,
-            crs=crs,
-        )
-        if split_sparse_labels:
-            label_ds.split_sparse_index(split_sparse_labels_min_size)
+    # The labels are read on the grid of the images
+    label_ds = PlottableClassificationDataset(
+        paths=labels_dir,
+        filename_glob=label_glob,
+        filename_regex=label_filename_regex,
+        date_format=label_date_format,
+        class_mapping=class_mapping,
+        reduce_zero_label=reduce_zero_label,
+        transforms=label_transforms,
+        cache_size=cache_size,
+        res=image_ds.res,
+        crs=image_ds.crs,
+    )
+    if split_sparse_labels:
+        label_ds.split_sparse_index(split_sparse_labels_min_size)
 
-        return ClassificationRasterDataset(image_ds, label_ds)
-
-    return image_ds
+    return ClassificationRasterDataset(image_ds, label_ds)
 
 
 def get_regression_dataset(
@@ -1246,7 +1059,7 @@ def get_regression_dataset(
     image_separate_files: bool = False,
 ) -> PlottableImageDataset | RegressionRasterDataset:
     r"""
-    Create a segmentation dataset from images and labels. Labels are optional.
+    Create a regression dataset from images and labels. Labels are optional.
 
     Args:
         images_dir (str or Path): Path to the directory containing the images.
@@ -1269,6 +1082,8 @@ def get_regression_dataset(
         sensor_name (str): Name of the sensor to use. Overrides all_image_bands and res. For valid sensor names, see BAND_INDEX in eotorch.bandindex.py.
         crs (CRS): Coordinate reference system of the data.
         res (float): Resolution of the data.
+        nodata_value (float): Label value of pixels without a target, which are left out
+                              of the loss and metrics.
         bands_to_return (tuple): Bands to return from the dataset.
         image_transforms (callable): Transforms to apply to the images.
         label_transforms (callable): Transforms to apply to the labels.
@@ -1282,48 +1097,37 @@ def get_regression_dataset(
         PlottableImageDataset or RegressionRasterDataset: The dataset.
     """
 
-    if sensor_name:
-        if sensor_name not in BAND_INDEX:
-            raise ValueError(f"Sensor {sensor_name} not found in BAND_INDEX")
-        if all_image_bands:
-            print(
-                "Warning: param all_image_bands will be ignored as sensor_name is provided"
-            )
-        all_image_bands = tuple(BAND_INDEX[sensor_name]["bandmap"].keys())
-        if res:
-            print("Warning: param res will be ignored as sensor_name is provided")
-        res = BAND_INDEX[sensor_name]["res"]
-
-    image_ds = PlottableImageDataset(
-        paths=images_dir,
-        filename_glob=image_glob,
-        filename_regex=image_filename_regex,
-        date_format=image_date_format,
-        all_bands=all_image_bands,
+    image_ds = _image_dataset(
+        images_dir=images_dir,
+        image_glob=image_glob,
+        image_filename_regex=image_filename_regex,
+        image_date_format=image_date_format,
+        all_image_bands=all_image_bands,
         rgb_bands=rgb_bands,
-        separate_files=image_separate_files,
-        bands=bands_to_return,
-        transforms=image_transforms,
-        cache_size=cache_size,
-        res=res,
+        sensor_name=sensor_name,
         crs=crs,
+        res=res,
+        bands_to_return=bands_to_return,
+        image_transforms=image_transforms,
+        cache_size=cache_size,
+        image_separate_files=image_separate_files,
     )
+    if not labels_dir:
+        return image_ds
 
-    if labels_dir:
-        label_ds = PlottableRegressionDataset(
-            paths=labels_dir,
-            filename_glob=label_glob,
-            filename_regex=label_filename_regex,
-            date_format=label_date_format,
-            nodata_value=nodata_value,
-            transforms=label_transforms,
-            cache_size=cache_size,
-            res=res,
-            crs=crs,
-        )
-        if split_sparse_labels:
-            label_ds.split_sparse_index(split_sparse_labels_min_size)
+    # The labels are read on the grid of the images
+    label_ds = PlottableRegressionDataset(
+        paths=labels_dir,
+        filename_glob=label_glob,
+        filename_regex=label_filename_regex,
+        date_format=label_date_format,
+        nodata_value=nodata_value,
+        transforms=label_transforms,
+        cache_size=cache_size,
+        res=image_ds.res,
+        crs=image_ds.crs,
+    )
+    if split_sparse_labels:
+        label_ds.split_sparse_index(split_sparse_labels_min_size)
 
-        return RegressionRasterDataset(image_ds, label_ds)
-
-    return image_ds
+    return RegressionRasterDataset(image_ds, label_ds)

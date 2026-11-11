@@ -2,44 +2,12 @@ import inspect
 from collections.abc import Sequence
 from pathlib import Path
 
-import geopandas as gpd
 import numpy as np
 import pyproj
 import shapely
 import shapely.geometry
 import shapely.ops
 from rasterio.windows import Window
-
-
-def transform_index(
-    index: gpd.GeoDataFrame, current_crs: str | pyproj.CRS, new_crs: str | pyproj.CRS
-) -> gpd.GeoDataFrame:
-    """
-    Transform a Geopandas GeoDataFrame index to a new coordinate reference system (CRS).
-
-    Parameters:
-        index (gpd.GeoDataFrame):
-            The Geopandas GeoDataFrame index to transform.
-        current_crs (str or pyproj.CRS):
-            The current coordinate reference system.
-        new_crs (str or pyproj.CRS):
-            The new coordinate reference system.
-
-    Returns:
-        gpd.GeoDataFrame:
-            A new Geopandas GeoDataFrame with transformed coordinates.
-    """
-    if isinstance(current_crs, str):
-        current_crs = pyproj.CRS(current_crs)
-
-    if isinstance(new_crs, str):
-        new_crs = pyproj.CRS(new_crs)
-
-    # Create a copy of the index and transform to new CRS
-    new_index = index.copy()
-    new_index = new_index.to_crs(new_crs)
-
-    return new_index
 
 
 def window_to_np_idc(window: Window) -> tuple[slice, slice]:
