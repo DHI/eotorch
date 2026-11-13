@@ -274,6 +274,27 @@ def test_regression_targets_are_nan_outside_the_label_files(
     assert mask[:, 50:].isnan().all()
 
 
+def test_segmentation_labels_are_unlabelled_outside_the_label_files(tmp_path):
+    """With a nodata_value, areas without labels must not be read as class 0."""
+    _write_target(tmp_path / "labels.tif", nodata=None, dtype="uint8")
+    dataset = get_segmentation_dataset(
+        images_dir=TEST_DATA,
+        labels_dir=tmp_path,
+        image_glob="image_0.tif",
+        label_glob="labels.tif",
+        cache_size=0,
+        reduce_zero_label=False,
+        nodata_value=255,
+    )
+    xmin, ymin, xmax, ymax = dataset.datasets[0].index.total_bounds
+
+    mask = dataset.datasets[1][xmin:xmax, ymin:ymax]["mask"]
+
+    assert mask.dtype == torch.long
+    assert (mask[:, :50] == 5).all()
+    assert (mask[:, 50:] == -1).all()
+
+
 def test_regression_nodata_pixels_are_read_as_nan():
     """Both for a nodata_value that is given and for the one declared in the files."""
     with rst.open(TEST_DATA / "target_3.tif") as src:

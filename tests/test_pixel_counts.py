@@ -2,8 +2,11 @@
 
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
+import rasterio
+import torch
 
 from eotorch.data.geodatasets import (
     ClassificationRasterDataset,
@@ -449,5 +452,48 @@ def test_sparse_split_needs_a_nodata_value(sparse_raster_path):
     dataset = PlottableClassificationDataset(
         paths=sparse_raster_path, cache_size=1, reduce_zero_label=False
     )
-    with pytest.raises(ValueError, match="nodata"):
+    with pytest.raises(ValueError, match="nodata_value"):
         dataset.split_sparse_index()
+
+
+def test_nodata_value_can_be_given_without_reducing_the_labels(sparse_raster_path):
+    """Pixels with the nodata value are read as -1, the other labels stay as they are."""
+    dataset = PlottableClassificationDataset(
+        paths=sparse_raster_path, cache_size=1, reduce_zero_label=False, nodata_value=0
+    )
+    with rasterio.open(sparse_raster_path) as src:
+        stored = src.read(1).astype(int)
+        xmin, ymin, xmax, ymax = src.bounds
+
+    mask = dataset[xmin:xmax, ymin:ymax]["mask"].squeeze().numpy()
+
+    assert dataset.nodata_value == 0
+    np.testing.assert_array_equal(mask, np.where(stored == 0, -1, stored))
+    np.testing.assert_array_equal(
+        dataset.values_as_in_files(torch.tensor(mask)), stored
+    )
+    assert 0 not in dataset.get_pixel_counts()
+
+
+def test_sparse_split_with_a_given_nodata_value(test_data_dir):
+    dataset = get_segmentation_dataset(
+        images_dir=test_data_dir,
+        labels_dir=test_data_dir,
+        image_glob="sparse_raster.tif",
+        label_glob="sparse_raster.tif",
+        cache_size=1,
+        reduce_zero_label=False,
+        nodata_value=0,
+        split_sparse_labels=True,
+        split_sparse_labels_min_size=10,
+    )
+    label_dataset = dataset.datasets[1]
+    assert label_dataset.nodata_value == 0
+    assert len(label_dataset.index) > 1
+
+
+def test_reduce_zero_label_needs_0_as_nodata_value(sparse_raster_path):
+    with pytest.raises(ValueError, match="reduce_zero_label"):
+        PlottableClassificationDataset(
+            paths=sparse_raster_path, reduce_zero_label=True, nodata_value=255
+        )

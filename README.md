@@ -725,7 +725,7 @@ trainer.fit(task, datamodule=module)
 
 ### Common Pitfalls
 
-**Label indexing**: Remember that `reduce_zero_label=True` (the default) shifts labels down by 1. If your labels are `{0, 1, 2}`, they become `{-1, 0, 1}`. Label 0 then marks unlabelled pixels: -1 is the default `ignore_index` of `SegmentationTask`, so they are left out of the loss and metrics. If 0 is a class in your labels, use `reduce_zero_label=False`.
+**Label indexing**: Remember that `reduce_zero_label=True` (the default) shifts labels down by 1. If your labels are `{0, 1, 2}`, they become `{-1, 0, 1}`. Label 0 then marks unlabelled pixels: -1 is the default `ignore_index` of `SegmentationTask`, so they are left out of the loss and metrics. If 0 is a class in your labels, use `reduce_zero_label=False`. Every label is then a class, unless you pass the label value of unlabelled pixels as `nodata_value` (for example `nodata_value=255`); those pixels are read as -1 as well.
 
 **Band ordering**: `all_image_bands` defines the order bands are stored in files; `rgb_bands` defines which bands to use for visualization.
 
