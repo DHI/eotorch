@@ -289,7 +289,7 @@ class SegmentationTask(_TaskMixin, SemanticSegmentation):
         loss_kwargs: dict[str, dict[str, Any]] | None = None,
         class_weights: Tensor | list[float] | None = None,
         pos_weight: Tensor | float | None = None,
-        ignore_index: int | None = None,
+        ignore_index: int | None = -1,
         lr: float = 1e-3,
         freeze_backbone: bool = False,
         freeze_decoder: bool = False,
@@ -314,7 +314,9 @@ class SegmentationTask(_TaskMixin, SemanticSegmentation):
             class_weights: Weight of each class in the "ce" loss.
             pos_weight: Weight of positive examples in the "bce" loss.
             ignore_index: Label value to ignore in the loss and metrics. Patches
-                containing only this value are skipped.
+                containing only this value are skipped. The default of -1 is the
+                value of unlabelled pixels in eotorch datasets (label 0 in the files
+                with reduce_zero_label=True).
             lr: Learning rate.
             freeze_backbone: Whether to freeze the encoder of the model.
             freeze_decoder: Whether to freeze the decoder of the model.

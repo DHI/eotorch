@@ -320,7 +320,6 @@ task = SegmentationTask(
     model="unet",                # see below
     backbone="resnet34",
     loss={"ce": 0.5, "dice": 0.5},
-    ignore_index=-1,             # e.g. unlabelled pixels with reduce_zero_label=True
     class_names=["Water", "Forest", "Urban"],
 )
 Trainer(max_epochs=50).fit(task, datamodule=module)
@@ -707,7 +706,7 @@ module = RasterDataModule(
 )
 
 # 5. Train
-task = SegmentationTask(num_classes=2, in_channels=3, model="unet", ignore_index=-1)
+task = SegmentationTask(num_classes=2, in_channels=3, model="unet")
 trainer = Trainer(max_epochs=10)
 trainer.fit(task, datamodule=module)
 ```
@@ -726,7 +725,7 @@ trainer.fit(task, datamodule=module)
 
 ### Common Pitfalls
 
-**Label indexing**: Remember that `reduce_zero_label=True` shifts labels down by 1. If your labels are `{0, 1, 2}`, they become `{-1, 0, 1}` where -1 is typically `ignore_index`.
+**Label indexing**: Remember that `reduce_zero_label=True` (the default) shifts labels down by 1. If your labels are `{0, 1, 2}`, they become `{-1, 0, 1}`. Label 0 then marks unlabelled pixels: -1 is the default `ignore_index` of `SegmentationTask`, so they are left out of the loss and metrics. If 0 is a class in your labels, use `reduce_zero_label=False`.
 
 **Band ordering**: `all_image_bands` defines the order bands are stored in files; `rgb_bands` defines which bands to use for visualization.
 

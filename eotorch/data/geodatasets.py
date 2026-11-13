@@ -588,7 +588,9 @@ class PlottableLabelDataset(CustomCacheRasterDataset):
     """Base class of the label datasets for classification and regression."""
 
     is_image = False
-    nodata_value: float = 0
+    #: Label value, as stored in the files, of pixels without a label. None if every
+    #: pixel has a label.
+    nodata_value: float | None = 0
     class_mapping: dict | None = None
     colormap = cm.viridis
 
@@ -631,6 +633,11 @@ class PlottableLabelDataset(CustomCacheRasterDataset):
         Args:
             min_length: Minimum length (in pixels) of the shortest side of polygon box
         """
+        if self.nodata_value is None:
+            raise ValueError(
+                "Labels without a nodata value have no unlabelled areas to split by. "
+                "With reduce_zero_label=False, label 0 is a class."
+            )
         new_rows = []
 
         for temporal_interval, row in self.index.iterrows():
@@ -681,12 +688,14 @@ class PlottableClassificationDataset(PlottableLabelDataset):
     ) -> None:
         """
         reduce_zero_label (bool): Subtract 1 from all labels. Useful when labels start from 1 instead of the
-        expected 0. Defaults to True.
+        expected 0. Label 0 then marks pixels without a label, which are read as -1. If False, label 0 is a
+        class like any other. Defaults to True.
         class_mapping (dict): Mapping of class indices to class names. Used for visualization.
         Other arguments are passed on to CustomCacheRasterDataset."""
 
         super().__init__(*args, **kwargs)
         self.reduce_zero_label = reduce_zero_label
+        self.nodata_value = 0 if reduce_zero_label else None
         if class_mapping is not None:
             self.class_mapping = class_mapping
 
@@ -972,6 +981,8 @@ def get_segmentation_dataset(
         class_mapping (dict): Mapping of class indices to class names. Used for visualization.
         cache_size (int): Size of the memory file cache to use for image and label file reading.
         reduce_zero_label (bool): Subtract 1 from all labels. Useful when labels start from 1 instead of the expected 0.
+                                  Label 0 then marks pixels without a label. They are read as -1, which SegmentationTask
+                                  ignores by default. If False, label 0 is a class like any other.
         split_sparse_labels (bool): If True, will try to split the label rasters into multiple boxes, in order to reduce the number of nodata
                                     pixels in the label rasters. This is useful for large label rasters with sparse labels.
         split_sparse_labels_min_size (int): Minimum length (in pixels) of the shortest side of polygon box to be created when splitting sparse labels.

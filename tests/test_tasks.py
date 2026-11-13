@@ -105,6 +105,22 @@ def test_segmentation_fit_and_predict(tmp_path):
     np.testing.assert_array_equal(probs.argmax(axis=0) + 1, pred)
 
 
+def test_segmentation_fits_with_default_label_handling(tmp_path):
+    """By default, label 0 is unlabelled: it is read as -1, which the task ignores."""
+    dataset = get_segmentation_dataset(
+        images_dir=TEST_DATA,
+        labels_dir=TEST_DATA,
+        image_glob="image_*.tif",
+        label_glob="label_*.tif",
+        cache_size=0,
+    )
+    task = SegmentationTask(
+        num_classes=4, in_channels=3, model="unet_lite", num_filters=4
+    )
+    assert task.hparams["ignore_index"] == -1
+    _fit(task, dataset, tmp_path)
+
+
 def test_regression_fit_and_predict(tmp_path):
     dataset = get_regression_dataset(
         images_dir=TEST_DATA,

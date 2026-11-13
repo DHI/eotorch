@@ -28,12 +28,9 @@ def sparse_raster_path(test_data_dir):
 @pytest.fixture
 def label_dataset(sparse_raster_path):
     """Create a PlottableClassificationDataset for testing."""
-    dataset = PlottableClassificationDataset(
+    return PlottableClassificationDataset(
         paths=sparse_raster_path, cache_size=1, reduce_zero_label=False
     )
-    # Set nodata_value to None to avoid filtering out class 0
-    dataset.nodata_value = None
-    return dataset
 
 
 @pytest.fixture
@@ -50,8 +47,6 @@ def labelled_dataset(sparse_raster_path):
     label_ds = PlottableClassificationDataset(
         paths=sparse_raster_path, cache_size=1, reduce_zero_label=False
     )
-    # Set nodata_value to None to avoid filtering out class 0
-    label_ds.nodata_value = None
     return ClassificationRasterDataset(image_ds, label_ds)
 
 
@@ -319,10 +314,6 @@ def test_integration_actual_counts_with_get_segmentation_dataset(sparse_raster_p
         reduce_zero_label=False,
     )
 
-    # Set nodata_value to None to avoid filtering out class 0
-    if hasattr(dataset, "datasets") and len(dataset.datasets) > 1:
-        dataset.datasets[-1].nodata_value = None
-
     pixel_counts = dataset.get_label_pixel_counts()
 
     # Should get exactly the same counts as the direct method
@@ -344,8 +335,6 @@ def test_pixel_counts_edge_cases(sparse_raster_path):
         label_dataset = PlottableClassificationDataset(
             paths=sparse_raster_path, cache_size=cache_size, reduce_zero_label=False
         )
-        # Set nodata_value to None to avoid filtering out class 0
-        label_dataset.nodata_value = None
         pixel_counts = label_dataset.get_pixel_counts()
 
         # Should get consistent counts regardless of cache size
@@ -369,8 +358,6 @@ def test_pixel_counts_edge_cases(sparse_raster_path):
     label_dataset_with_mapping = PlottableClassificationDataset(
         paths=sparse_raster_path, cache_size=1, reduce_zero_label=False
     )
-    # Set nodata_value to None to avoid filtering out class 0
-    label_dataset_with_mapping.nodata_value = None
     label_dataset_with_mapping.class_mapping = class_mapping
 
     pixel_counts_mapped = label_dataset_with_mapping.get_pixel_counts()
@@ -446,3 +433,21 @@ def test_error_regression_pandas_invalid_comparison(labelled_dataset):
         else:
             # Re-raise other exceptions for normal test failure handling
             raise
+
+
+@pytest.mark.parametrize("reduce_zero_label, nodata", [(True, 0), (False, None)])
+def test_label_0_is_only_nodata_with_reduce_zero_label(
+    sparse_raster_path, reduce_zero_label, nodata
+):
+    dataset = PlottableClassificationDataset(
+        paths=sparse_raster_path, cache_size=1, reduce_zero_label=reduce_zero_label
+    )
+    assert dataset.nodata_value == nodata
+
+
+def test_sparse_split_needs_a_nodata_value(sparse_raster_path):
+    dataset = PlottableClassificationDataset(
+        paths=sparse_raster_path, cache_size=1, reduce_zero_label=False
+    )
+    with pytest.raises(ValueError, match="nodata"):
+        dataset.split_sparse_index()
