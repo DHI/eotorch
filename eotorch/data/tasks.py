@@ -498,7 +498,6 @@ class RegressionTask(_TaskMixin, PixelwiseRegression):
         weights: WeightsEnum | str | bool | None = None,
         num_filters: int | None = None,
         loss: str = "mse",
-        nodata_value: float | None = None,
         lr: float = 1e-3,
         freeze_backbone: bool = False,
         freeze_decoder: bool = False,
@@ -509,6 +508,10 @@ class RegressionTask(_TaskMixin, PixelwiseRegression):
         """
         Pixelwise regression, based on TorchGeo's PixelwiseRegression task.
 
+        Pixels where the target is NaN are left out of the loss and metrics, e.g. for
+        sparse labels. Regression datasets of eotorch read pixels without a target
+        as NaN.
+
         Args:
             in_channels: Number of input channels.
             num_outputs: Number of values to predict per pixel.
@@ -517,8 +520,6 @@ class RegressionTask(_TaskMixin, PixelwiseRegression):
             weights: Initial weights, see :func:`create_model`.
             num_filters: Number of filters for models with that parameter.
             loss: One of "mse", "mae", "huber" or "smoothl1".
-            nodata_value: Target value of pixels to exclude from the loss and metrics,
-                e.g. for sparse labels.
             lr: Learning rate.
             freeze_backbone: Whether to freeze the encoder of the model.
             freeze_decoder: Whether to freeze the decoder of the model.
@@ -554,12 +555,11 @@ class RegressionTask(_TaskMixin, PixelwiseRegression):
         self.criterion = losses[self.hparams["loss"]]()
 
     def _valid_pixels(self, y_hat: Tensor, y: Tensor) -> tuple[Tensor, Tensor]:
-        """Pixels as rows of (N, num_outputs), without those where the target is nodata."""
+        """Pixels as rows of (N, num_outputs), without those where the target is NaN."""
         y_hat = y_hat.movedim(1, -1).flatten(0, -2)
         y = y.movedim(1, -1).flatten(0, -2)
-        if self.hparams["nodata_value"] is not None:
-            valid = (y != self.hparams["nodata_value"]).all(dim=-1)
-            y_hat, y = y_hat[valid], y[valid]
+        valid = y.isfinite().all(dim=-1)
+        y_hat, y = y_hat[valid], y[valid]
         # Metrics for a single output expect a vector
         return y_hat.squeeze(-1), y.squeeze(-1)
 
@@ -605,10 +605,9 @@ class RegressionTask(_TaskMixin, PixelwiseRegression):
         return self(self._prepare_input(batch)).float().cpu().numpy()
 
     def _inference_settings(self, dataset_args: dict[str, Any]) -> dict[str, Any]:
-        nodata = self.hparams["nodata_value"]
         return {
             "prediction_func": self.predict_value,
             "dtype": "float32",
             "count": self.num_outputs,
-            "nodata": np.nan if nodata is None else nodata,
+            "nodata": np.nan,
         }

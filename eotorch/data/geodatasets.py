@@ -30,7 +30,7 @@ from torchgeo.datasets.utils import GeoSlice, array_to_tensor
 from eotorch.bandindex import BAND_INDEX
 from eotorch.inference.inference_utils import prediction_to_numpy
 from eotorch.plot import label_map, plot_dataset_index, plot_numpy_array, plot_samples
-from eotorch.utils import _format_filepaths
+from eotorch.utils import _format_filepaths, is_nodata
 
 if TYPE_CHECKING:
     from torch import Tensor
@@ -110,7 +110,7 @@ def split_raster_into_dense_areas(
         data = data_source.read(1, window=window)
 
         # Find areas with labels (not nodata)
-        labeled_mask = data != nodata_value
+        labeled_mask = ~is_nodata(data, nodata_value)
 
         # If no labels found, return empty list
         if not labeled_mask.any():
@@ -383,6 +383,13 @@ class CustomCacheRasterDataset(RasterDataset, SamplePlotMixin):
                 return self._read_file(filepath, (x, y, t))
         return super().__getitem__(index)
 
+    def _merge_or_stack(self, *args: Any, **kwargs: Any) -> Tensor:
+        return self._convert_values(super()._merge_or_stack(*args, **kwargs))
+
+    def _convert_values(self, data: Tensor) -> Tensor:
+        """Hook for subclasses to convert the values read from the files."""
+        return data
+
     def _pixel_keys(self, bounds: np.ndarray) -> list[tuple[int, ...]]:
         """Lookup keys for (minx, miny, maxx, maxy) rows of bounds."""
         xres, yres = self.res
@@ -423,7 +430,7 @@ class CustomCacheRasterDataset(RasterDataset, SamplePlotMixin):
         shape = round((y.stop - y.start) / y.step), round((x.stop - x.start) / x.step)
         if src.shape == shape:
             # Already on the grid of the query, so skip the slower resampling of a merge
-            data = array_to_tensor(src.read(self.band_indexes))
+            data = self._convert_values(array_to_tensor(src.read(self.band_indexes)))
         else:
             data = self._merge_or_stack([filepath], index, self.band_indexes)
         transform = rst.transform.from_origin(x.start, y.stop, x.step, y.step)
@@ -757,7 +764,8 @@ class PlottableClassificationDataset(PlottableLabelDataset):
 
 
 class PlottableRegressionDataset(PlottableLabelDataset):
-    nodata_value: float = 0.0
+    """Labels with continuous values. Pixels without a target are read as NaN."""
+
     dataset_type = "regression"
 
     @property
@@ -767,11 +775,30 @@ class PlottableRegressionDataset(PlottableLabelDataset):
 
     def __init__(self, *args, nodata_value: float | None = None, **kwargs) -> None:
         """
-        nodata_value (float): Label value of pixels without a target.
+        nodata_value (float): Label value, as stored in the files, of pixels without a target.
+        Defaults to the nodata value declared in the first label file, or to NaN if it declares none.
         Other arguments are passed on to CustomCacheRasterDataset."""
         super().__init__(*args, **kwargs)
-        if nodata_value is not None:
-            self.nodata_value = nodata_value
+        if nodata_value is None:
+            with rst.open(self.index.filepath.iloc[0]) as src:
+                nodata_value = src.nodata
+        if nodata_value is None:
+            nodata_value = float("nan")
+        self.nodata_value = nodata_value
+        # TorchGeo reads this value as nodata in the files, so it is left out when
+        # resampling, and fills areas that no label file covers with it
+        self.nodata = nodata_value
+
+    def _convert_values(self, data: Tensor) -> Tensor:
+        """Any number can be a valid target, so pixels without one are set to NaN."""
+        data = data.to(self.dtype)
+        data[data == self.nodata_value] = torch.nan
+        return data
+
+    def values_as_in_files(self, values: Tensor) -> np.ndarray:
+        """Label values of a mask or prediction as they are stored in the label files."""
+        values = values.numpy()
+        return np.where(np.isnan(values), self.nodata_value, values)
 
 
 class LabelledRasterDataset(IntersectionDataset, SamplePlotMixin):
@@ -1043,7 +1070,7 @@ def get_regression_dataset(
     sensor_name: str | None = None,
     crs: CRS = None,
     res: float | None = None,
-    nodata_value: float = 0.0,
+    nodata_value: float | None = None,
     bands_to_return: tuple[str] | None = None,
     image_transforms: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     label_transforms: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
@@ -1076,8 +1103,10 @@ def get_regression_dataset(
         sensor_name (str): Name of the sensor to use. Overrides all_image_bands and res. For valid sensor names, see BAND_INDEX in eotorch.bandindex.py.
         crs (CRS): Coordinate reference system of the data.
         res (float): Resolution of the data.
-        nodata_value (float): Label value of pixels without a target, which are left out
-                              of the loss and metrics.
+        nodata_value (float): Label value, as stored in the files, of pixels without a target. Defaults to the
+                              nodata value declared in the first label file. These pixels, and areas that no
+                              label file covers, are read as NaN, which RegressionTask leaves out of the loss
+                              and metrics.
         bands_to_return (tuple): Bands to return from the dataset.
         image_transforms (callable): Transforms to apply to the images.
         label_transforms (callable): Transforms to apply to the labels.

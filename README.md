@@ -331,13 +331,13 @@ Trainer(max_epochs=50).fit(task, datamodule=module)
 
 **Binary segmentation**: use `num_classes=1, task="binary"` and e.g. `loss="bce"`.
 
-**Regression** works the same way. Pixels where the target equals `nodata_value` are left out of the loss and metrics, which allows training on sparse labels:
+**Regression** works the same way. The dataset reads pixels without a target as NaN, and the task leaves them out of the loss and metrics, which allows training on sparse labels. These are the pixels with the nodata value declared in the label files, and areas that no label file covers. If the files don't declare their nodata value, pass it as `nodata_value`:
 
 ```python
 from eotorch.data import RegressionTask, get_regression_dataset
 
 ds = get_regression_dataset(images_dir=..., labels_dir=..., nodata_value=-9999, ...)
-task = RegressionTask(in_channels=6, model="unet", loss="huber", nodata_value=-9999)
+task = RegressionTask(in_channels=6, model="unet", loss="huber")
 ```
 
 ### 5. Inference with `predict_on_tif_file()`

@@ -176,7 +176,8 @@ def test_plotting_does_not_change_the_sample(labels):
 
     assert sample.keys() == original.keys()
     for key, value in original.items():
-        assert (sample[key] == value).all(), key
+        # Regression targets are NaN where there is no target
+        np.testing.assert_array_equal(sample[key].numpy(), value.numpy(), err_msg=key)
 
 
 def test_plot_numpy_array_with_more_classes_than_colors():

@@ -319,7 +319,7 @@ def plot_samplers_on_map(
                         else dataset
                     )
                     labels = label_ds.values_as_in_files(sample["mask"])
-                    labels = labels[labels != label_ds.nodata_value]
+                    labels = labels[~utils.is_nodata(labels, label_ds.nodata_value)]
                     dataset_label_counts = label_counts_per_dataset[
                         current_dataset_name
                     ]
@@ -436,9 +436,7 @@ def plot_numpy_array(
         _, ax = plt.subplots()
 
     if nodata_value is not None:
-        # NaN is never equal to itself, so it is found with isnan
-        is_nodata = np.isnan(array) if np.isnan(nodata_value) else array == nodata_value
-        array = np.ma.masked_array(array, mask=is_nodata)
+        array = np.ma.masked_array(array, mask=utils.is_nodata(array, nodata_value))
 
     if data_window_only and nodata_value is not None:
         window = get_data_window(array)  # the window of the unmasked pixels
@@ -615,7 +613,7 @@ def plot_samples(
             return True
         if "mask" in sample:
             labels = label_ds.values_as_in_files(sample["mask"])
-            return bool((labels == label_ds.nodata_value).all())
+            return bool(utils.is_nodata(labels, label_ds.nodata_value).all())
         return False
 
     # Sample a random patch from a random file. TorchGeo's RandomPatchSampler samples

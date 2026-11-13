@@ -128,16 +128,9 @@ def test_regression_fit_and_predict(tmp_path):
         image_glob="image_*.tif",
         label_glob="target_*.tif",
         all_image_bands=("red", "green", "blue"),
-        nodata_value=NODATA,
         cache_size=0,
     )
-    task = RegressionTask(
-        in_channels=3,
-        model="unet_lite",
-        num_filters=4,
-        nodata_value=NODATA,
-        loss="huber",
-    )
+    task = RegressionTask(in_channels=3, model="unet_lite", num_filters=4, loss="huber")
     checkpoint = _fit(task, dataset, tmp_path)
 
     out = RegressionTask.predict_on_tif_file(
@@ -148,16 +141,14 @@ def test_regression_fit_and_predict(tmp_path):
     )
     with rst.open(out) as src:
         pred = src.read(1)
-        assert src.dtypes[0] == "float32" and src.nodata == NODATA
+        assert src.dtypes[0] == "float32" and np.isnan(src.nodata)
     assert pred.shape == (100, 100) and np.isfinite(pred).all()
 
 
-def test_regression_loss_excludes_nodata_pixels():
-    task = RegressionTask(
-        in_channels=3, model="unet_lite", num_filters=4, nodata_value=NODATA
-    )
+def test_regression_loss_excludes_pixels_without_target():
+    task = RegressionTask(in_channels=3, model="unet_lite", num_filters=4)
     x = torch.randn(2, 3, 16, 16)
-    y = torch.full((2, 1, 16, 16), NODATA)
+    y = torch.full((2, 1, 16, 16), torch.nan)
 
     assert task.training_step({"image": x, "mask": y}, 0) is None
 
@@ -248,3 +239,61 @@ def test_lr_scheduler_config():
 def test_eotorch_models_have_no_imagenet_weights():
     with pytest.raises(ValueError, match="No pretrained weights"):
         SegmentationTask(num_classes=3, in_channels=3, weights=True)
+
+
+def _write_target(path: Path, nodata: float | None, dtype: str = "float32") -> None:
+    """A target of 5 everywhere, covering only the left half of image_0.tif."""
+    with rst.open(TEST_DATA / "image_0.tif") as src:
+        profile = {**src.profile, "count": 1, "dtype": dtype, "nodata": nodata}
+    profile["width"] //= 2
+    with rst.open(path, "w", **profile) as dst:
+        dst.write(np.full((profile["height"], profile["width"]), 5, dtype=dtype), 1)
+
+
+@pytest.mark.parametrize(
+    "declared_nodata, dtype", [(None, "float32"), (None, "uint8"), (NODATA, "float32")]
+)
+def test_regression_targets_are_nan_outside_the_label_files(
+    tmp_path, declared_nodata, dtype
+):
+    """Without a nodata_value, areas without labels must not be read as a target of 0."""
+    _write_target(tmp_path / "target.tif", declared_nodata, dtype)
+    dataset = get_regression_dataset(
+        images_dir=TEST_DATA,
+        labels_dir=tmp_path,
+        image_glob="image_0.tif",
+        label_glob="target.tif",
+        cache_size=0,
+    )
+    xmin, ymin, xmax, ymax = dataset.datasets[0].index.total_bounds
+
+    mask = dataset.datasets[1][xmin:xmax, ymin:ymax]["mask"]
+
+    assert mask.dtype == torch.float32
+    assert (mask[:, :50] == 5).all()
+    assert mask[:, 50:].isnan().all()
+
+
+def test_regression_nodata_pixels_are_read_as_nan():
+    """Both for a nodata_value that is given and for the one declared in the files."""
+    with rst.open(TEST_DATA / "target_3.tif") as src:
+        stored = src.read(1)
+        xmin, ymin, xmax, ymax = src.bounds
+        assert src.nodata == NODATA and (stored == NODATA).any()
+
+    for nodata_value in (None, NODATA):
+        dataset = get_regression_dataset(
+            images_dir=TEST_DATA,
+            labels_dir=TEST_DATA,
+            image_glob="image_3.tif",
+            label_glob="target_3.tif",
+            nodata_value=nodata_value,
+            cache_size=0,
+        )
+        label_ds = dataset.datasets[1]
+        assert label_ds.nodata_value == NODATA
+
+        mask = label_ds[xmin:xmax, ymin:ymax]["mask"]
+
+        np.testing.assert_array_equal(mask.isnan().numpy(), stored == NODATA)
+        np.testing.assert_array_equal(label_ds.values_as_in_files(mask), stored)

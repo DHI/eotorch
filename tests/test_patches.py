@@ -139,7 +139,6 @@ def test_regression_patches(tmp_path):
         labels_dir=tmp_path / "train",
         image_glob="*_image.tif",
         label_glob="*_label.tif",
-        nodata_value=NODATA,
         cache_size=0,
     )
     with rst.open(TEST_DATA / "target_3.tif") as full:
@@ -154,7 +153,14 @@ def test_regression_patches(tmp_path):
             b = _bounds(path)
             mask = dataset[slice(b.left, b.right), slice(b.bottom, b.top)]["mask"]
             assert mask.dtype == torch.float32
-            np.testing.assert_array_equal(mask.numpy(), labels)
+            # Pixels without a target are read as NaN
+            expected = np.where(labels == NODATA, np.nan, labels)
+            np.testing.assert_array_equal(mask.numpy(), expected)
+
+            dataset.datasets[1].single_file_reads = True
+            mask = dataset[slice(b.left, b.right), slice(b.bottom, b.top)]["mask"]
+            np.testing.assert_array_equal(mask.numpy(), expected)
+            dataset.datasets[1].single_file_reads = False
 
 
 def test_file_sampler_samples_each_image_file_once(patch_dir):

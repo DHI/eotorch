@@ -2,6 +2,7 @@ import inspect
 from collections.abc import Sequence
 from pathlib import Path
 
+import numpy as np
 import pyproj
 import shapely
 import shapely.geometry
@@ -15,6 +16,16 @@ def window_to_np_idc(window: Window) -> tuple[slice, slice]:
         slice(round(window.row_off), round(window.row_off + window.height)),
         slice(round(window.col_off), round(window.col_off + window.width)),
     )
+
+
+def is_nodata(array: np.ndarray, nodata_value: float | None) -> np.ndarray:
+    """Boolean array of the pixels equal to the nodata value, which may be NaN or None."""
+    if nodata_value is None:
+        return np.zeros(array.shape, dtype=bool)
+    if np.isnan(nodata_value):
+        # NaN is never equal to itself, so it is found with isnan
+        return np.isnan(array)
+    return array == nodata_value
 
 
 def get_init_args(cls):
