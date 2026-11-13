@@ -92,6 +92,9 @@ class RasterDataModule(GeoDataModule):
       Augmentations are applied after that and can be set as in TorchGeo, e.g.
       datamodule.train_aug = K.AugmentationSequential(K.RandomHorizontalFlip(),
       data_keys=None, keepdim=True).
+    - Label pixels that augmentations pad, e.g. the corners after a rotation, are set
+      to -1 for classes and to NaN for regression targets, which the eotorch tasks
+      leave out of the loss and metrics.
 
     """
 
@@ -431,4 +434,23 @@ class RasterDataModule(GeoDataModule):
         the augmentations of TorchGeo's data module."""
         if self.mean is not None:
             batch["image"] = normalize_image(batch["image"], self.mean, self.std)
-        return super().on_after_batch_transfer(batch, dataloader_idx)
+        if "mask" not in batch:
+            return super().on_after_batch_transfer(batch, dataloader_idx)
+
+        # Augmentations such as rotations pad the mask with 0, which would be read as
+        # class 0 or as a target of 0. An extra channel of ones is augmented with the
+        # mask, to tell afterwards which pixels were padded.
+        mask = batch["mask"]
+        has_channels = mask.ndim == 4
+        channels = mask if has_channels else mask.unsqueeze(1)
+        inside = torch.ones_like(channels[:, :1])
+        batch["mask"] = torch.cat([channels, inside], dim=1)
+
+        batch = super().on_after_batch_transfer(batch, dataloader_idx)
+
+        channels, inside = batch["mask"][:, :-1], batch["mask"][:, -1:]
+        # The values of pixels without a label, as in the eotorch datasets
+        no_label = torch.nan if channels.is_floating_point() else -1
+        channels = channels.masked_fill(inside == 0, no_label)
+        batch["mask"] = channels if has_channels else channels.squeeze(1)
+        return batch

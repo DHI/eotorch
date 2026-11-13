@@ -83,6 +83,38 @@ def test_augmentations_are_applied_after_normalization(dataset, stage):
     torch.testing.assert_close(batch["image"][:, 0], normalized)
 
 
+@pytest.mark.parametrize(
+    "mask, no_label",
+    [
+        (torch.full((2, 16, 16), 3), -1),  # classes
+        (torch.full((2, 1, 16, 16), 5.0), torch.nan),  # regression targets
+    ],
+)
+def test_pixels_padded_by_augmentations_have_no_label(dataset, mask, no_label):
+    """Rotations pad with 0, which must not be read as class 0 or as a target of 0."""
+    from types import SimpleNamespace
+
+    import kornia.augmentation as K
+
+    datamodule = RasterDataModule(train_dataset=dataset, patch_size=32)
+    datamodule.train_aug = K.AugmentationSequential(
+        K.RandomRotation((45.0, 45.0), p=1.0), data_keys=None, keepdim=True
+    )
+    trainer_state = dict.fromkeys(
+        ["validating", "sanity_checking", "testing", "predicting"], False
+    )
+    datamodule.trainer = SimpleNamespace(training=True, **trainer_state)
+    batch = {"image": torch.ones(2, 2, 16, 16), "mask": mask.clone()}
+
+    augmented = datamodule.on_after_batch_transfer(batch, 0)["mask"]
+
+    assert augmented.shape == mask.shape and augmented.dtype == mask.dtype
+    padded = augmented.isnan() if mask.is_floating_point() else augmented == no_label
+    # A rotation by 45 degrees moves the corners of the patch out of the image
+    assert padded[..., 0, 0].all() and not padded[..., 8, 8].any()
+    assert (augmented[~padded] == mask[~padded]).all()
+
+
 def test_inference_selects_and_normalizes_bands(dataset, tmp_path):
     mean, std = band_statistics(dataset)
     datamodule = RasterDataModule(
