@@ -36,7 +36,7 @@ def label_dataset():
         paths=str(TEST_DATA),
         filename_glob="label_*.tif",
         cache_size=1,
-        reduce_zero_label=False,
+        nodata_value=None,
     )
 
 

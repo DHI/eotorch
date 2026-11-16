@@ -43,13 +43,12 @@ def test_datasets_keep_their_own_settings():
 
 def test_union_keeps_label_settings():
     ds1, ds2 = (
-        _dataset(
-            get_segmentation_dataset, i, reduce_zero_label=False, class_mapping={1: "a"}
-        )
+        _dataset(get_segmentation_dataset, i, nodata_value=None, class_mapping={1: "a"})
         for i in range(2)
     )
     union_labels = (ds1 | ds2).datasets[1]
-    assert not union_labels.reduce_zero_label
+    assert union_labels.nodata_value is None
+    assert union_labels.label_offset == 0
     assert union_labels.class_mapping == {1: "a"}
 
 

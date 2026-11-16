@@ -50,8 +50,8 @@ def get_dataset_args(ds: RasterDataset | IntersectionDataset) -> dict[str, Any]:
         args["label_date_format"] = label_ds.date_format
         if isinstance(label_ds, PlottableClassificationDataset):
             args["class_mapping"] = label_ds.class_mapping
-            args["reduce_zero_label"] = label_ds.reduce_zero_label
             args["nodata_value"] = label_ds.nodata_value
+            args["label_offset"] = label_ds.label_offset
     else:
         raise TypeError(
             f"Expected a RasterDataset or IntersectionDataset, got {type(ds).__name__}"

@@ -153,7 +153,7 @@ def test_plotting_does_not_change_the_sample(labels):
     from eotorch.data import get_regression_dataset, get_segmentation_dataset
 
     get_dataset = get_segmentation_dataset
-    kwargs = {"reduce_zero_label": True}
+    kwargs = {"nodata_value": 0}
     if labels == "target":
         get_dataset = get_regression_dataset
         kwargs = {"nodata_value": -9999.0}
@@ -258,7 +258,7 @@ def test_plots_show_filepaths_without_given_axes(labels):
 
 
 def test_plot_samples_keeps_regression_targets_of_minus_one(tmp_path, monkeypatch):
-    """-1 is only nodata for classification labels with reduce_zero_label."""
+    """-1 only marks unlabelled pixels in classification labels."""
     from pathlib import Path
 
     import rasterio as rst

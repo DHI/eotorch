@@ -498,7 +498,8 @@ class CustomCacheRasterDataset(RasterDataset, SamplePlotMixin):
             "all_bands": "'all_bands' attribute",
             "is_image": "'is_image' attribute",
             "separate_files": "'separate_files' attribute",
-            "reduce_zero_label": "'reduce_zero_label' attribute",
+            "nodata_value": "'nodata_value' attribute",
+            "label_offset": "Label of the first class (label_offset attribute)",
         }
 
         for attr_name, display_name in compatibility_attrs.items():
@@ -643,8 +644,7 @@ class PlottableLabelDataset(CustomCacheRasterDataset):
         if self.nodata_value is None:
             raise ValueError(
                 "Labels without a nodata value have no unlabelled areas to split by. "
-                "With reduce_zero_label=False, label 0 is a class. Pass nodata_value "
-                "to mark the label value of unlabelled pixels."
+                "Pass the label value of unlabelled pixels as nodata_value."
             )
         new_rows = []
 
@@ -684,69 +684,81 @@ class PlottableLabelDataset(CustomCacheRasterDataset):
 
 
 class PlottableClassificationDataset(PlottableLabelDataset):
+    """Labels with one class per pixel.
+
+    The label files hold the classes as consecutive numbers, and optionally a
+    nodata value for pixels without a label. Samples hold class indices starting
+    at 0 for the model, and -1 for pixels without a label.
+    """
+
     colormap = cm.tab20
     dataset_type = "classification"
 
     def __init__(
         self,
         *args,
-        reduce_zero_label: bool = True,
+        nodata_value: int | None = 0,
         class_mapping: dict[int, str] | None = None,
-        nodata_value: int | None = None,
         **kwargs,
     ) -> None:
         """
-        reduce_zero_label (bool): Subtract 1 from all labels. Useful when labels start from 1 instead of the
-        expected 0. Label 0 then marks pixels without a label, which are read as -1. If False, label 0 is a
-        class like any other. Defaults to True.
-        class_mapping (dict): Mapping of class indices to class names. Used for visualization.
         nodata_value (int): Label value, as stored in the files, of pixels without a label. These pixels,
-        and areas that no label file covers, are read as -1. Only needed with reduce_zero_label=False,
-        where every label is a class by default. With reduce_zero_label=True it is always 0.
+        and areas that no label file covers, are left out of training, pixel counts and plots. With the
+        default of 0, the classes are the labels from 1 on. With None, every pixel has a label and the
+        classes are the labels from 0 on. Any other value needs a class_mapping, whose smallest label
+        is then taken as the first class.
+        class_mapping (dict): Mapping of the labels in the files to class names. Used for visualization.
         Other arguments are passed on to CustomCacheRasterDataset."""
 
         super().__init__(*args, **kwargs)
-        self.reduce_zero_label = reduce_zero_label
-        if reduce_zero_label:
-            if nodata_value not in (None, 0):
-                raise ValueError(
-                    "With reduce_zero_label=True, label 0 marks the pixels without a "
-                    f"label, so nodata_value can't be {nodata_value}. Pass "
-                    "reduce_zero_label=False to use another nodata value."
-                )
-            nodata_value = 0
         self.nodata_value = nodata_value
         if nodata_value is not None:
             # TorchGeo fills areas that no label file covers with this value
             self.nodata = nodata_value
         if class_mapping is not None:
             self.class_mapping = class_mapping
+        #: Label of the first class in the files. It is subtracted from the labels,
+        #: so the classes start at 0 for the model.
+        self.label_offset = self._label_of_first_class()
 
-    def _convert_values(self, data: Tensor) -> Tensor:
-        """Without reduce_zero_label, pixels with the nodata value are set to -1."""
-        if self.reduce_zero_label or self.nodata_value is None:
-            # With reduce_zero_label, __getitem__ shifts label 0 to -1
-            return data
-        data = data.to(self.dtype)
-        data[data == self.nodata_value] = -1
-        return data
+    def _label_of_first_class(self) -> int:
+        if self.nodata_value is None:
+            return 0
+        if self.nodata_value == 0:
+            return 1
+        # Whether the classes start at 0 or at 1 is only known from the class mapping
+        class_labels = [
+            label for label in self.class_mapping or {} if label != self.nodata_value
+        ]
+        if not class_labels:
+            raise ValueError(
+                f"With nodata_value={self.nodata_value}, a class_mapping with the labels "
+                "of all classes is needed to know which label is the first class."
+            )
+        return min(class_labels)
 
     def __getitem__(self, index) -> dict[str, Any]:
         sample = super().__getitem__(index)
 
-        if self.reduce_zero_label:
-            sample["mask"] -= 1
+        mask = sample["mask"]
+        if self.nodata_value is None:
+            unlabelled = torch.zeros_like(mask, dtype=torch.bool)
+        else:
+            unlabelled = mask == self.nodata_value
+        # Not in place, so label transforms that keep a reference are not affected
+        mask = mask - self.label_offset
+        mask[unlabelled] = -1
+        sample["mask"] = mask
 
         return sample
 
     def values_as_in_files(self, values: Tensor) -> np.ndarray:
         """Label values of a mask or prediction as they are stored in the label files."""
         values = values.numpy()
-        if self.reduce_zero_label:
-            values = values + 1  # not +=, which would change the tensor
-        elif self.nodata_value is not None:
-            values = np.where(values == -1, self.nodata_value, values)
-        return values
+        labels = values + self.label_offset  # not +=, which would change the tensor
+        if self.nodata_value is not None:
+            labels[values == -1] = self.nodata_value
+        return labels
 
     def get_pixel_counts(self):
         """
@@ -1000,8 +1012,7 @@ def get_segmentation_dataset(
     label_transforms: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     class_mapping: dict[int, str] | None = None,
     cache_size: int = 20,
-    reduce_zero_label: bool = True,
-    nodata_value: int | None = None,
+    nodata_value: int | None = 0,
     split_sparse_labels: bool = False,
     split_sparse_labels_min_size: int = 300,
     image_separate_files: bool = False,
@@ -1033,15 +1044,15 @@ def get_segmentation_dataset(
         bands_to_return (tuple): Bands to return from the dataset.
         image_transforms (callable): Transforms to apply to the images.
         label_transforms (callable): Transforms to apply to the labels.
-        class_mapping (dict): Mapping of class indices to class names. Used for visualization.
+        class_mapping (dict): Mapping of the labels in the files to class names. Used for visualization.
         cache_size (int): Size of the memory file cache to use for image and label file reading.
-        reduce_zero_label (bool): Subtract 1 from all labels. Useful when labels start from 1 instead of the expected 0.
-                                  Label 0 then marks pixels without a label. They are read as -1, which SegmentationTask
-                                  ignores by default. If False, label 0 is a class like any other.
-        nodata_value (int): Label value, as stored in the files, of pixels without a label. Only needed with
-                            reduce_zero_label=False, where every label is a class by default. These pixels, and
-                            areas that no label file covers, are then read as -1, without shifting the other labels.
-                            With reduce_zero_label=True it is always 0.
+        nodata_value (int): Label value, as stored in the files, of pixels without a label. These pixels, and areas that
+                            no label file covers, are left out of training, pixel counts and plots.
+                            - 0 (default): label 0 is unlabelled, the classes are the labels from 1 on.
+                            - None: every pixel has a label, the classes are the labels from 0 on.
+                            - Any other value, e.g. 255: needs a class_mapping, whose smallest label is taken as the first class.
+                            The classes must be consecutive labels. num_classes of the task is the number of classes,
+                            not counting the nodata value. Plots, pixel counts and predictions use the labels of the files.
         split_sparse_labels (bool): If True, will try to split the label rasters into multiple boxes, in order to reduce the number of nodata
                                     pixels in the label rasters. This is useful for large label rasters with sparse labels.
         split_sparse_labels_min_size (int): Minimum length (in pixels) of the shortest side of polygon box to be created when splitting sparse labels.
@@ -1076,7 +1087,6 @@ def get_segmentation_dataset(
         filename_regex=label_filename_regex,
         date_format=label_date_format,
         class_mapping=class_mapping,
-        reduce_zero_label=reduce_zero_label,
         nodata_value=nodata_value,
         transforms=label_transforms,
         cache_size=cache_size,

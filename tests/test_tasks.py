@@ -76,7 +76,7 @@ def test_segmentation_fit_and_predict(tmp_path):
         assert src.dtypes[0] == "uint8"
         assert src.nodata == 0
     assert pred.shape == (100, 100)
-    # Trained with reduce_zero_label, so classes are shifted back to 1-4
+    # Label 0 was nodata in training, so classes are shifted back to 1-4
     assert set(np.unique(pred)) <= {1, 2, 3, 4}
 
     blended = SegmentationTask.predict_on_tif_file(
@@ -191,13 +191,33 @@ def test_binary_segmentation():
     assert task.predict_class(batch["image"]).shape == (2, 16, 16)
 
 
-@pytest.mark.parametrize("reduce_zero_label, nodata", [(True, 0), (False, None)])
-def test_class_0_is_only_nodata_with_reduce_zero_label(reduce_zero_label, nodata):
+@pytest.mark.parametrize(
+    "dataset_args, nodata, label_offset",
+    [
+        ({"nodata_value": 0, "label_offset": 1}, 0, 1),
+        ({"nodata_value": None, "label_offset": 0}, None, 0),
+        ({"nodata_value": 255, "label_offset": 3}, 255, 3),
+        # A nodata value that does not fit into the uint8 predictions
+        ({"nodata_value": -9999, "label_offset": 0}, None, 0),
+        # Checkpoints from before nodata_value replaced reduce_zero_label
+        ({"reduce_zero_label": True}, 0, 1),
+        ({"reduce_zero_label": False}, None, 0),
+        ({}, None, 0),
+    ],
+)
+def test_predictions_use_the_label_values_of_the_files(
+    dataset_args, nodata, label_offset
+):
     task = SegmentationTask(
         num_classes=2, in_channels=3, model="unet_lite", num_filters=4
     )
-    settings = task._inference_settings({"reduce_zero_label": reduce_zero_label})
+    settings = task._inference_settings(dataset_args)
     assert settings["nodata"] == nodata
+
+    probabilities = np.zeros((2, 4, 4), dtype="float32")
+    probabilities[1] = 1
+    classes = task.classes_from_probabilities(probabilities)
+    assert (classes == 1 + label_offset).all()
 
 
 def test_smp_model_with_kwargs_and_frozen_encoder():
@@ -274,7 +294,12 @@ def test_regression_targets_are_nan_outside_the_label_files(
     assert mask[:, 50:].isnan().all()
 
 
-def test_segmentation_labels_are_unlabelled_outside_the_label_files(tmp_path):
+@pytest.mark.parametrize(
+    "class_mapping, expected_class", [({0: "a", 5: "b"}, 5), ({5: "a", 6: "b"}, 0)]
+)
+def test_segmentation_labels_are_unlabelled_outside_the_label_files(
+    tmp_path, class_mapping, expected_class
+):
     """With a nodata_value, areas without labels must not be read as class 0."""
     _write_target(tmp_path / "labels.tif", nodata=None, dtype="uint8")
     dataset = get_segmentation_dataset(
@@ -283,15 +308,15 @@ def test_segmentation_labels_are_unlabelled_outside_the_label_files(tmp_path):
         image_glob="image_0.tif",
         label_glob="labels.tif",
         cache_size=0,
-        reduce_zero_label=False,
         nodata_value=255,
+        class_mapping=class_mapping,
     )
     xmin, ymin, xmax, ymax = dataset.datasets[0].index.total_bounds
 
     mask = dataset.datasets[1][xmin:xmax, ymin:ymax]["mask"]
 
     assert mask.dtype == torch.long
-    assert (mask[:, :50] == 5).all()
+    assert (mask[:, :50] == expected_class).all()
     assert (mask[:, 50:] == -1).all()
 
 

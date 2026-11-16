@@ -273,8 +273,9 @@ class _TaskMixin:
 
 
 class SegmentationTask(_TaskMixin, SemanticSegmentation):
-    #: Set when predicting with a model trained on labels with reduce_zero_label=True
-    reduce_zero_label = False
+    #: Label of the first class in the label files of the training data, set when
+    #: predicting. Predicted class indices are shifted by it.
+    label_offset = 0
 
     def __init__(
         self,
@@ -315,8 +316,8 @@ class SegmentationTask(_TaskMixin, SemanticSegmentation):
             pos_weight: Weight of positive examples in the "bce" loss.
             ignore_index: Label value to ignore in the loss and metrics. Patches
                 containing only this value are skipped. The default of -1 is the
-                value of unlabelled pixels in eotorch datasets (label 0 in the files
-                with reduce_zero_label=True).
+                value of unlabelled pixels in eotorch datasets (the nodata_value of
+                the label files).
             lr: Learning rate.
             freeze_backbone: Whether to freeze the encoder of the model.
             freeze_decoder: Whether to freeze the decoder of the model.
@@ -468,7 +469,7 @@ class SegmentationTask(_TaskMixin, SemanticSegmentation):
             if self.hparams["task"] == "binary":
                 classes = classes[..., 0, :, :]
         classes = classes.astype("uint8")
-        return classes + 1 if self.reduce_zero_label else classes
+        return classes + self.label_offset
 
     def predict_class(self, batch: Tensor | np.ndarray) -> np.ndarray:
         """Class indices (B, H, W) for a batch of images, or (B, L, H, W) for multilabel."""
@@ -476,15 +477,24 @@ class SegmentationTask(_TaskMixin, SemanticSegmentation):
         return self.classes_from_probabilities(probs)
 
     def _inference_settings(self, dataset_args: dict[str, Any]) -> dict[str, Any]:
-        self.reduce_zero_label = dataset_args.get("reduce_zero_label", False)
+        if "label_offset" in dataset_args:
+            self.label_offset = dataset_args["label_offset"]
+            nodata = dataset_args.get("nodata_value")
+        else:
+            # Checkpoints from before nodata_value replaced reduce_zero_label
+            reduce_zero_label = dataset_args.get("reduce_zero_label", False)
+            self.label_offset = 1 if reduce_zero_label else 0
+            nodata = 0 if reduce_zero_label else None
+        if nodata is not None and not 0 <= nodata <= 255:
+            nodata = None  # does not fit into the uint8 predictions
         count = self.num_outputs if self.hparams["task"] == "multilabel" else 1
         return {
             "prediction_func": self.predict_probabilities,
             "postprocess": self.classes_from_probabilities,
             "class_mapping": dataset_args.get("class_mapping"),
             "count": count,
-            # With reduce_zero_label, 0 marks unlabelled pixels, otherwise it is a class
-            "nodata": 0 if self.reduce_zero_label else None,
+            # Predictions use the labels of the files, including their nodata value
+            "nodata": nodata,
         }
 
 

@@ -6,7 +6,6 @@ import numpy as np
 import pandas as pd
 import pytest
 import rasterio
-import torch
 
 from eotorch.data.geodatasets import (
     ClassificationRasterDataset,
@@ -32,7 +31,7 @@ def sparse_raster_path(test_data_dir):
 def label_dataset(sparse_raster_path):
     """Create a PlottableClassificationDataset for testing."""
     return PlottableClassificationDataset(
-        paths=sparse_raster_path, cache_size=1, reduce_zero_label=False
+        paths=sparse_raster_path, cache_size=1, nodata_value=None
     )
 
 
@@ -48,7 +47,7 @@ def labelled_dataset(sparse_raster_path):
     # Use the same file for both image and labels for simplicity
     image_ds = PlottableImageDataset(paths=sparse_raster_path, cache_size=1)
     label_ds = PlottableClassificationDataset(
-        paths=sparse_raster_path, cache_size=1, reduce_zero_label=False
+        paths=sparse_raster_path, cache_size=1, nodata_value=None
     )
     return ClassificationRasterDataset(image_ds, label_ds)
 
@@ -165,7 +164,7 @@ def test_integration_with_get_segmentation_dataset(sparse_raster_path):
         image_glob="sparse_raster.tif",
         label_glob="sparse_raster.tif",
         cache_size=1,
-        reduce_zero_label=False,
+        nodata_value=None,
     )
 
     # Test that pixel counting works without errors
@@ -257,27 +256,26 @@ def test_labelled_dataset_actual_pixel_counts(labelled_dataset):
     )
 
 
-def test_pixel_counts_with_reduce_zero_label(sparse_raster_path):
-    """Test pixel counts with reduce_zero_label=True option."""
-    # Create dataset with reduce_zero_label=True
+def test_pixel_counts_with_shifted_labels(sparse_raster_path):
+    """Test pixel counts with label 0 as nodata, where the classes are shifted by 1."""
     label_dataset = PlottableClassificationDataset(
-        paths=sparse_raster_path, cache_size=1, reduce_zero_label=True
+        paths=sparse_raster_path, cache_size=1, nodata_value=0
     )
     # Set nodata_value to None to avoid filtering out any classes
     label_dataset.nodata_value = None
 
     pixel_counts = label_dataset.get_pixel_counts()
 
-    # With reduce_zero_label=True, the _get_pixel_counts method undoes the reduction
+    # The _get_pixel_counts method undoes the shift of the labels
     # by adding 1 back, so we should get the original class values
     # Check that we get the expected original classes
     for expected_class, expected_count in EXPECTED_PIXEL_COUNTS.items():
         assert expected_class in pixel_counts, (
-            f"Expected class {expected_class} not found in pixel_counts (reduce_zero_label=True should be undone in counting)"
+            f"Expected class {expected_class} not found in pixel_counts (the label shift should be undone in counting)"
         )
         actual_count = pixel_counts[expected_class]
         assert actual_count == expected_count, (
-            f"For class {expected_class} (with reduce_zero_label=True): expected {expected_count} pixels, got {actual_count}"
+            f"For class {expected_class} (with shifted labels): expected {expected_count} pixels, got {actual_count}"
         )
 
 
@@ -314,7 +312,7 @@ def test_integration_actual_counts_with_get_segmentation_dataset(sparse_raster_p
         image_glob="sparse_raster.tif",
         label_glob="sparse_raster.tif",
         cache_size=1,
-        reduce_zero_label=False,
+        nodata_value=None,
     )
 
     pixel_counts = dataset.get_label_pixel_counts()
@@ -336,7 +334,7 @@ def test_pixel_counts_edge_cases(sparse_raster_path):
     # Test with different cache sizes
     for cache_size in [1, 5, 20]:
         label_dataset = PlottableClassificationDataset(
-            paths=sparse_raster_path, cache_size=cache_size, reduce_zero_label=False
+            paths=sparse_raster_path, cache_size=cache_size, nodata_value=None
         )
         pixel_counts = label_dataset.get_pixel_counts()
 
@@ -359,7 +357,7 @@ def test_pixel_counts_edge_cases(sparse_raster_path):
     }
 
     label_dataset_with_mapping = PlottableClassificationDataset(
-        paths=sparse_raster_path, cache_size=1, reduce_zero_label=False
+        paths=sparse_raster_path, cache_size=1, nodata_value=None
     )
     label_dataset_with_mapping.class_mapping = class_mapping
 
@@ -438,62 +436,64 @@ def test_error_regression_pandas_invalid_comparison(labelled_dataset):
             raise
 
 
-@pytest.mark.parametrize("reduce_zero_label, nodata", [(True, 0), (False, None)])
-def test_label_0_is_only_nodata_with_reduce_zero_label(
-    sparse_raster_path, reduce_zero_label, nodata
+@pytest.mark.parametrize("nodata_value, label_offset", [(0, 1), (None, 0)])
+def test_classes_start_at_0_for_the_model(
+    sparse_raster_path, nodata_value, label_offset
 ):
+    """With label 0 as nodata the classes start at 1 in the files, so they are shifted."""
     dataset = PlottableClassificationDataset(
-        paths=sparse_raster_path, cache_size=1, reduce_zero_label=reduce_zero_label
-    )
-    assert dataset.nodata_value == nodata
-
-
-def test_sparse_split_needs_a_nodata_value(sparse_raster_path):
-    dataset = PlottableClassificationDataset(
-        paths=sparse_raster_path, cache_size=1, reduce_zero_label=False
-    )
-    with pytest.raises(ValueError, match="nodata_value"):
-        dataset.split_sparse_index()
-
-
-def test_nodata_value_can_be_given_without_reducing_the_labels(sparse_raster_path):
-    """Pixels with the nodata value are read as -1, the other labels stay as they are."""
-    dataset = PlottableClassificationDataset(
-        paths=sparse_raster_path, cache_size=1, reduce_zero_label=False, nodata_value=0
+        paths=sparse_raster_path, cache_size=1, nodata_value=nodata_value
     )
     with rasterio.open(sparse_raster_path) as src:
         stored = src.read(1).astype(int)
         xmin, ymin, xmax, ymax = src.bounds
 
-    mask = dataset[xmin:xmax, ymin:ymax]["mask"].squeeze().numpy()
+    mask = dataset[xmin:xmax, ymin:ymax]["mask"].squeeze()
 
+    assert dataset.nodata_value == nodata_value
+    assert dataset.label_offset == label_offset
+    np.testing.assert_array_equal(mask.numpy(), stored - label_offset)
+    np.testing.assert_array_equal(dataset.values_as_in_files(mask), stored)
+
+
+def test_label_0_is_nodata_by_default(sparse_raster_path):
+    dataset = PlottableClassificationDataset(paths=sparse_raster_path, cache_size=1)
     assert dataset.nodata_value == 0
-    np.testing.assert_array_equal(mask, np.where(stored == 0, -1, stored))
-    np.testing.assert_array_equal(
-        dataset.values_as_in_files(torch.tensor(mask)), stored
-    )
     assert 0 not in dataset.get_pixel_counts()
 
 
-def test_sparse_split_with_a_given_nodata_value(test_data_dir):
-    dataset = get_segmentation_dataset(
-        images_dir=test_data_dir,
-        labels_dir=test_data_dir,
-        image_glob="sparse_raster.tif",
-        label_glob="sparse_raster.tif",
-        cache_size=1,
-        reduce_zero_label=False,
-        nodata_value=0,
-        split_sparse_labels=True,
-        split_sparse_labels_min_size=10,
+def test_sparse_split_needs_a_nodata_value(sparse_raster_path):
+    dataset = PlottableClassificationDataset(
+        paths=sparse_raster_path, cache_size=1, nodata_value=None
     )
-    label_dataset = dataset.datasets[1]
-    assert label_dataset.nodata_value == 0
-    assert len(label_dataset.index) > 1
+    with pytest.raises(ValueError, match="nodata_value"):
+        dataset.split_sparse_index()
 
 
-def test_reduce_zero_label_needs_0_as_nodata_value(sparse_raster_path):
-    with pytest.raises(ValueError, match="reduce_zero_label"):
-        PlottableClassificationDataset(
-            paths=sparse_raster_path, reduce_zero_label=True, nodata_value=255
-        )
+def test_other_nodata_values_need_a_class_mapping(sparse_raster_path):
+    """Whether the classes start at 0 or 1 is only known from the class mapping."""
+    with pytest.raises(ValueError, match="class_mapping"):
+        PlottableClassificationDataset(paths=sparse_raster_path, nodata_value=255)
+
+
+def test_smallest_class_of_the_mapping_becomes_0(sparse_raster_path):
+    """Here label 1 is nodata, and the classes are 2, 3 and 4."""
+    dataset = PlottableClassificationDataset(
+        paths=sparse_raster_path,
+        cache_size=1,
+        nodata_value=1,
+        class_mapping={1: "unlabelled", 2: "a", 3: "b", 4: "c"},
+    )
+    with rasterio.open(sparse_raster_path) as src:
+        stored = src.read(1).astype(int)
+        xmin, ymin, xmax, ymax = src.bounds
+
+    mask = dataset[xmin:xmax, ymin:ymax]["mask"].squeeze()
+
+    assert dataset.label_offset == 2
+    assert (mask[stored == 1] == -1).all()
+    assert (mask[stored == 2] == 0).all()
+    assert (mask[stored == 4] == 2).all()
+    restored = dataset.values_as_in_files(mask)
+    np.testing.assert_array_equal(restored[stored != 0], stored[stored != 0])
+    assert 1 not in dataset.get_pixel_counts()

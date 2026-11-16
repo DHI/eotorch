@@ -112,7 +112,7 @@ ds = get_segmentation_dataset(
     all_image_bands=("B", "G", "R", "NIR"),  # Band names in your files
     rgb_bands=("R", "G", "B"),                # Bands for visualization
     class_mapping={1: "Water", 2: "Forest", 3: "Urban"},
-    reduce_zero_label=True,  # Shift labels (1,2,3) → (0,1,2) for training
+    nodata_value=0,  # Label 0 marks unlabelled pixels (the default)
 )
 
 # Visualize samples to verify correct image-label pairing
@@ -361,7 +361,7 @@ The method automatically:
 - Loads the model from the checkpoint
 - Reads `patch_size` and `class_mapping` from saved hyperparameters
 - Selects and normalizes the image bands as during training
-- Handles `reduce_zero_label` correction if it was used during training
+- Writes the classes with the label values of the training label files
 - Outputs a GeoTIFF with the same CRS and extent as the input
 
 With `blend=True`, overlapping patch predictions (class probabilities for segmentation) are averaged with weights that decrease towards the patch edges, instead of only keeping the center of each patch. `RegressionTask.predict_on_tif_file()` works the same way and writes float32 values.
@@ -488,7 +488,7 @@ EOTorch builds on TorchGeo but differs in several important ways:
 | **DataModule Init** | Pass dataset *class* type | Pass dataset *instances* directly |
 | **Visualization** | Manual setup | Built-in `plot_samples()`, `preview_labels()` |
 | **Splitting** | Basic `random_bbox_assignment` | File-wise and AOI-based splits |
-| **Class Labels** | Manual handling | `reduce_zero_label` auto-shifts labels |
+| **Class Labels** | Manual handling | `nodata_value` marks unlabelled pixels, classes are shifted to start at 0 |
 | **Cache Control** | Fixed 128 files | Configurable `cache_size` per dataset |
 
 ### Dataset Instance vs Class Pattern
@@ -634,7 +634,7 @@ def predict_func(batch):
         
         predictions = torch.argmax(logits, dim=1)
         
-        # If reduce_zero_label was used during training, shift predictions back
+        # If label 0 was the nodata value during training, shift predictions back
         predictions += 1  # Adjust if your labels were shifted
         
     return predictions
@@ -687,7 +687,6 @@ ds = get_segmentation_dataset(
     all_image_bands=("R", "G", "B"),
     rgb_bands=("R", "G", "B"),
     class_mapping={1: "Class A", 2: "Class B"},
-    reduce_zero_label=True,
 )
 
 # 2. Verify with visualization
@@ -725,7 +724,15 @@ trainer.fit(task, datamodule=module)
 
 ### Common Pitfalls
 
-**Label indexing**: Remember that `reduce_zero_label=True` (the default) shifts labels down by 1. If your labels are `{0, 1, 2}`, they become `{-1, 0, 1}`. Label 0 then marks unlabelled pixels: -1 is the default `ignore_index` of `SegmentationTask`, so they are left out of the loss and metrics. If 0 is a class in your labels, use `reduce_zero_label=False`. Every label is then a class, unless you pass the label value of unlabelled pixels as `nodata_value` (for example `nodata_value=255`); those pixels are read as -1 as well.
+**Label values**: `nodata_value` is the value in your label files that means "no label here"; every other value is a class. Unlabelled pixels are left out of the loss, metrics, pixel counts and plots.
+
+| `nodata_value` | Unlabelled | Classes in the files |
+|---|---|---|
+| `0` (default) | label 0 | 1, 2, 3, ... |
+| `None` | nothing | 0, 1, 2, ... |
+| other, e.g. `255` | label 255 | from the smallest label in `class_mapping`, which is then required |
+
+The classes must be consecutive labels, and `num_classes` is the number of classes, not counting the nodata value. Plots, pixel counts and predictions use the label values of your files. Internally the classes are shifted to start at 0 and unlabelled pixels are -1 (the default `ignore_index` of `SegmentationTask`), which matters for raw `sample["mask"]` values, class weights and probability bands.
 
 **Band ordering**: `all_image_bands` defines the order bands are stored in files; `rgb_bands` defines which bands to use for visualization.
 
