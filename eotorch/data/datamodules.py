@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +19,12 @@ from eotorch.data.geodatasets import (
     CustomCacheRasterDataset,
     PlottableClassificationDataset,
 )
-from eotorch.data.samplers import FileSampler
+from eotorch.data.samplers import (
+    FileSampler,
+    FileSampling,
+    GridSampling,
+    RandomSampling,
+)
 from eotorch.data.splits import file_wise_split
 
 
@@ -106,12 +112,12 @@ class RasterDataModule(GeoDataModule):
         test_dataset: type[GeoDataset] | RasterDataset | IntersectionDataset = None,
         predict_dataset: type[GeoDataset] | RasterDataset | IntersectionDataset = None,
         batch_size: int = 1,
-        patch_size: int | tuple[int, int] | None = 64,
+        patch_size: int | tuple[int, int] = 64,
         num_workers: int = 0,
         persistent_workers: bool = False,
         pin_memory: bool = False,
         drop_last: bool = False,
-        train_sampler_config: dict[str, Any] | None = None,
+        sampling: GridSampling | RandomSampling | FileSampling | None = None,
         mean: Sequence[float] | None = None,
         std: Sequence[float] | None = None,
         val_split: float | None = 0.1,
@@ -124,30 +130,27 @@ class RasterDataModule(GeoDataModule):
             val_dataset: The validation dataset (optional).
             test_dataset: The test dataset (optional).
             batch_size: The batch size for data loading.
-            patch_size: The size of the patches to be extracted from the images. Set to
-                None if the datasets are already split into patches, one per file (e.g.
-                with eotorch.processing.generate_patches_from_files). Each file is then
-                one sample, read from that file only (overlapping files are not
-                merged), and the train_sampler_config is not used.
+            patch_size: The size of the patches to be extracted from the images, in
+                pixels. Not used with FileSampling, where it is read from the files.
             num_workers: The number of worker processes for data loading.
             persistent_workers: Whether to use persistent workers for data loading.
             pin_memory: Whether to pin memory for data loading.
             drop_last: Whether to drop the last incomplete batch. This is useful when
                 using models with BatchNorm layers that fail with batch_size=1.
-            train_sampler_config: The training sampler configuration (optional).
-                If None, a default sampler will be used. The default is a GriddedPatchSampler with the following parameters:
-                size=patch_size, stride=patch_size / 2.
-                The way to specify the default sampler would be:
-                train_sampler_config = {"type": "GriddedPatchSampler", "stride": patch_size / 2}
-
-                Patch size does not need to be specified here, as it is already a parameter of the data module.
-                It will be passed to the sampler as the 'size' arg automatically.
-                Any sampler from torchgeo.samplers can be used here. Batch samplers, such
-                as RandomBatchGeoSampler, also get the batch_size of the data module,
-                unless it is given in the configuration.
-                Example of some other sampler configurations:
-                train_sampler_config = {"type": "RandomPatchSampler", "length": length}
-                train_sampler_config = {"type": "RandomBatchGeoSampler", "length": length}
+            sampling: How training patches are drawn, one of (from eotorch.data.samplers):
+                - GridSampling(overlap=0.5): a regular grid of patches covering each
+                  file, overlapping by the given fraction of the patch size. This is
+                  the default if sampling is None.
+                - RandomSampling(samples_per_epoch=5000): patches at random locations,
+                  newly drawn every epoch.
+                - FileSampling(): each file is one sample, for datasets that are
+                  already split into patches, one per file (e.g. with
+                  eotorch.processing.generate_patches_from_files). Each sample is read
+                  from its own file only (overlapping files are not merged). This
+                  applies to all splits.
+                Without FileSampling, validation and test patches are taken from a
+                grid without overlap, and prediction patches from a grid with half
+                overlap.
             mean: Mean of each image band. If given together with std, images are
                 normalized on the fly as (image - mean) / std, which is also applied when
                 predicting with the trained model. See
@@ -158,8 +161,20 @@ class RasterDataModule(GeoDataModule):
                 val_dataset is not given. The split is file-wise and seeded, so it is
                 reproducible. Set to None to require an explicit val_dataset.
         """
-        self.file_sampling = patch_size is None
-        if self.file_sampling:
+        if sampling is None:
+            sampling = GridSampling()
+        if not isinstance(sampling, GridSampling | RandomSampling | FileSampling):
+            raise TypeError(
+                "sampling must be GridSampling, RandomSampling or FileSampling from "
+                f"eotorch.data.samplers, got {sampling!r}."
+            )
+        if patch_size is None and not isinstance(sampling, FileSampling):
+            raise ValueError(
+                "patch_size can't be None. For datasets that are already split into "
+                "patches, one per file, use sampling=FileSampling()."
+            )
+        self.sampling = sampling
+        if isinstance(sampling, FileSampling):
             _, ymin, _, ymax = FileSampler(train_dataset).index.geometry.iloc[0].bounds
             patch_size = round((ymax - ymin) / train_dataset.res[1])
 
@@ -174,7 +189,6 @@ class RasterDataModule(GeoDataModule):
         self.val_dataset = val_dataset
         self.test_dataset = test_dataset
         self.predict_dataset = predict_dataset
-        self.train_sampler_config = train_sampler_config
         self.val_split = val_split
         if val_dataset is None and train_dataset is not None:
             self.train_dataset, self.val_dataset = self._split_off_val(
@@ -213,7 +227,10 @@ class RasterDataModule(GeoDataModule):
                     "persistent_workers": persistent_workers,
                     "pin_memory": pin_memory,
                     "drop_last": drop_last,
-                    "train_sampler_config": train_sampler_config,
+                    "sampling": {
+                        "strategy": type(sampling).__name__,
+                        **asdict(sampling),
+                    },
                     "mean": self.mean,
                     "std": self.std,
                     "val_split": val_split,
@@ -256,50 +273,39 @@ class RasterDataModule(GeoDataModule):
             self.val_sampler = self._eval_sampler(self.val_dataset)
 
         if stage in ["fit"]:
-            if self.file_sampling:
-                self.train_sampler = self._file_sampler(
-                    self.train_dataset, shuffle=True
-                )
-            elif self.train_sampler_config is None:
-                self.train_sampler = samplers.GriddedPatchSampler(
-                    self.train_dataset,
-                    size=self.patch_size,
-                    stride=self._half_patch_size(),
-                )
-            else:
-                # Initialize the sampler based on the provided configuration
-                local_config = self.train_sampler_config.copy()
-                sampler_type = local_config.pop("type")
-                if hasattr(samplers, sampler_type):
-                    sampler_class = getattr(samplers, sampler_type)
-                    if issubclass(sampler_class, samplers.BatchGeoSampler):
-                        local_config.setdefault("batch_size", self.batch_size)
-                    self.train_sampler = sampler_class(
-                        self.train_dataset,
-                        size=self.patch_size,
-                        **local_config,
-                    )
-                else:
-                    raise ValueError(
-                        f"Sampler type '{sampler_type}' not found in torchgeo.samplers."
-                    )
+            self.train_sampler = self._train_sampler()
 
         if stage in ["test"]:
             self.test_sampler = self._eval_sampler(self.test_dataset)
         if stage in ["predict"]:
-            self.predict_sampler = self._eval_sampler(
-                self.predict_dataset, stride=self._half_patch_size()
+            self.predict_sampler = self._eval_sampler(self.predict_dataset, overlap=0.5)
+
+    def _train_sampler(self):
+        sampling = self.sampling
+        if isinstance(sampling, FileSampling):
+            return self._file_sampler(self.train_dataset, shuffle=True)
+        if isinstance(sampling, GridSampling):
+            return samplers.GriddedPatchSampler(
+                self.train_dataset,
+                size=self.patch_size,
+                stride=self._stride(sampling.overlap),
             )
+        return samplers.RandomPatchSampler(
+            self.train_dataset,
+            size=self.patch_size,
+            length=sampling.samples_per_epoch,
+        )
 
-    def _half_patch_size(self) -> tuple[float, float]:
+    def _stride(self, overlap: float) -> tuple[float, float]:
+        """The distance between neighbouring patches that overlap by the given fraction."""
         height, width = _to_tuple(self.patch_size)
-        return height / 2, width / 2
+        return height * (1 - overlap), width * (1 - overlap)
 
-    def _eval_sampler(self, dataset: GeoDataset, stride: float | None = None):
-        if self.file_sampling:
+    def _eval_sampler(self, dataset: GeoDataset, overlap: float = 0.0):
+        if isinstance(self.sampling, FileSampling):
             return self._file_sampler(dataset)
         return samplers.GriddedPatchSampler(
-            dataset, size=self.patch_size, stride=stride
+            dataset, size=self.patch_size, stride=self._stride(overlap)
         )
 
     @staticmethod
@@ -410,22 +416,15 @@ class RasterDataModule(GeoDataModule):
         sampler = self._valid_attribute(f"{split}_sampler", "sampler")
         batch_size = self._valid_attribute(f"{split}_batch_size", "batch_size")
 
-        # A batch sampler yields whole batches, so it replaces sampler and batch_size
-        batch_sampler = None
-        if isinstance(sampler, samplers.BatchGeoSampler):
-            batch_size, batch_sampler, sampler = 1, sampler, None
-
         return DataLoader(
             dataset=dataset,
             batch_size=batch_size,
             sampler=sampler,
-            batch_sampler=batch_sampler,
             num_workers=self.num_workers,
             collate_fn=self.collate_fn,
             persistent_workers=self.persistent_workers,
             pin_memory=self.pin_memory,
-            # drop_last can't be used together with a batch sampler
-            drop_last=split == "train" and self.drop_last and batch_sampler is None,
+            drop_last=split == "train" and self.drop_last,
         )
 
     def on_after_batch_transfer(

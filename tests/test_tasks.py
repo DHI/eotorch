@@ -121,6 +121,39 @@ def test_segmentation_fits_with_default_label_handling(tmp_path):
     _fit(task, dataset, tmp_path)
 
 
+def test_predict_with_checkpoint_from_old_sampler_config(tmp_path):
+    """Checkpoints saved with the old train_sampler_config can still be used for inference."""
+    dataset = get_segmentation_dataset(
+        images_dir=TEST_DATA,
+        labels_dir=TEST_DATA,
+        image_glob="image_*.tif",
+        label_glob="label_*.tif",
+        cache_size=0,
+    )
+    task = SegmentationTask(
+        num_classes=4, in_channels=3, model="unet_lite", num_filters=4
+    )
+    checkpoint_path = _fit(task, dataset, tmp_path)
+
+    checkpoint = torch.load(checkpoint_path, weights_only=False)
+    datamodule_params = checkpoint["datamodule_hyper_parameters"]
+    del datamodule_params["sampling"]
+    datamodule_params["train_sampler_config"] = {
+        "type": "RandomPatchSampler",
+        "length": 10,
+    }
+    torch.save(checkpoint, checkpoint_path)
+
+    out = SegmentationTask.predict_on_tif_file(
+        TEST_DATA / "image_0.tif",
+        checkpoint_path,
+        out_file_path=tmp_path / "pred.tif",
+        progress_bar=False,
+    )
+    with rst.open(out) as src:
+        assert src.shape == (100, 100)
+
+
 def test_regression_fit_and_predict(tmp_path):
     dataset = get_regression_dataset(
         images_dir=TEST_DATA,

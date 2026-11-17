@@ -265,19 +265,21 @@ module = RasterDataModule(
 )
 ```
 
-#### Custom Samplers
+#### Sampling Strategies
 
-Control how patches are sampled during training:
+Control how patches are drawn during training with `sampling`:
 
 ```python
-module = RasterDataModule(
-    train_dataset=train_ds,
-    # Default: GriddedPatchSampler with stride=patch_size/2
-    # For random sampling:
-    train_sampler_config={"type": "RandomPatchSampler", "length": 5000},
-    # ...
-)
+from eotorch.data import GridSampling, RandomSampling
+
+# Default: a regular grid of patches, overlapping by half a patch
+module = RasterDataModule(train_dataset=train_ds, sampling=GridSampling(overlap=0.5))
+
+# 5000 patches at random locations, newly drawn every epoch
+module = RasterDataModule(train_dataset=train_ds, sampling=RandomSampling(samples_per_epoch=5000))
 ```
+
+Validation and test patches are always taken from a grid without overlap. For data that is already split into patches, see [Pre-patched Data](#pre-patched-data).
 
 #### On-the-fly Normalization
 
@@ -294,7 +296,7 @@ To scale a fixed range `(low, high)` of each band to `(0, 1)`, use `mean=low` an
 
 #### Pre-patched Data
 
-If your data is already split into patches, one patch per file (see [Patch Generation](#patch-generation)), load the patch directories like any other dataset and set `patch_size=None` to use each file as one sample:
+If your data is already split into patches, one patch per file (see [Patch Generation](#patch-generation)), load the patch directories like any other dataset and use `sampling=FileSampling()` to use each file as one sample, in every split. The patch size is read from the files:
 
 ```python
 train_ds = get_segmentation_dataset(
@@ -303,7 +305,9 @@ train_ds = get_segmentation_dataset(
 )
 val_ds = get_segmentation_dataset(images_dir="patches/val", labels_dir="patches/val", ...)
 
-module = RasterDataModule(train_dataset=train_ds, val_dataset=val_ds, patch_size=None, batch_size=16)
+from eotorch.data import FileSampling
+
+module = RasterDataModule(train_dataset=train_ds, val_dataset=val_ds, sampling=FileSampling(), batch_size=16)
 ```
 
 ### 4. Training with `SegmentationTask` and `RegressionTask`

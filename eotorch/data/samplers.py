@@ -1,4 +1,5 @@
 from collections.abc import Iterator
+from dataclasses import dataclass
 
 import torch
 from torchgeo.datasets import GeoDataset, IntersectionDataset
@@ -54,3 +55,49 @@ class FileSampler(GeoSampler):
 
     def __len__(self) -> int:
         return len(self.index)
+
+
+@dataclass(frozen=True)
+class GridSampling:
+    """Sample training patches on a regular grid that covers each file.
+
+    Args:
+        overlap: Fraction of the patch size by which neighbouring patches overlap,
+            from 0 (patches touch) to just below 1.
+    """
+
+    overlap: float = 0.5
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.overlap < 1:
+            raise ValueError(
+                f"overlap must be at least 0 and below 1, got {self.overlap}."
+            )
+
+
+@dataclass(frozen=True)
+class RandomSampling:
+    """Sample training patches at random locations, newly drawn every epoch.
+
+    Args:
+        samples_per_epoch: Number of patches per epoch. If None, about the number of
+            non-overlapping patches that fit into the dataset.
+    """
+
+    samples_per_epoch: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.samples_per_epoch is not None and self.samples_per_epoch < 1:
+            raise ValueError(
+                f"samples_per_epoch must be at least 1, got {self.samples_per_epoch}."
+            )
+
+
+@dataclass(frozen=True)
+class FileSampling:
+    """Use each file as one sample, in every split (train, val, test and predict).
+
+    For datasets that were split into patches beforehand, one patch per file, e.g.
+    with :func:`eotorch.processing.generate_patches_from_files`. The patch size is
+    read from the files. Training files are shuffled every epoch.
+    """

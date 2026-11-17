@@ -349,7 +349,7 @@ class CustomCacheRasterDataset(RasterDataset, SamplePlotMixin):
         self.cache_size = cache_size
         # If True, a query matching the footprint of a file exactly reads only that
         # file, instead of merging every file it touches. Used for pre-patched data,
-        # see RasterDataModule(patch_size=None).
+        # see FileSampling.
         self.single_file_reads = False
         self._init_cache()
         # In order to avoid spamming "Skipping source" Log Messages in Rasterio Merge

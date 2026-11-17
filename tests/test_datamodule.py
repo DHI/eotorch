@@ -11,6 +11,7 @@ from eotorch.data.geodatasets import (
     PlottableClassificationDataset,
     PlottableImageDataset,
 )
+from eotorch.data.samplers import GridSampling, RandomSampling
 
 TEST_DATA = Path(__file__).parent / "data"
 
@@ -132,23 +133,56 @@ def test_datamodule_predict_setup(image_dataset):
     assert "image" in batch
 
 
-def test_datamodule_custom_sampler(segmentation_dataset):
+def test_datamodule_grid_sampling_overlap(segmentation_dataset):
+    def n_train_samples(sampling):
+        dm = RasterDataModule(
+            train_dataset=segmentation_dataset,
+            val_dataset=segmentation_dataset,
+            patch_size=32,
+            sampling=sampling,
+        )
+        dm.setup(stage="fit")
+        return len(dm.train_sampler)
+
+    default = RasterDataModule(
+        train_dataset=segmentation_dataset,
+        val_dataset=segmentation_dataset,
+        patch_size=32,
+    )
+    assert default.sampling == GridSampling(overlap=0.5)
+    assert n_train_samples(GridSampling(overlap=0.0)) < n_train_samples(
+        GridSampling(overlap=0.5)
+    )
+
+
+@pytest.mark.parametrize("overlap", [-0.1, 1.0])
+def test_grid_sampling_invalid_overlap_raises(overlap):
+    with pytest.raises(ValueError, match="overlap"):
+        GridSampling(overlap=overlap)
+
+
+def test_random_sampling_invalid_samples_per_epoch_raises():
+    with pytest.raises(ValueError, match="samples_per_epoch"):
+        RandomSampling(samples_per_epoch=0)
+
+
+def test_datamodule_random_sampling(segmentation_dataset):
     dm = RasterDataModule(
         train_dataset=segmentation_dataset,
         val_dataset=segmentation_dataset,
         batch_size=2,
         patch_size=32,
         num_workers=0,
-        train_sampler_config={"type": "RandomPatchSampler", "length": 10},
+        sampling=RandomSampling(samples_per_epoch=10),
     )
     dm.setup(stage="fit")
     loader = dm.train_dataloader()
     batches = list(loader)
-    # With length=10 and batch_size=2, we should get 5 batches
+    # With 10 samples per epoch and batch_size=2, we should get 5 batches
     assert len(batches) == 5
 
 
-def test_datamodule_batch_sampler(segmentation_dataset):
+def test_datamodule_drop_last(segmentation_dataset):
     dm = RasterDataModule(
         train_dataset=segmentation_dataset,
         val_dataset=segmentation_dataset,
@@ -156,12 +190,44 @@ def test_datamodule_batch_sampler(segmentation_dataset):
         patch_size=32,
         num_workers=0,
         drop_last=True,
-        train_sampler_config={"type": "RandomBatchGeoSampler", "length": 6},
+        sampling=RandomSampling(samples_per_epoch=7),
     )
     dm.setup(stage="fit")
     batches = list(dm.train_dataloader())
     assert len(batches) == 3
     assert all(batch["image"].shape[0] == 2 for batch in batches)
+
+
+def test_datamodule_sampling_saved_in_hparams(segmentation_dataset):
+    dm = RasterDataModule(
+        train_dataset=segmentation_dataset,
+        val_dataset=segmentation_dataset,
+        patch_size=32,
+        sampling=RandomSampling(samples_per_epoch=10),
+    )
+    assert dm.hparams["sampling"] == {
+        "strategy": "RandomSampling",
+        "samples_per_epoch": 10,
+    }
+
+
+def test_datamodule_invalid_sampling_raises(segmentation_dataset):
+    with pytest.raises(TypeError, match="sampling"):
+        RasterDataModule(
+            train_dataset=segmentation_dataset,
+            val_dataset=segmentation_dataset,
+            patch_size=32,
+            sampling={"type": "RandomPatchSampler", "length": 10},
+        )
+
+
+def test_datamodule_patch_size_none_raises(segmentation_dataset):
+    with pytest.raises(ValueError, match="FileSampling"):
+        RasterDataModule(
+            train_dataset=segmentation_dataset,
+            val_dataset=segmentation_dataset,
+            patch_size=None,
+        )
 
 
 def test_datamodule_tuple_patch_size(segmentation_dataset, image_dataset):
@@ -205,19 +271,6 @@ def test_dataset_args_of_torchgeo_datasets():
 def test_dataset_args_of_other_datasets_raise():
     with pytest.raises(TypeError, match="RasterDataset or IntersectionDataset"):
         get_dataset_args(object())
-
-
-def test_datamodule_invalid_sampler(segmentation_dataset):
-    dm = RasterDataModule(
-        train_dataset=segmentation_dataset,
-        val_dataset=segmentation_dataset,
-        batch_size=2,
-        patch_size=32,
-        num_workers=0,
-        train_sampler_config={"type": "NonExistentSampler"},
-    )
-    with pytest.raises(ValueError, match="not found in torchgeo.samplers"):
-        dm.setup(stage="fit")
 
 
 def test_preview_data_sampling(datamodule, monkeypatch):

@@ -16,7 +16,7 @@ from eotorch.data import (
     get_regression_dataset,
     get_segmentation_dataset,
 )
-from eotorch.data.samplers import FileSampler
+from eotorch.data.samplers import FileSampler, FileSampling
 from eotorch.processing import generate_patches_from_files
 
 TEST_DATA = Path(__file__).parent / "data"
@@ -266,7 +266,7 @@ def test_train_and_predict_on_patches(patch_dir, tmp_path):
         train_dataset=_patch_dataset(patch_dir / "train"),
         val_dataset=_patch_dataset(patch_dir / "val"),
         batch_size=4,
-        patch_size=None,
+        sampling=FileSampling(),
     )
     assert datamodule.hparams["patch_size"] == PATCH_SIZE
     datamodule.setup("fit")

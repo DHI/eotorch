@@ -98,7 +98,7 @@ def generate_patches_from_files(
     ``<image name>_<n>_label.tif``. Load them with
     ``get_segmentation_dataset(..., image_glob="*_image.tif", label_glob="*_label.tif")``
     (or get_regression_dataset) and use one patch per sample with
-    ``RasterDataModule(..., patch_size=None)``.
+    ``RasterDataModule(..., sampling=FileSampling())``.
 
     Vector labels can be rasterized onto the image grid first, e.g. with
     :class:`eotorch.processing.rasterize.FileSource`.
