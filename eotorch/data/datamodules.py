@@ -1,3 +1,5 @@
+from collections.abc import Sequence
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -10,29 +12,56 @@ from torchgeo.datasets import (
     GeoDataset,
     IntersectionDataset,
     RasterDataset,
-    stack_samples,
 )
+from torchgeo.samplers.utils import _to_tuple
 
-from eotorch.data.geodatasets import PlottableClassificationDataset, PlottableImageDataset
+from eotorch.data.geodatasets import (
+    CustomCacheRasterDataset,
+    PlottableClassificationDataset,
+)
+from eotorch.data.samplers import (
+    FileSampler,
+    FileSampling,
+    GridSampling,
+    RandomSampling,
+)
 from eotorch.data.splits import file_wise_split
 
 
-def get_dataset_args(ds):
+def normalize_image(
+    image: Tensor, mean: Sequence[float], std: Sequence[float]
+) -> Tensor:
+    """Normalize each band of a batch of images (B, C, H, W)."""
+    mean = torch.as_tensor(mean, dtype=torch.float32, device=image.device)
+    std = torch.as_tensor(std, dtype=torch.float32, device=image.device)
+    return (image.float() - mean.view(-1, 1, 1)) / std.view(-1, 1, 1)
+
+
+def get_dataset_args(ds: RasterDataset | IntersectionDataset) -> dict[str, Any]:
+    """Settings of a dataset, saved in the checkpoint so inference can load data the same way.
+
+    Plain TorchGeo datasets don't have the settings that only eotorch datasets have,
+    such as class_mapping, so these are left out or set to None.
+    """
     args = {}
     if isinstance(ds, RasterDataset):
         image_ds = ds
     elif isinstance(ds, IntersectionDataset):
-        image_ds: PlottableImageDataset = ds.datasets[0]
-        label_ds: PlottableClassificationDataset = ds.datasets[1]
+        image_ds, label_ds = ds.datasets
 
         args["labels_dir"] = label_ds.paths
         args["label_glob"] = label_ds.filename_glob
         args["label_transforms"] = label_ds.transforms
         args["label_filename_regex"] = label_ds.filename_regex
         args["label_date_format"] = label_ds.date_format
-        if label_ds.dataset_type == "classification":
+        if isinstance(label_ds, PlottableClassificationDataset):
             args["class_mapping"] = label_ds.class_mapping
-            args["reduce_zero_label"] = label_ds.reduce_zero_label
+            args["nodata_value"] = label_ds.nodata_value
+            args["label_offset"] = label_ds.label_offset
+    else:
+        raise TypeError(
+            f"Expected a RasterDataset or IntersectionDataset, got {type(ds).__name__}"
+        )
 
     args["images_dir"] = image_ds.paths
     args["all_image_bands"] = image_ds.all_bands
@@ -40,7 +69,7 @@ def get_dataset_args(ds):
     args["image_glob"] = image_ds.filename_glob
     args["bands_to_return"] = image_ds.bands
     args["image_transforms"] = image_ds.transforms
-    args["cache_size"] = image_ds.cache_size
+    args["cache_size"] = getattr(image_ds, "cache_size", None)
     args["image_separate_files"] = image_ds.separate_files
     args["image_filename_regex"] = image_ds.filename_regex
     args["image_date_format"] = image_ds.date_format
@@ -49,23 +78,30 @@ def get_dataset_args(ds):
     return args
 
 
-class SegmentationDataModule(GeoDataModule):
+class RasterDataModule(GeoDataModule):
     """
+    A data module for segmentation and regression on raster datasets.
 
-    A data module for segmentation tasks using GeoDataModule.
-    Inherits from GeoDataModule and provides additional generic functionality for
-    segmentation datasets.
-
-    The following customizations are made:
+    The following customizations are made to TorchGeo's GeoDataModule:
     - In TorchGeo's standard approach when initializing subclasses of GeoDataModule, the dataset is passed as a class type
       (e.g., RasterDataset, IntersectionDataset) instead of an instance. This is due to the fact that the dataset
       might have to be initialized on multiple different workers / nodes. However, this requires the user to
       provide all the necessary parameters for dataset initialization, which might not be intuitive for
       users who are not familiar with the library. Instead, we would like to allow users of the high-level
       interfaces of eotorch to first initialize a dataset, inspect some samples from it, and then just pass
-      the dataset instance directly to the data module. This behavior is supported by SegmentationDataModule.
+      the dataset instance directly to the data module. This behavior is supported by RasterDataModule.
     - Parameters such as the number of workers, persistent workers, and pin memory can be set modified when
         initializing the data module. This allows for more control over the data loading process.
+    - The dataset arguments are saved in the checkpoint, so inference can load data the same way.
+    - If no validation dataset is given, a file-wise validation split is held out from the
+      training dataset when the data module is created (see val_split).
+    - Images are normalized with the given mean and std instead of being divided by 255.
+      Augmentations are applied after that and can be set as in TorchGeo, e.g.
+      datamodule.train_aug = K.AugmentationSequential(K.RandomHorizontalFlip(),
+      data_keys=None, keepdim=True).
+    - Label pixels that augmentations pad, e.g. the corners after a rotation, are set
+      to -1 for classes and to NaN for regression targets, which the eotorch tasks
+      leave out of the loss and metrics.
 
     """
 
@@ -81,34 +117,67 @@ class SegmentationDataModule(GeoDataModule):
         persistent_workers: bool = False,
         pin_memory: bool = False,
         drop_last: bool = False,
-        train_sampler_config: dict[str, Any] = None,
+        sampling: GridSampling | RandomSampling | FileSampling | None = None,
+        mean: Sequence[float] | None = None,
+        std: Sequence[float] | None = None,
+        val_split: float | None = 0.1,
     ):
         """
-        Initialize the SegmentationDataModule.
+        Initialize the RasterDataModule.
 
         Args:
             train_dataset: The training dataset.
             val_dataset: The validation dataset (optional).
             test_dataset: The test dataset (optional).
             batch_size: The batch size for data loading.
-            patch_size: The size of the patches to be extracted from the images.
+            patch_size: The size of the patches to be extracted from the images, in
+                pixels. Not used with FileSampling, where it is read from the files.
             num_workers: The number of worker processes for data loading.
             persistent_workers: Whether to use persistent workers for data loading.
             pin_memory: Whether to pin memory for data loading.
             drop_last: Whether to drop the last incomplete batch. This is useful when
                 using models with BatchNorm layers that fail with batch_size=1.
-            train_sampler_config: The training sampler configuration (optional).
-                If None, a default sampler will be used. The default is a GridGeoSampler with the following parameters:
-                size=patch_size, stride=patch_size / 2.
-                The way to specify the default sampler would be:
-                train_sampler_config = {"type": "GridGeoSampler", "size": patch_size, "stride": patch_size / 2}
-
-                Patch size does not need to be specified here, as it is already a parameter of the data module.
-                It will be passed to the sampler as the 'size' arg automatically.
-                Any sampler from torchgeo.samplers can be used here. The sampler will be initialized with the following parameters.
-                Example of some other sampler configurations:
-                train_sampler_config = {"type": "RandomGeoSampler", "length": length}
+            sampling: How training patches are drawn, one of (from eotorch.data.samplers):
+                - GridSampling(overlap=0.5): a regular grid of patches covering each
+                  file, overlapping by the given fraction of the patch size. This is
+                  the default if sampling is None.
+                - RandomSampling(samples_per_epoch=5000): patches at random locations,
+                  newly drawn every epoch.
+                - FileSampling(): each file is one sample, for datasets that are
+                  already split into patches, one per file (e.g. with
+                  eotorch.processing.generate_patches_from_files). Each sample is read
+                  from its own file only (overlapping files are not merged). This
+                  applies to all splits.
+                Without FileSampling, validation and test patches are taken from a
+                grid without overlap, and prediction patches from a grid with half
+                overlap.
+            mean: Mean of each image band. If given together with std, images are
+                normalized on the fly as (image - mean) / std, which is also applied when
+                predicting with the trained model. See
+                eotorch.processing.normalize.band_statistics. For scaling from a range
+                (low, high) to (0, 1), use mean=low and std=high - low.
+            std: Standard deviation of each image band.
+            val_split: Fraction of training files to hold out for validation when
+                val_dataset is not given. The split is file-wise and seeded, so it is
+                reproducible. Set to None to require an explicit val_dataset.
         """
+        if sampling is None:
+            sampling = GridSampling()
+        if not isinstance(sampling, GridSampling | RandomSampling | FileSampling):
+            raise TypeError(
+                "sampling must be GridSampling, RandomSampling or FileSampling from "
+                f"eotorch.data.samplers, got {sampling!r}."
+            )
+        if patch_size is None and not isinstance(sampling, FileSampling):
+            raise ValueError(
+                "patch_size can't be None. For datasets that are already split into "
+                "patches, one per file, use sampling=FileSampling()."
+            )
+        self.sampling = sampling
+        if isinstance(sampling, FileSampling):
+            _, ymin, _, ymax = FileSampler(train_dataset).index.geometry.iloc[0].bounds
+            patch_size = round((ymax - ymin) / train_dataset.res[1])
+
         super().__init__(
             dataset_class=train_dataset.__class__,
             batch_size=batch_size,
@@ -120,12 +189,23 @@ class SegmentationDataModule(GeoDataModule):
         self.val_dataset = val_dataset
         self.test_dataset = test_dataset
         self.predict_dataset = predict_dataset
-        self.train_sampler_config = train_sampler_config
+        self.val_split = val_split
+        if val_dataset is None and train_dataset is not None:
+            self.train_dataset, self.val_dataset = self._split_off_val(
+                train_dataset, val_split
+            )
 
         self.persistent_workers = persistent_workers
         self.pin_memory = pin_memory
         self.drop_last = drop_last
-        self.aug = None
+        # Plain floats, to be saved in the checkpoint
+        mean = None if mean is None else [float(m) for m in mean]
+        std = None if std is None else [float(s) for s in std]
+        self.mean, self.std = mean, std
+        # Images are normalized with mean and std in on_after_batch_transfer. TorchGeo's
+        # default aug would also divide them by 255, so it is replaced by doing nothing.
+        # Augmentations can be set as in TorchGeo, e.g. as train_aug.
+        self.aug = torch.nn.Identity()
 
         def _format_dict_for_yaml(d: dict):
             out_dict = {}
@@ -137,13 +217,7 @@ class SegmentationDataModule(GeoDataModule):
             return out_dict
 
         if self.train_dataset is not None:
-            try:
-                dataset_args = get_dataset_args(self.train_dataset)
-            except Exception as e:
-                print(
-                    "Could not get dataset args from train_dataset, not saving to disk."
-                )
-                dataset_args = {}
+            dataset_args = get_dataset_args(self.train_dataset)
             self.save_hyperparameters(
                 {
                     "dataset_args": _format_dict_for_yaml(dataset_args),
@@ -153,9 +227,40 @@ class SegmentationDataModule(GeoDataModule):
                     "persistent_workers": persistent_workers,
                     "pin_memory": pin_memory,
                     "drop_last": drop_last,
-                    "train_sampler_config": train_sampler_config,
+                    "sampling": {
+                        "strategy": type(sampling).__name__,
+                        **asdict(sampling),
+                    },
+                    "mean": self.mean,
+                    "std": self.std,
+                    "val_split": val_split,
                 }
             )
+
+    @staticmethod
+    def _split_off_val(
+        dataset: GeoDataset, val_split: float | None
+    ) -> tuple[GeoDataset, GeoDataset]:
+        """Hold out a file-wise validation split from the training dataset."""
+        if val_split is None:
+            raise ValueError(
+                "No val_dataset given and val_split=None. Pass a val_dataset or set val_split."
+            )
+        n_total = len(dataset)
+        if n_total < 2:
+            raise ValueError(
+                f"No val_dataset given, and the training dataset has {n_total} file(s), "
+                "but a file-wise validation split needs at least 2. Pass a val_dataset, "
+                "e.g. created with eotorch.data.splits.file_wise_split or an ROI-based split."
+            )
+        train_dataset, val_dataset = file_wise_split(
+            dataset=dataset, ratios_or_counts=[1 - val_split, val_split]
+        )
+        print(
+            f"No val_dataset given: holding out {len(val_dataset)} of {n_total} files "
+            f"for validation (val_split={val_split})."
+        )
+        return train_dataset, val_dataset
 
     def setup(self, stage: str) -> None:
         """Set up datasets.
@@ -164,63 +269,60 @@ class SegmentationDataModule(GeoDataModule):
             stage: Either 'fit', 'validate', 'test', or 'predict'.
         """
 
-        if stage in ["fit"]:
-            if self.train_sampler_config is None:
-                self.train_sampler = samplers.GridGeoSampler(
-                    self.train_dataset, self.patch_size, self.patch_size / 2
-                )
-            else:
-                # Initialize the sampler based on the provided configuration
-                local_config = self.train_sampler_config.copy()
-                sampler_type = local_config.pop("type")
-                if hasattr(samplers, sampler_type):
-                    sampler_class = getattr(samplers, sampler_type)
-                    self.train_sampler = sampler_class(
-                        self.train_dataset,
-                        size=self.patch_size,
-                        **local_config,
-                    )
-                else:
-                    raise ValueError(
-                        f"Sampler type '{sampler_type}' not found in torchgeo.samplers."
-                    )
         if stage in ["fit", "validate"]:
-            if self.val_dataset is None:
-                print("No val dataset provided. Performing default train / val split.")
-                # TODO: Change this to > 10 once more splits are supported, for fewer files we probably want an ROI based split
-                number_of_files_threshold = 1
-                if len(self.train_dataset) > number_of_files_threshold:
-                    self.train_dataset, self.val_dataset = file_wise_split(
-                        dataset=self.train_dataset,
-                        ratios_or_counts=[0.9, 0.1],
-                    )
-                    print(
-                        f"""
-Since the number of files in the training dataset ({len(self.train_dataset)}) is greater than 
-{number_of_files_threshold}, a  train / val split based on files was performed.
-{len(self.val_dataset)} file(s) were assigned to the validation dataset.
-If this is not desired, please provide a val_dataset to the data module.
-                    """
-                    )
+            self.val_sampler = self._eval_sampler(self.val_dataset)
 
-            self.val_sampler = samplers.GridGeoSampler(
-                self.val_dataset, self.patch_size, self.patch_size
-            )
+        if stage in ["fit"]:
+            self.train_sampler = self._train_sampler()
+
         if stage in ["test"]:
-            self.test_sampler = samplers.GridGeoSampler(
-                self.test_dataset, self.patch_size, self.patch_size
-            )
+            self.test_sampler = self._eval_sampler(self.test_dataset)
         if stage in ["predict"]:
-            self.predict_sampler = samplers.GridGeoSampler(
-                self.predict_dataset, size=self.patch_size, stride=self.patch_size / 2
+            self.predict_sampler = self._eval_sampler(self.predict_dataset, overlap=0.5)
+
+    def _train_sampler(self):
+        sampling = self.sampling
+        if isinstance(sampling, FileSampling):
+            return self._file_sampler(self.train_dataset, shuffle=True)
+        if isinstance(sampling, GridSampling):
+            return samplers.GriddedPatchSampler(
+                self.train_dataset,
+                size=self.patch_size,
+                stride=self._stride(sampling.overlap),
             )
+        return samplers.RandomPatchSampler(
+            self.train_dataset,
+            size=self.patch_size,
+            length=sampling.samples_per_epoch,
+        )
+
+    def _stride(self, overlap: float) -> tuple[float, float]:
+        """The distance between neighbouring patches that overlap by the given fraction."""
+        height, width = _to_tuple(self.patch_size)
+        return height * (1 - overlap), width * (1 - overlap)
+
+    def _eval_sampler(self, dataset: GeoDataset, overlap: float = 0.0):
+        if isinstance(self.sampling, FileSampling):
+            return self._file_sampler(dataset)
+        return samplers.GriddedPatchSampler(
+            dataset, size=self.patch_size, stride=self._stride(overlap)
+        )
+
+    @staticmethod
+    def _file_sampler(dataset: GeoDataset, shuffle: bool = False) -> FileSampler:
+        # Each sample is a whole file, so read only that file instead of merging it
+        # with every file it touches, which is much faster.
+        for ds in getattr(dataset, "datasets", [dataset]):
+            if isinstance(ds, CustomCacheRasterDataset):
+                ds.single_file_reads = True
+        return FileSampler(dataset, shuffle=shuffle)
 
     def preview_data_sampling(
         self,
         max_samples: int = 100,
         map=None,
         count_labels: bool = False,
-        class_mapping: dict = None,
+        class_mapping: dict | None = None,
     ):
         """
         Visualize the dataset splits and their samplers on an interactive map.
@@ -233,20 +335,15 @@ If this is not desired, please provide a val_dataset to the data module.
                 Set to a reasonable value to keep the map responsive.
             map: Optional existing folium map to add the visualization to.
                 If None, a new map will be created.
-            count_labels: If True, also count and plot the distribution of label pixels
-                across all datasets as a pie chart.
-            class_mapping: Optional mapping of class values to names for labeling.
-                If None, will attempt to use class_mapping from datasets.
+            count_labels: If True, also count the label pixels of the samples and show
+                their distribution per dataset as pie charts.
+            class_mapping: Optional mapping of class values to names for the pie charts.
+                If None, the class_mapping of the training labels is used.
 
         Returns:
-            If count_labels is False:
-                folium.Map: The interactive map with dataset boundaries and samplers visualized.
-            If count_labels is True:
-                tuple: (folium.Map, dict) containing the map and dictionary of pie chart figures per dataset.
+            folium.Map: The interactive map with dataset boundaries and samplers visualized.
         """
-        import matplotlib.pyplot as plt
-
-        from eotorch.plot import plot_samplers_on_map
+        from eotorch.plot import plot_label_distribution, plot_samplers_on_map
 
         # Ensure samplers are set up
         if self.train_sampler is None:
@@ -278,112 +375,7 @@ If this is not desired, please provide a val_dataset to the data module.
                 "Make sure to initialize the data module properly."
             )
 
-        # If no class_mapping is provided but count_labels is True,
-        # try to get it from datasets
-        if class_mapping is None and count_labels:
-            for dataset in datasets:
-                if hasattr(dataset, "class_mapping"):
-                    class_mapping = dataset.class_mapping
-                if hasattr(dataset, "datasets"):
-                    # If it's an IntersectionDataset, get the class mapping from the label dataset
-                    for ds in dataset.datasets:
-                        if hasattr(ds, "class_mapping"):
-                            class_mapping = ds.class_mapping
-                            break
-                    break
-
-        # Get the map with samplers (and label counts if requested)
-        if count_labels:
-            map_with_samplers, label_counts_per_dataset = plot_samplers_on_map(
-                datasets=datasets,
-                samplers=samplers,
-                map=map,
-                max_samples=max_samples,
-                dataset_names=names,
-                count_labels=True,
-            )
-
-            # First, collect all unique class values across all datasets to create a consistent color map
-            all_class_values = set()
-            for label_counts in label_counts_per_dataset.values():
-                all_class_values.update(label_counts.keys())
-
-            # Create a consistent color map for all classes
-            import matplotlib.colors as mcolors
-
-            # Get a colormap with distinct colors
-            color_list = list(mcolors.TABLEAU_COLORS.values())
-            # Extend the color list if we have more classes than colors
-            while len(color_list) < len(all_class_values):
-                color_list.extend(mcolors.TABLEAU_COLORS.values())
-
-            # Map each class value to a specific color
-            class_color_map = {
-                val: color_list[i % len(color_list)]
-                for i, val in enumerate(sorted(all_class_values))
-            }
-
-            # Get datasets with valid label counts
-            valid_datasets = [
-                name for name, counts in label_counts_per_dataset.items() if counts
-            ]
-
-            if valid_datasets:
-                # Create a single figure with subfigures for each dataset
-                n_datasets = len(valid_datasets)
-                fig, axes = plt.subplots(1, n_datasets, figsize=(n_datasets * 6, 6))
-
-                # Handle case where there's only one dataset (axes won't be an array)
-                if n_datasets == 1:
-                    axes = [axes]
-
-                # Function for autopct display
-                def make_autopct(values):
-                    def autopct(pct):
-                        total = sum(values)
-                        val = int(round(pct * total / 100.0))
-                        return f"{pct:.1f}%\n({val:,})"
-
-                    return autopct
-
-                # Create pie charts for each dataset
-                for i, dataset_name in enumerate(valid_datasets):
-                    label_counts = label_counts_per_dataset[dataset_name]
-
-                    # Get labels, values and colors
-                    labels = []
-                    values = []
-                    colors = []
-
-                    for label_val, count in label_counts.items():
-                        if class_mapping and label_val in class_mapping:
-                            label_name = class_mapping[label_val]
-                        else:
-                            label_name = f"Class {label_val}"
-
-                        labels.append(label_name)
-                        values.append(count)
-                        colors.append(class_color_map[label_val])
-
-                    # Create pie chart on the appropriate subfigure
-                    if values:
-                        axes[i].pie(
-                            values,
-                            labels=labels,
-                            autopct=make_autopct(values),
-                            shadow=False,
-                            startangle=90,
-                            colors=colors,
-                        )
-                        axes[i].axis("equal")
-                        axes[i].set_title(f"Label Distribution - {dataset_name}")
-
-                plt.tight_layout()
-                plt.show()
-            else:
-                print("No labels found in datasets. Returning only the map.")
-            return map_with_samplers
-        else:
+        if not count_labels:
             return plot_samplers_on_map(
                 datasets=datasets,
                 samplers=samplers,
@@ -392,9 +384,23 @@ If this is not desired, please provide a val_dataset to the data module.
                 dataset_names=names,
             )
 
+        map_with_samplers, label_counts_per_dataset = plot_samplers_on_map(
+            datasets=datasets,
+            samplers=samplers,
+            map=map,
+            max_samples=max_samples,
+            dataset_names=names,
+            count_labels=True,
+        )
+        if class_mapping is None and isinstance(datasets[0], IntersectionDataset):
+            class_mapping = getattr(datasets[0].datasets[1], "class_mapping", None)
+        plot_label_distribution(label_counts_per_dataset, class_mapping)
+        return map_with_samplers
+
     def _dataloader_factory(self, split: str) -> DataLoader[dict[str, Tensor]]:
         """
-        Same as GeoDataModule._dataloader_factory but allows for customization of dataloader behavior.
+        Same as GeoDataModule._dataloader_factory, but with the persistent_workers,
+        pin_memory and drop_last settings of this data module.
 
         Args:
             split: Either 'train', 'val', 'test', or 'predict'.
@@ -407,355 +413,44 @@ If this is not desired, please provide a val_dataset to the data module.
                 dataset or sampler, or if the dataset or sampler has length 0.
         """
         dataset = self._valid_attribute(f"{split}_dataset", "dataset")
-        sampler = self._valid_attribute(
-            f"{split}_batch_sampler", f"{split}_sampler", "batch_sampler", "sampler"
-        )
+        sampler = self._valid_attribute(f"{split}_sampler", "sampler")
         batch_size = self._valid_attribute(f"{split}_batch_size", "batch_size")
-
-        if isinstance(sampler, samplers.BatchGeoSampler):
-            batch_size = 1
-            batch_sampler = sampler
-            sampler = None
-        else:
-            batch_sampler = None
 
         return DataLoader(
             dataset=dataset,
             batch_size=batch_size,
             sampler=sampler,
-            batch_sampler=batch_sampler,
             num_workers=self.num_workers,
             collate_fn=self.collate_fn,
             persistent_workers=self.persistent_workers,
             pin_memory=self.pin_memory,
-            drop_last=self.drop_last if split == "train" else False,
+            drop_last=split == "train" and self.drop_last,
         )
-
-    def transfer_batch_to_device(
-        self, batch: dict[str, Tensor], device: torch.device, dataloader_idx: int = None
-    ) -> dict[str, Tensor]:
-        """Transfer batch to device.
-
-        Defines how custom data types are moved to the target device.
-
-        Args:
-            batch: A batch of data that needs to be transferred to a new device.
-            device: The target device as defined in PyTorch.
-            dataloader_idx: The index of the dataloader to which the batch belongs.
-
-        Returns:
-            A reference to the data on the new device.
-        """
-        # Non-Tensor values cannot be moved to a device
-
-        for key in {"image_filepaths", "mask_filepaths"}:
-            if key in batch:
-                del batch[key]
-
-        batch = super().transfer_batch_to_device(batch, device, dataloader_idx)
-        return batch
 
     def on_after_batch_transfer(
         self, batch: dict[str, Tensor], dataloader_idx: int
     ) -> dict[str, Tensor]:
-        """Apply batch augmentations to the batch after it is transferred to the device.
+        """Normalize the images after they are transferred to the device, then apply
+        the augmentations of TorchGeo's data module."""
+        if self.mean is not None:
+            batch["image"] = normalize_image(batch["image"], self.mean, self.std)
+        if "mask" not in batch:
+            return super().on_after_batch_transfer(batch, dataloader_idx)
 
-        Args:
-            batch: A batch of data that needs to be altered or augmented.
-            dataloader_idx: The index of the dataloader to which the batch belongs.
+        # Augmentations such as rotations pad the mask with 0, which would be read as
+        # class 0 or as a target of 0. An extra channel of ones is augmented with the
+        # mask, to tell afterwards which pixels were padded.
+        mask = batch["mask"]
+        has_channels = mask.ndim == 4
+        channels = mask if has_channels else mask.unsqueeze(1)
+        inside = torch.ones_like(channels[:, :1])
+        batch["mask"] = torch.cat([channels, inside], dim=1)
 
-        Returns:
-            A batch of data.
-        """
-        # if self.trainer:
-        #     if self.trainer.training:
-        #         split = "train"
-        #     elif self.trainer.validating or self.trainer.sanity_checking:
-        #         split = "val"
-        #     elif self.trainer.testing:
-        #         split = "test"
-        #     elif self.trainer.predicting:
-        #         split = "predict"
+        batch = super().on_after_batch_transfer(batch, dataloader_idx)
 
-        #     aug = self._valid_attribute(f"{split}_aug", "aug")
-        #     batch = aug(batch)
-
-        return batch
-
-
-class RegressionDataModule(GeoDataModule):
-    """
-    A data module for regression tasks using GeoDataModule.
-    Inherits from GeoDataModule and provides additional generic functionality for
-    regression datasets.
-
-    The following customizations are made:
-    - In TorchGeo's standard approach when initializing subclasses of GeoDataModule, the dataset is passed as a class type
-      (e.g., RasterDataset, IntersectionDataset) instead of an instance. This is due to the fact that the dataset
-      might have to be initialized on multiple different workers / nodes. However, this requires the user to
-      provide all the necessary parameters for dataset initialization, which might not be intuitive for
-      users who are not familiar with the library. Instead, we would like to allow users of the high-level
-      interfaces of eotorch to first initialize a dataset, inspect some samples from it, and then just pass
-      the dataset instance directly to the data module. This behavior is supported by RegressionDataModule.
-    - Parameters such as the number of workers, persistent workers, and pin memory can be set modified when
-        initializing the data module. This allows for more control over the data loading process.
-    """
-
-    def __init__(
-        self,
-        train_dataset: type[GeoDataset] | RasterDataset | IntersectionDataset = None,
-        val_dataset: type[GeoDataset] | RasterDataset | IntersectionDataset = None,
-        test_dataset: type[GeoDataset] | RasterDataset | IntersectionDataset = None,
-        predict_dataset: type[GeoDataset] | RasterDataset | IntersectionDataset = None,
-        batch_size: int = 1,
-        patch_size: int | tuple[int, int] = 64,
-        num_workers: int = 0,
-        persistent_workers: bool = False,
-        pin_memory: bool = False,
-        train_sampler_config: dict[str, Any] = None,
-        **kwargs: Any,
-    ):
-        """Initialize the RegressionDataModule.
-
-        Args:
-            train_dataset: The training dataset.
-            val_dataset: The validation dataset (optional).
-            test_dataset: The test dataset (optional).
-            batch_size: The batch size for data loading.
-            patch_size: The size of the patches to be extracted from the images.
-            num_workers: The number of worker processes for data loading.
-            persistent_workers: Whether to use persistent workers for data loading.
-            pin_memory: Whether to pin memory for data loading.
-            train_sampler_config: The training sampler configuration (optional).
-                If None, a default sampler will be used. The default is a GridGeoSampler with the following parameters:
-                size=patch_size, stride=patch_size / 2.
-                Any sampler from torchgeo.samplers can be used here.
-            **kwargs: Additional keyword arguments.
-        """
-        super().__init__(
-            dataset_class=train_dataset.__class__,
-            batch_size=batch_size,
-            patch_size=patch_size,
-            num_workers=num_workers,
-        )
-
-        self.train_dataset = train_dataset
-        self.val_dataset = val_dataset
-        self.test_dataset = test_dataset
-        self.predict_dataset = predict_dataset
-        self.train_sampler_config = train_sampler_config
-
-        self.persistent_workers = persistent_workers
-        self.pin_memory = pin_memory
-        self.aug = None
-
-        def _format_dict_for_yaml(d: dict):
-            out_dict = {}
-            for k, v in d.items():
-                if isinstance(v, Path):
-                    out_dict[k] = str(v)
-                else:
-                    out_dict[k] = v
-            return out_dict
-
-        if self.train_dataset is not None:
-            try:
-                dataset_args = get_dataset_args(self.train_dataset)
-            except Exception as e:
-                print(
-                    "Could not get dataset args from train_dataset, not saving to disk."
-                )
-                dataset_args = {}
-            self.save_hyperparameters(
-                {
-                    "dataset_args": _format_dict_for_yaml(dataset_args),
-                    "batch_size": batch_size,
-                    "patch_size": patch_size,
-                    "num_workers": num_workers,
-                    "persistent_workers": persistent_workers,
-                    "pin_memory": pin_memory,
-                    "train_sampler_config": train_sampler_config,
-                }
-            )
-
-    def setup(self, stage: str) -> None:
-        """Set up datasets.
-
-        Args:
-            stage: Either 'fit', 'validate', 'test', or 'predict'.
-        """
-        if stage in ["fit"]:
-            if self.train_sampler_config is None:
-                self.train_sampler = samplers.GridGeoSampler(
-                    self.train_dataset, self.patch_size, self.patch_size / 2
-                )
-            else:
-                local_config = self.train_sampler_config.copy()
-                sampler_type = local_config.pop("type")
-                if hasattr(samplers, sampler_type):
-                    sampler_class = getattr(samplers, sampler_type)
-                    self.train_sampler = sampler_class(
-                        self.train_dataset,
-                        size=self.patch_size,
-                        **local_config,
-                    )
-                else:
-                    raise ValueError(
-                        f"Sampler type '{sampler_type}' not found in torchgeo.samplers."
-                    )
-
-        if stage in ["fit", "validate"]:
-            if self.val_dataset is None:
-                print("No val dataset provided. Performing default train / val split.")
-                number_of_files_threshold = 1
-                if len(self.train_dataset) > number_of_files_threshold:
-                    self.train_dataset, self.val_dataset = file_wise_split(
-                        dataset=self.train_dataset,
-                        ratios_or_counts=[0.9, 0.1],
-                    )
-                    print(
-                        f"""
-                        Since the number of files in the training dataset ({len(self.train_dataset)}) is greater than 
-                        {number_of_files_threshold}, a train / val split based on files was performed.
-                        {len(self.val_dataset)} file(s) were assigned to the validation dataset.
-                        If this is not desired, please provide a val_dataset to the data module.
-                        """
-                    )
-
-            self.val_sampler = samplers.GridGeoSampler(
-                self.val_dataset, self.patch_size, self.patch_size
-            )
-
-        if stage in ["test"]:
-            self.test_sampler = samplers.GridGeoSampler(
-                self.test_dataset, self.patch_size, self.patch_size
-            )
-
-        if stage in ["predict"]:
-            self.predict_sampler = samplers.GridGeoSampler(
-                self.predict_dataset, size=self.patch_size, stride=self.patch_size / 2
-            )
-
-    def preview_data_sampling(
-        self,
-        max_samples: int = 100,
-        map=None,
-    ):
-        """Visualize the dataset splits and their samplers on an interactive map.
-
-        This method allows users to verify their data splits before training by
-        displaying the datasets and how they are sampled using the configured samplers.
-
-        Args:
-            max_samples: Maximum number of samples to display per dataset.
-                Set to a reasonable value to keep the map responsive.
-            map: Optional existing folium map to add the visualization to.
-                If None, a new map will be created.
-
-        Returns:
-            folium.Map: The interactive map with dataset boundaries and samplers visualized.
-        """
-        from eotorch.plot import plot_samplers_on_map
-
-        if self.train_sampler is None:
-            print("Setting up samplers for visualization...")
-            self.setup(stage="fit")
-            if self.test_dataset is not None and self.test_sampler is None:
-                self.setup(stage="test")
-
-        datasets, samplers, names = [], [], []
-        if self.train_dataset is not None and self.train_sampler is not None:
-            datasets.append(self.train_dataset)
-            samplers.append(self.train_sampler)
-            names.append("Train")
-
-        if self.val_dataset is not None and self.val_sampler is not None:
-            datasets.append(self.val_dataset)
-            samplers.append(self.val_sampler)
-            names.append("Validation")
-
-        if self.test_dataset is not None and self.test_sampler is not None:
-            datasets.append(self.test_dataset)
-            samplers.append(self.test_sampler)
-            names.append("Test")
-
-        if not datasets:
-            raise ValueError(
-                "No datasets with samplers available. "
-                "Make sure to initialize the data module properly."
-            )
-
-        return plot_samplers_on_map(
-            datasets=datasets,
-            samplers=samplers,
-            map=map,
-            max_samples=max_samples,
-            dataset_names=names,
-        )
-
-    def _dataloader_factory(self, split: str) -> DataLoader[dict[str, Tensor]]:
-        """Create a data loader for a specific split.
-
-        Args:
-            split: Either 'train', 'val', 'test', or 'predict'.
-
-        Returns:
-            A collection of data loaders specifying samples.
-        """
-        dataset = self._valid_attribute(f"{split}_dataset", "dataset")
-        sampler = self._valid_attribute(
-            f"{split}_batch_sampler", f"{split}_sampler", "batch_sampler", "sampler"
-        )
-        batch_size = self._valid_attribute(f"{split}_batch_size", "batch_size")
-
-        if isinstance(sampler, samplers.BatchGeoSampler):
-            batch_size = 1
-            batch_sampler = sampler
-            sampler = None
-        else:
-            batch_sampler = None
-
-        return DataLoader(
-            dataset=dataset,
-            batch_size=batch_size,
-            sampler=sampler,
-            batch_sampler=batch_sampler,
-            num_workers=self.num_workers,
-            collate_fn=self.collate_fn,
-            persistent_workers=self.persistent_workers,
-            pin_memory=self.pin_memory,
-        )
-
-    def transfer_batch_to_device(
-        self, batch: dict[str, Tensor], device: torch.device, dataloader_idx: int = None
-    ) -> dict[str, Tensor]:
-        """Transfer batch to device.
-
-        Args:
-            batch: A batch of data that needs to be transferred to a new device.
-            device: The target device as defined in PyTorch.
-            dataloader_idx: The index of the dataloader to which the batch belongs.
-
-        Returns:
-            A reference to the data on the new device.
-        """
-        for key in {"image_filepaths", "mask_filepaths"}:
-            if key in batch:
-                del batch[key]
-
-        batch = super().transfer_batch_to_device(batch, device, dataloader_idx)
-        return batch
-
-    def on_after_batch_transfer(
-        self, batch: dict[str, Tensor], dataloader_idx: int
-    ) -> dict[str, Tensor]:
-        """Apply batch augmentations after transfer to device.
-
-        Args:
-            batch: A batch of data that needs to be altered or augmented.
-            dataloader_idx: The index of the dataloader to which the batch belongs.
-
-        Returns:
-            A batch of data.
-        """
+        channels, inside = batch["mask"][:, :-1], batch["mask"][:, -1:]
+        # The values of pixels without a label, as in the eotorch datasets
+        no_label = torch.nan if channels.is_floating_point() else -1
+        channels = channels.masked_fill(inside == 0, no_label)
+        batch["mask"] = channels if has_channels else channels.squeeze(1)
         return batch

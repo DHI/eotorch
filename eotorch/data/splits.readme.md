@@ -14,15 +14,11 @@ You can split the dataset randomly based on ratios or counts.
 from eotorch.data import splits
 
 # Split into 80% train, 20% validation
-train_ds, val_ds = splits.file_wise_split(
-    dataset=ds, 
-    ratios_or_counts=[0.8, 0.2]
-)
+train_ds, val_ds = splits.file_wise_split(dataset=ds, ratios_or_counts=[0.8, 0.2])
 
 # Split into 70% train, 15% validation, 15% test
 train_ds, val_ds, test_ds = splits.file_wise_split(
-    dataset=ds, 
-    ratios_or_counts=[0.7, 0.15, 0.15]
+    dataset=ds, ratios_or_counts=[0.7, 0.15, 0.15]
 )
 ```
 
@@ -36,19 +32,14 @@ val_files = ["/path/to/image_1.tif", "/path/to/image_2.tif"]
 test_files = ["/path/to/image_3.tif"]
 
 train_ds, val_ds, test_ds = splits.file_wise_split(
-    dataset=ds,
-    val_img_files=val_files,
-    test_img_files=test_files
+    dataset=ds, val_img_files=val_files, test_img_files=test_files
 )
 ```
 
 **Using glob patterns:**
 ```python
 # Use all images matching "2023*" for validation
-train_ds, val_ds = splits.file_wise_split(
-    dataset=ds,
-    val_img_glob="**/2023*.tif"
-)
+train_ds, val_ds = splits.file_wise_split(dataset=ds, val_img_glob="**/2023*.tif")
 ```
 
 ## 2. AOI-based Split (`aoi_split`)
@@ -68,15 +59,14 @@ from eotorch.data import splits
 train_ds, val_ds = splits.aoi_split(
     dataset=ds,
     aoi_files="validation_zones.geojson",
-    crs="EPSG:4326",        # CRS of the AOI file (default: EPSG:4326)
-    buffer_size_metres=100  # Optional buffer
+    buffer_size_metres=100,  # Optional buffer
 )
 ```
 
 ### Parameters
 
 - **`aoi_files`**: Single filepath or sequence of filepaths to shapefile or GeoJSON files containing the AOI polygons.
-- **`crs`**: The CRS of the input AOI geometries (e.g., `"EPSG:4326"` for lat/lon). The function will automatically transform AOI bounds to match the dataset's CRS. Default is `"EPSG:4326"`.
+- **`crs`**: The CRS of the coordinates in the AOI files (e.g., `"EPSG:32634"`). AOIs are always reprojected to the dataset's CRS, using the CRS declared in each file. Only set `crs` for files that declare no CRS or the wrong one, e.g. GeoJSON files with projected coordinates (GeoJSON files without CRS information are always read as `"EPSG:4326"`); it overrides the CRS declared in the files. Default is `None`: use the declared CRS, or the dataset's CRS for files that declare none.
 - **`buffer_size_metres`**: Size of buffer in meters to apply around AOIs. Default is 0.
 
 ### Buffer Zone
@@ -86,17 +76,16 @@ The `buffer_size_metres` parameter allows you to define a buffer zone around you
 
 ### Splitting Logic
 
-Instead of using a simple geometric difference (which can create complex polygons with holes that are hard to index), the function splits the original dataset geometry into up to 4 rectangular boxes around the subtract geometry (AOI):
+Instead of using a simple geometric difference (which can create complex polygons with holes), each footprint of the dataset is split into up to 4 rectangular boxes around the AOI: one left and one right of it over the full height, and one below and one above it in between:
 
 ```text
-┌─────────────────────────────────┐
-│           TOP BOX               │
-├─────┬───────────────────┬───────┤
-│LEFT │   SUBTRACT_GEOM   │ RIGHT │
-│ BOX │       (AOI)       │  BOX  │
-├─────┴───────────────────┴───────┤
-│          BOTTOM BOX             │
-└─────────────────────────────────┐
+┌───────┬─────────────┬───────┐
+│       │   TOP BOX   │       │
+│       ├─────────────┤       │
+│ LEFT  │     AOI     │ RIGHT │
+│  BOX  ├─────────────┤  BOX  │
+│       │ BOTTOM BOX  │       │
+└───────┴─────────────┴───────┘
 ```
 
-This ensures that the resulting training dataset consists of valid rectangular bounds suitable for R-tree indexing.
+This ensures that the resulting training dataset consists of rectangular footprints, which the samplers can draw patches from.

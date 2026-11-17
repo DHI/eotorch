@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, List, Tuple
+from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
-import torch.nn as nn
+from torch import nn
 
 if TYPE_CHECKING:
     import torch
@@ -13,11 +14,11 @@ class Conv2d(nn.Module):
         self,
         in_channels: int,
         out_channels: int,
-        kernel_size: Tuple | int = (3, 3),
-        stride: Tuple | int = 1,
-        padding: Tuple | int | str = "same",
+        kernel_size: tuple | int = (3, 3),
+        stride: tuple | int = 1,
+        padding: tuple | int | str = "same",
         norm_layer: nn.Module = nn.BatchNorm2d,
-        norm_momentum: float = 0.1,  # Add momentum parameter
+        norm_momentum: float = 0.1,
         bn: bool = True,
         relu: bool = True,
         dropout_rate: float = 0.0,
@@ -36,9 +37,7 @@ class Conv2d(nn.Module):
             padding=padding,
             **kwargs,
         )
-        self.batchnorm = norm_layer(
-            num_features=out_channels, momentum=norm_momentum
-        )  # Pass momentum
+        self.batchnorm = norm_layer(num_features=out_channels, momentum=norm_momentum)
 
     def forward(self, inputs: torch.Tensor):
         x = self.conv(inputs)
@@ -56,9 +55,9 @@ class ResBlock(nn.Module):
         self,
         in_channels: int,
         out_channels: int,
-        kernel_sizes: List[int] | List[tuple] = [3, 3, 1],
+        kernel_sizes: Sequence[int | tuple[int, int]] = (3, 3, 1),
         norm_layer: nn.Module = nn.BatchNorm2d,
-        norm_momentum: float = 0.1,  # Add momentum parameter
+        norm_momentum: float = 0.1,
         **kwargs,
     ):
         super().__init__()
@@ -74,7 +73,7 @@ class ResBlock(nn.Module):
                 relu=False,
                 bn=True,
                 norm_layer=norm_layer,
-                norm_momentum=norm_momentum,  # Pass momentum
+                norm_momentum=norm_momentum,
                 **kwargs,
             )
 
@@ -86,7 +85,7 @@ class ResBlock(nn.Module):
             relu=True,
             bn=True,
             norm_layer=norm_layer,
-            norm_momentum=norm_momentum,  # Pass momentum
+            norm_momentum=norm_momentum,
             **kwargs,
         )
         self.conv2 = Conv2d(
@@ -96,7 +95,7 @@ class ResBlock(nn.Module):
             relu=True,
             bn=True,
             norm_layer=norm_layer,
-            norm_momentum=norm_momentum,  # Pass momentum
+            norm_momentum=norm_momentum,
             **kwargs,
         )
         self.conv3 = Conv2d(
@@ -106,7 +105,7 @@ class ResBlock(nn.Module):
             relu=False,
             bn=True,
             norm_layer=norm_layer,
-            norm_momentum=norm_momentum,  # Pass momentum
+            norm_momentum=norm_momentum,
             **kwargs,
         )
         self.ReLU = nn.ReLU(inplace=True)
@@ -120,53 +119,4 @@ class ResBlock(nn.Module):
 
         x = x + shortcut  # Add the shortcut connection
         x = self.ReLU(x)  # Apply final ReLU activation
-        return x
-
-
-class SeparableConv2d(nn.Module):
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        kernel_size: Tuple | int = (3, 3),
-        stride: Tuple | int = 1,
-        padding: Tuple | int | str = "same",
-        norm_layer: nn.Module = nn.BatchNorm2d,
-        norm_momentum: float = 0.1,  # Add momentum parameter
-        bn: bool = True,
-        relu: bool = False,
-        **kwargs,
-    ):
-        super().__init__()
-        self.bn = bn
-        self.relu = relu
-
-        self.depthwise = nn.Conv2d(
-            in_channels,
-            in_channels,  # Corrected for depthwise convolution
-            groups=in_channels,  # Added groups for depthwise
-            kernel_size=kernel_size,
-            padding=padding,
-            stride=stride,
-            **kwargs,
-        )
-        self.pointwise = nn.Conv2d(
-            in_channels,
-            out_channels,
-            kernel_size=(1, 1),
-            stride=1,
-            padding=0,  # Corrected padding
-        )
-        self.batchnorm = norm_layer(
-            num_features=out_channels, momentum=norm_momentum
-        )  # Pass momentum
-        self.ReLU = nn.ReLU(inplace=True)
-
-    def forward(self, inputs: torch.Tensor):
-        x = self.depthwise(inputs)
-        x = self.pointwise(x)
-        if self.bn:
-            x = self.batchnorm(x)
-        if self.relu:
-            x = self.ReLU(x)
         return x

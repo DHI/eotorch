@@ -2,12 +2,12 @@ from pathlib import Path
 
 import folium
 import geopandas as gpd
+import matplotlib.colors as mcolors
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
-import pyproj
+import pandas as pd
 import rasterio as rst
-import torch
 from folium.plugins import Draw, MeasureControl
 from folium.raster_layers import ImageOverlay
 from matplotlib import cm
@@ -20,30 +20,28 @@ from torchgeo.datasets import IntersectionDataset
 from eotorch import utils
 
 
-def plot_raster_histogram(raster_file_path: str | Path, band: int = 1, bins: int = 256):
+def _files_at(dataset, geom, interval) -> str:
     """
-    Plot a histogram of pixel values for a specific band in a raster file.
-    Args:
-        raster_file_path: Path to the raster file
-        band: Band number to plot (default is 1)
-        bins: Number of bins for the histogram (default is 256)
+    Names of the files of a dataset that make up the index entry with footprint
+    `geom` and time interval `interval`. For an intersection of datasets, the files
+    of each dataset are joined with " + ", e.g. "image_3.tif + label_3.tif".
     """
-    with rst.open(raster_file_path) as src:
-        # Read the specified band
-        data = src.read(band)
+    if hasattr(dataset, "datasets"):
+        return " + ".join(_files_at(ds, geom, interval) for ds in dataset.datasets)
+    index = dataset.index
+    if "filepath" not in index.columns:
+        return ""
+    point = geom.representative_point()
+    match = index.geometry.contains(point) & index.index.overlaps(interval)
+    return ", ".join(sorted(Path(f).name for f in index.filepath[match]))
 
-        # Flatten the data and remove NaN values
-        data_flat = data.flatten()
-        data_flat = data_flat[~np.isnan(data_flat)]
 
-        # Plot the histogram
-        plt.figure(figsize=(10, 6))
-        plt.hist(data_flat, bins=bins, color="blue", alpha=0.7)
-        plt.title(f"Histogram of Band {band} in {raster_file_path}")
-        plt.xlabel("Pixel Value")
-        plt.ylabel("Frequency")
-        plt.grid()
-        plt.show()
+def _format_interval(interval) -> str:
+    """Date range of an index entry, or "" for the default unbounded interval."""
+    if interval.left == pd.Timestamp.min and interval.right == pd.Timestamp.max:
+        return ""
+    start, end = (f"{t:%Y-%m-%d}" for t in (interval.left, interval.right))
+    return start if start == end else f"{start} to {end}"
 
 
 def plot_dataset_index(dataset, map=None, color="olive", name=None):
@@ -61,7 +59,6 @@ def plot_dataset_index(dataset, map=None, color="olive", name=None):
     """
     if map is None:
         map = folium.Map()
-        # map = folium.Map(crs="EPSG4326")
         # Assume a new map needs controls
         has_draw_control, has_measure_control = False, False
     else:
@@ -91,9 +88,14 @@ def plot_dataset_index(dataset, map=None, color="olive", name=None):
 
     feature_group = folium.FeatureGroup(name=feature_group_name, show=True)
 
-    style_dict = dict(
-        fill=True, fillColor=color, fillOpacity=0.3, weight=2, opacity=0.7, color=color
-    )
+    style_dict = {
+        "fill": True,
+        "fillColor": color,
+        "fillOpacity": 0.3,
+        "weight": 2,
+        "opacity": 0.7,
+        "color": color,
+    }
 
     current_bounds = None
     index_gdf = dataset.index
@@ -102,62 +104,27 @@ def plot_dataset_index(dataset, map=None, color="olive", name=None):
         print(
             f"Warning: No objects found in dataset '{name}'. Skipping bounds fitting and GeoJson addition."
         )
-        geoms_list = []
     else:
-        geoms_list = index_gdf.geometry.tolist()
-        bounds = index_gdf.total_bounds  # returns [minx, miny, maxx, maxy]
-        current_bounds = tuple(bounds)
+        current_bounds = tuple(index_gdf.total_bounds)  # [minx, miny, maxx, maxy]
 
-    if (
-        current_bounds and geoms_list
-    ):  # Only add GeoJson if bounds were determined and objects exist
-        for geom in geoms_list:  # Iterate over the geometries
-            try:  # Add try-except for individual geometry processing
-                # Get original bounds before transformation
-                original_bounds = geom.bounds  # (minx, miny, maxx, maxy)
+        rows = list(zip(index_gdf.geometry, index_gdf.index))
+        footprints = gpd.GeoDataFrame(
+            {"file": [_files_at(dataset, geom, interval) for geom, interval in rows]},
+            geometry=index_gdf.geometry.values,
+            crs=dataset.crs,
+        ).to_crs(4326)
+        fields, aliases = ["file"], ["File"]
+        dates = [_format_interval(interval) for interval in index_gdf.index]
+        if any(dates):
+            footprints["date"] = dates
+            fields.append("date")
+            aliases.append("Date")
 
-                # Convert to lat/lon if needed
-                if dataset.crs != 4326:  # Assuming CRS 4326 is WGS84
-                    # Transform geometry to WGS84 for folium
-                    # gdf_temp = gpd.GeoDataFrame([1], geometry=[geom], crs="EPSG:4326")
-                    gdf_temp = gpd.GeoDataFrame([1], geometry=[geom], crs=dataset.crs)
-                    gdf_temp = gdf_temp.to_crs(4326)
-                    geom_transformed = gdf_temp.geometry.iloc[0]
-                    transformed_bounds = geom_transformed.bounds
-                else:
-                    geom_transformed = geom
-                    transformed_bounds = original_bounds
-
-                def create_style_function(style):
-                    return lambda x: style
-
-                # Create tooltip with bounds information
-                tooltip_text = (
-                    f"Bounds ({dataset.crs.name}):<br>"
-                    f"Min X: {original_bounds[0]:.6f}<br>"
-                    f"Min Y: {original_bounds[1]:.6f}<br>"
-                    f"Max X: {original_bounds[2]:.6f}<br>"
-                    f"Max Y: {original_bounds[3]:.6f}"
-                )
-
-                if dataset.crs != 4326:
-                    tooltip_text += (
-                        f"<br><br>Bounds (WGS84):<br>"
-                        f"Min Lon: {transformed_bounds[0]:.6f}<br>"
-                        f"Min Lat: {transformed_bounds[1]:.6f}<br>"
-                        f"Max Lon: {transformed_bounds[2]:.6f}<br>"
-                        f"Max Lat: {transformed_bounds[3]:.6f}"
-                    )
-
-                folium.GeoJson(
-                    geom_transformed,
-                    style_function=create_style_function(style_dict),
-                    tooltip=tooltip_text,
-                ).add_to(feature_group)
-            except Exception as e:
-                print(
-                    f"Warning: Could not process geometry in dataset '{name}'. Error: {e}"
-                )
+        folium.GeoJson(
+            footprints,
+            style_function=lambda _: style_dict,
+            tooltip=folium.GeoJsonTooltip(fields=fields, aliases=aliases),
+        ).add_to(feature_group)
 
     # Add the feature group to the map (even if empty, so it appears in LayerControl)
     feature_group.add_to(map)
@@ -204,11 +171,10 @@ def plot_samplers_on_map(
     datasets: list,
     samplers: list,
     map=None,
-    max_samples: int = None,
-    max_files: int = None,
-    colors: list = None,
-    dataset_colors: list = None,
-    dataset_names: list = None,
+    max_samples: int | None = None,
+    colors: list | None = None,
+    dataset_colors: list | None = None,
+    dataset_names: list | None = None,
     count_labels: bool = False,
 ):
     """
@@ -219,7 +185,6 @@ def plot_samplers_on_map(
         samplers: List of samplers to visualize (must match datasets length)
         map: Optional existing folium map to add to
         max_samples: Maximum number of samples to plot per dataset-sampler pair
-        max_files: Maximum number of files to include in visualization
         colors: List of colors for the samples from each dataset
         dataset_colors: List of colors for the dataset boundaries
         dataset_names: List of names to use for each dataset in the legend
@@ -231,11 +196,9 @@ def plot_samplers_on_map(
         If count_labels is True:
             tuple: (folium.Map, dict) containing the map and label counts per dataset
     """
-    import torch
     from alive_progress import alive_it
     from torch.utils.data import DataLoader
     from torchgeo.datasets import stack_samples, unbind_samples
-    from torchgeo.samplers import BatchGeoSampler
 
     if colors is None:
         colors = ["red", "green", "blue", "purple", "orange", "cadetblue", "black"]
@@ -257,9 +220,6 @@ def plot_samplers_on_map(
     # Create a folium map if not provided
     map = map or folium.Map()
 
-    # Dictionary to track processed files to avoid duplicates
-    processed_files = {}
-
     # Dictionary to track label counts if requested, one dict per dataset
     label_counts_per_dataset = (
         {name: {} for name in dataset_names} if count_labels else None
@@ -274,7 +234,7 @@ def plot_samplers_on_map(
         boundary_group = folium.FeatureGroup(name=name)
 
         # Add dataset boundaries to the feature group
-        style_dict = dict(fill=False, weight=5, opacity=0.7, color=color)
+        style_dict = {"fill": False, "weight": 5, "opacity": 0.7, "color": color}
 
         # Add dataset boundaries without progress bar
         for _, row in dataset.index.iterrows():
@@ -291,15 +251,8 @@ def plot_samplers_on_map(
     dataloaders = []
 
     for dataset, sampler in zip(datasets, samplers):
-        if isinstance(sampler, BatchGeoSampler):
-            batch_sampler = sampler
-            sampler = None
-        else:
-            batch_sampler = None
-
         dataloader = DataLoader(
             dataset,
-            batch_sampler=batch_sampler,
             sampler=sampler,
             collate_fn=stack_samples,
         )
@@ -328,7 +281,8 @@ def plot_samplers_on_map(
             title=f"Adding {feature_group_name}",
             force_tty=True,
             max_cols=100,
-            finalize=lambda bar: bar.title(f"Added {feature_group_name}"),
+            # The name is bound now, as the bar may finish after the loop moved on
+            finalize=lambda bar, name=feature_group_name: bar.title(f"Added {name}"),
         )
 
         for batch in dataloader_with_progress:
@@ -356,52 +310,25 @@ def plot_samplers_on_map(
                     tooltip=f"Sample from {current_dataset_name}",
                 ).add_to(sample_group)
 
-                # Count label pixels if requested
+                # Count the label values as stored in the files, without nodata
                 if count_labels and "mask" in sample:
-                    mask = sample["mask"]
-                    # Skip -1 values which are typically ignored or no-data values
-                    valid_mask = mask != -1
-
-                    # Adjust mask values if IntersectionDataset with reduce_zero_label=True was used
-                    # This ensures label counts match the original class values if 0 was mapped to -1
-                    current_dataset = datasets[dataset_idx]
-                    if isinstance(current_dataset, IntersectionDataset) and hasattr(
-                        current_dataset.datasets[1], "reduce_zero_label"
-                    ):
-                        if current_dataset.datasets[1].reduce_zero_label:
-                            mask = mask + 1  # Shift labels back up by 1
-
-                    if torch.any(valid_mask):
-                        # Only count valid (non -1) pixels
-                        filtered_mask = mask[valid_mask]
-                        unique_values, counts = torch.unique(
-                            filtered_mask, return_counts=True
+                    dataset = datasets[dataset_idx]
+                    label_ds = (
+                        dataset.datasets[1]
+                        if isinstance(dataset, IntersectionDataset)
+                        else dataset
+                    )
+                    labels = label_ds.values_as_in_files(sample["mask"])
+                    labels = labels[~utils.is_nodata(labels, label_ds.nodata_value)]
+                    dataset_label_counts = label_counts_per_dataset[
+                        current_dataset_name
+                    ]
+                    for value, count in zip(*np.unique(labels, return_counts=True)):
+                        dataset_label_counts[value] = (
+                            dataset_label_counts.get(value, 0) + count
                         )
 
-                        # Update counts for this dataset
-                        dataset_label_counts = label_counts_per_dataset[
-                            current_dataset_name
-                        ]
-                        for val, count in zip(
-                            unique_values.cpu().numpy(), counts.cpu().numpy()
-                        ):
-                            # Aggregate counts for each label value
-                            dataset_label_counts[val] = (
-                                dataset_label_counts.get(val, 0) + count
-                            )
-
                 sample_count += 1
-
-                # Process mask files if needed for additional visualization (e.g., debugging)
-                # Limits the number of unique mask files processed across all samples/datasets
-                if max_files is not None and "mask_filepaths" in sample:
-                    for mask_path in sample["mask_filepaths"]:
-                        if (
-                            mask_path not in processed_files
-                            and len(processed_files) < max_files
-                        ):
-                            # Mark this file as processed to avoid duplicates
-                            processed_files[mask_path] = True
 
                 # Check if we've reached the maximum sample count for this dataset
                 if max_samples is not None and sample_count >= max_samples:
@@ -414,45 +341,18 @@ def plot_samplers_on_map(
         # Add the sample feature group to the map
         sample_group.add_to(map)
 
-    # Fit map bounds to encompass all datasets
-    try:
-        all_bounds = []
-        for dataset in datasets:
-            if not dataset.index.empty:
-                # Get bounds in the dataset's original CRS
-                dataset_bounds = (
-                    dataset.index.total_bounds
-                )  # [minx, miny, maxx, maxy] numpy array
-
-                # Convert to WGS84 (EPSG:4326) for folium
-                if dataset.crs != pyproj.CRS("EPSG:4326"):
-                    # Convert numpy array to tuple to ensure correct format interpretation
-                    # total_bounds returns [minx, miny, maxx, maxy], convert to tuple for correct handling
-                    bounds_tuple = tuple(dataset_bounds)  # (minx, miny, maxx, maxy)
-                    bounds_poly = utils.torchgeo_bb_to_shapely(
-                        bounds_tuple, bbox_crs=dataset.crs, target_crs="EPSG:4326"
-                    )
-                    transformed_bounds = bounds_poly.bounds  # (minx, miny, maxx, maxy)
-                else:
-                    transformed_bounds = tuple(dataset_bounds)
-
-                all_bounds.append(transformed_bounds)
-
-        if all_bounds:
-            # Calculate the overall bounds encompassing all datasets
-            min_x = min(bounds[0] for bounds in all_bounds)
-            min_y = min(bounds[1] for bounds in all_bounds)
-            max_x = max(bounds[2] for bounds in all_bounds)
-            max_y = max(bounds[3] for bounds in all_bounds)
-
-            # Convert to folium format: ((lat1, lon1), (lat2, lon2))
-            # Note: folium expects (lat, lon) which is (y, x)
-            folium_bounds = ((min_y, min_x), (max_y, max_x))
-            map.fit_bounds(bounds=folium_bounds)
-
-    except Exception as e:
-        print(f"Warning: Could not fit map bounds for datasets. Error: {e}")
-        # Continue without fitting bounds
+    # Fit the map to all datasets, in WGS84 (EPSG:4326) for folium
+    all_bounds = [
+        dataset.index.to_crs("EPSG:4326").total_bounds
+        for dataset in datasets
+        if not dataset.index.empty
+    ]
+    if all_bounds:
+        bounds = np.array(all_bounds)  # rows of (minx, miny, maxx, maxy)
+        min_x, min_y = bounds[:, :2].min(axis=0)
+        max_x, max_y = bounds[:, 2:].max(axis=0)
+        # folium expects (lat, lon), which is (y, x)
+        map.fit_bounds(bounds=((min_y, min_x), (max_y, max_x)))
 
     # Always add the layer control
     folium.LayerControl().add_to(map)
@@ -478,31 +378,26 @@ def plot_samplers_on_map(
 def plot_class_raster(
     tif_file_path: str | Path,
     ax: plt.Axes = None,
-    class_mapping: dict[int, str] = None,
+    class_mapping: dict[int, str] | None = None,
     colormap=cm.tab20,
     data_window_only: bool = False,
     **kwargs,
 ) -> plt.Axes:  # Return the axes object
     """
-    Plot a raster image with class labels. Manages figure creation and display.
+    Plot the first band of a raster: classes with a legend, or continuous values,
+    e.g. of regression, with a colorbar. Manages figure creation and display.
     """
     show_plot = False
     if ax is None:
-        fig, ax = plt.subplots()
+        _, ax = plt.subplots()
         show_plot = True
 
     with rst.open(tif_file_path) as src:
-        array = src.read(1)
-        nodata = src.nodata  # Get nodata value from source
-
-        # Call plot_numpy_array, passing the determined ax and nodata value
         plot_numpy_array(
-            array,
-            ax=ax,  # Always pass an ax
+            src.read(1),
+            ax=ax,
             class_mapping=class_mapping,
-            nodata_value=int(nodata)
-            if nodata is not None
-            else None,  # Pass nodata value
+            nodata_value=src.nodata,
             colormap=colormap,
             data_window_only=data_window_only,
             **kwargs,
@@ -517,8 +412,8 @@ def plot_class_raster(
 def plot_numpy_array(
     array: np.ndarray,
     ax: plt.Axes = None,
-    class_mapping: dict[int, str] = None,
-    nodata_value: int = None,  # Changed: Allow None
+    class_mapping: dict[int, str] | None = None,
+    nodata_value: float | None = None,
     colormap=cm.tab20,
     data_window_only: bool = False,
     nodata_color: str = "black",
@@ -531,46 +426,42 @@ def plot_numpy_array(
         array: The input array to plot
         ax: Matplotlib axes to plot on.
         class_mapping: Dictionary mapping class values to their string labels
-        nodata_value: Value to treat as no data. If None, treat as no nodata.
+        nodata_value: Value to treat as no data, may be NaN. If None, treat as no nodata.
         colormap: Matplotlib colormap to use for data values
         data_window_only: If True, crops to non-nodata region
         nodata_color: Color to use for the nodata value.
         **kwargs: Additional arguments for rasterio's show function
     """
     if ax is None:
-        fig, ax = plt.subplots()
+        _, ax = plt.subplots()
+
+    if nodata_value is not None:
+        array = np.ma.masked_array(array, mask=utils.is_nodata(array, nodata_value))
 
     if data_window_only and nodata_value is not None:
-        window = get_data_window(array, nodata=nodata_value)
+        window = get_data_window(array)  # the window of the unmasked pixels
         plot_array = array[utils.window_to_np_idc(window)]
     else:
         plot_array = array
 
-    # Create a masked array if nodata_value is specified
-    if nodata_value is not None:
-        masked_array = np.ma.masked_equal(plot_array, nodata_value)
-        nodata_present = nodata_value in np.unique(plot_array.ravel())
-        array_to_plot = masked_array  # Plot the masked array
-    else:
-        # If no nodata value, plot the original array and don't use masking features
-        masked_array = plot_array  # Use unmasked array for calculations
-        nodata_present = False
-        array_to_plot = plot_array  # Plot the unmasked array
+    nodata_present = nodata_value is not None and bool(plot_array.mask.any())
 
     # Get unique values present in the data (excluding nodata if applicable)
     data_values = np.unique(
-        masked_array.compressed() if nodata_value is not None else masked_array.ravel()
+        plot_array.compressed() if nodata_value is not None else plot_array.ravel()
     ).tolist()
 
     # Determine min/max class values based *only* on data values and mapping
     potential_data_values = set(data_values)
     if class_mapping:
         potential_data_values.update(
-            k for k in class_mapping.keys() if nodata_value is None or k != nodata_value
+            k for k in class_mapping if nodata_value is None or k != nodata_value
         )
 
     numeric_data_values = {
-        v for v in potential_data_values if isinstance(v, (int, float, np.integer, np.floating))
+        v
+        for v in potential_data_values
+        if isinstance(v, (int, float, np.integer, np.floating))
     }
 
     cmap = plt.get_cmap(colormap).copy()
@@ -581,7 +472,7 @@ def plot_numpy_array(
         # Handle case with only nodata or empty array
         norm = None
         # Plot showing only nodata color or blank if no nodata
-        show(array_to_plot, ax=ax, cmap=cmap, vmin=-1, vmax=0, **kwargs)
+        show(plot_array, ax=ax, cmap=cmap, vmin=-1, vmax=0, **kwargs)
 
     else:
         min_val = min(numeric_data_values)
@@ -593,13 +484,16 @@ def plot_numpy_array(
             bounds = np.arange(min_val - 0.5, max_val + 1.5)
             if len(bounds) < 2:
                 bounds = np.array([min_val - 0.5, min_val + 0.5])
+            n_classes = len(bounds) - 1
+            if n_classes > cmap.N:
+                # More classes than colors in the colormap, e.g. tab20 has 20
+                cmap = plt.get_cmap("turbo", n_classes).with_extremes(bad=nodata_color)
             norm = plt.matplotlib.colors.BoundaryNorm(bounds, cmap.N)
         else:
             # For continuous data (regression)
             norm = plt.matplotlib.colors.Normalize(vmin=min_val, vmax=max_val)
 
-        # Pass the array_to_plot (masked or unmasked)
-        show(array_to_plot, ax=ax, cmap=cmap, norm=norm, **kwargs)
+        show(plot_array, ax=ax, cmap=cmap, norm=norm, **kwargs)
 
     # --- Legend Handling ---
     legend_patches = []
@@ -618,8 +512,10 @@ def plot_numpy_array(
             effective_class_mapping[v] = str(v)
 
     # For continuous data, create a colorbar instead of discrete legend patches
-    is_continuous = not all(isinstance(v, (int, np.integer)) for v in numeric_data_values)
-    
+    is_continuous = not all(
+        isinstance(v, (int, np.integer)) for v in numeric_data_values
+    )
+
     if is_continuous:
         # For continuous data (regression), position colorbar without resizing axes
         divider = make_axes_locatable(ax)
@@ -628,9 +524,9 @@ def plot_numpy_array(
     else:
         # For discrete data, create legend patches
         present_data_values = sorted(
-            list(set(v for v in data_values if isinstance(v, (int, np.integer))))
+            {v for v in data_values if isinstance(v, (int, np.integer))}
         )
-        
+
         if norm:
             for i in present_data_values:
                 if isinstance(norm, plt.matplotlib.colors.BoundaryNorm):
@@ -655,50 +551,91 @@ def plot_numpy_array(
             )
 
 
+def plot_label_distribution(
+    label_counts_per_dataset: dict[str, dict], class_mapping: dict | None = None
+) -> None:
+    """Show a pie chart of the label pixel counts of each dataset.
+
+    Each class has the same color in all pie charts.
+    """
+    counts_per_dataset = {
+        name: counts for name, counts in label_counts_per_dataset.items() if counts
+    }
+    if not counts_per_dataset:
+        print("No labels found in datasets.")
+        return
+
+    all_classes = sorted(set().union(*counts_per_dataset.values()))
+    colors = list(mcolors.TABLEAU_COLORS.values())
+    class_colors = {c: colors[i % len(colors)] for i, c in enumerate(all_classes)}
+    class_mapping = class_mapping or {}
+
+    n_datasets = len(counts_per_dataset)
+    _, axes = plt.subplots(1, n_datasets, figsize=(n_datasets * 6, 6), squeeze=False)
+    for ax, (name, counts) in zip(axes[0], counts_per_dataset.items()):
+        ax.pie(
+            list(counts.values()),
+            labels=[class_mapping.get(c, f"Class {c}") for c in counts],
+            colors=[class_colors[c] for c in counts],
+            autopct=_percentage_and_count(total=sum(counts.values())),
+            startangle=90,
+        )
+        ax.axis("equal")
+        ax.set_title(f"Label Distribution - {name}")
+    plt.tight_layout()
+    plt.show()
+
+
+def _percentage_and_count(total: int):
+    """Label of a pie chart wedge, e.g. "25.0%\n(1,000)"."""
+
+    def label(percentage: float) -> str:
+        return f"{percentage:.1f}%\n({round(percentage * total / 100):,})"
+
+    return label
+
+
 def plot_samples(
     dataset,
     n: int = 3,
     patch_size: int = 256,
-    nodata_val: int = 0,
     show_filepaths: bool = False,
-    dataset_type: str = 'classification',
 ):
-    from torch.utils.data import DataLoader
-    from torchgeo.datasets import stack_samples, unbind_samples
-    from torchgeo.samplers import RandomGeoSampler
-
+    """Plot n random samples of a dataset, leaving out samples without data."""
     assert hasattr(dataset, "plot"), "Dataset must have a plot method"
-    sampler = RandomGeoSampler(
-        dataset,
-        size=patch_size,
+    # The labels of a dataset of images and labels are in its second dataset
+    label_ds = (
+        dataset.datasets[1] if isinstance(dataset, IntersectionDataset) else dataset
     )
-    dataloader = DataLoader(
-        dataset, sampler=sampler, collate_fn=stack_samples, batch_size=1
-    )
-    _iterator = iter(dataloader)
+
+    def is_empty(sample: dict) -> bool:
+        if "image" in sample and (sample["image"] == 0).all():
+            return True
+        if "mask" in sample:
+            labels = label_ds.values_as_in_files(sample["mask"])
+            return bool(utils.is_nodata(labels, label_ds.nodata_value).all())
+        return False
+
+    # Sample a random patch from a random file. TorchGeo's RandomPatchSampler samples
+    # from the combined area of all files shrunk by half a patch, which leaves nothing
+    # to sample from files that are about the size of a patch.
+    rng = np.random.default_rng()
+    width, height = patch_size * dataset.res[0], patch_size * dataset.res[1]
     samples = []
     for _ in range(100):
         try:
-            batch = next(_iterator)
-            sample = unbind_samples(batch)[0]
-            if dataset_type == 'classification':
-                if (
-                    (("image" in sample) and (sample["image"] == 0).all())
-                    or ("mask" in sample and (sample["mask"] == nodata_val).all())
-                    or ("mask" in sample and (sample["mask"] == -1).all())
-                ):
-                    continue
-            elif dataset_type == 'regression':
-                if (
-                    (("image" in sample) and (sample["image"] == 0).all())
-                    or ("mask" in sample and torch.equal(sample["mask"], torch.full_like(sample["mask"], nodata_val)))
-                ):
-                    continue
+            row = rng.integers(len(dataset.index))
+            xmin, ymin, xmax, ymax = dataset.index.geometry.iloc[row].bounds
+            x = rng.uniform(xmin, max(xmin, xmax - width))
+            y = rng.uniform(ymin, max(ymin, ymax - height))
+            sample = dataset[x : x + width, y : y + height]
+            if is_empty(sample):
+                continue
             samples.append(sample)
             if len(samples) == n:
                 break
-        except StopIteration:
-            break
+        except IndexError:
+            continue
 
     if not samples:
         print("No valid samples found.")
@@ -746,13 +683,12 @@ def label_map(label_file_paths: str | list, map: folium.Map = None):
 
     # Process files in a single loop
     for label_file_path in label_file_paths:
-        with rst.open(label_file_path) as src:
-            # Read the data and get bounds in a single operation with VRT
-            with WarpedVRT(src, crs="EPSG:4326") as vrt:
-                bounds = utils.convert_bounds(
-                    vrt.bounds
-                )  # Convert directly to save a step
-                array = vrt.read(1)
+        with (
+            rst.open(label_file_path) as src,
+            WarpedVRT(src, crs="EPSG:4326") as vrt,
+        ):
+            bounds = utils.convert_bounds(vrt.bounds)
+            array = vrt.read(1)
 
         # Store bounds for map fitting
         bounds_list.append(bounds)

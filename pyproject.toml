@@ -23,7 +23,7 @@ dependencies = [
     "folium>=0.19.5",
     "geopandas>=1.0.1",
     "numpy>=1.26",
-    "torchgeo>=0.9.0",
+    "torchgeo>=0.10.1",
 ]
 
 authors = [
@@ -64,6 +64,9 @@ test= [
 notebooks = [
   "jupyter",
 ]
+dinov3 = [
+  "transformers>=4.56",
+]
 cuda126 = [
   "torch>=2.7.0",
   "torchvision>=0.22.0",
@@ -92,7 +95,7 @@ explicit = true
 lint.ignore = ["E501"]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.12"
 ignore_missing_imports = true
 warn_unreachable = false
 no_implicit_optional = true

@@ -10,6 +10,15 @@ on:
     branches: [main]
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Lint and check formatting with ruff
+        run: make lint
+
   build:
     runs-on: ${{ matrix.os }}
     strategy:
@@ -19,7 +28,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v3
-    #   - uses: chartboost/ruff-action@v1 # Fail fast if there are any linting errors
       - name: Install uv and set the python version
         uses: astral-sh/setup-uv@v5
         with:

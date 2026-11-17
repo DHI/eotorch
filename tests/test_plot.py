@@ -113,3 +113,189 @@ def test_plot_numpy_array_empty_array():
     assert legend is not None, "Legend should be present even with empty data"
 
     plt.close(fig)
+
+
+@pytest.mark.parametrize("labels", ["label", "target"])
+def test_plot_samples_with_patches_as_large_as_the_files(monkeypatch, labels):
+    from pathlib import Path
+
+    from eotorch.data import get_regression_dataset, get_segmentation_dataset
+
+    # Segmentation labels (label_*.tif) or regression labels with nodata (target_*.tif)
+    get_dataset = get_segmentation_dataset
+    kwargs = {}
+    if labels == "target":
+        get_dataset = get_regression_dataset
+        kwargs = {"nodata_value": -9999.0}
+    data = Path(__file__).parent / "data"
+    ds = get_dataset(
+        images_dir=data,
+        labels_dir=data,
+        image_glob="image_*.tif",
+        label_glob=f"{labels}_*.tif",
+        all_image_bands=("red", "green", "blue"),
+        **kwargs,
+    )
+    shown = []
+    monkeypatch.setattr(plt, "show", lambda: shown.append(plt.gcf()))
+
+    # The test files are 100 x 100 pixels
+    ds.plot_samples(n=2, patch_size=100, show_filepaths=True)
+
+    assert len(shown) == 2
+    plt.close("all")
+
+
+@pytest.mark.parametrize("labels", ["label", "target"])
+def test_plotting_does_not_change_the_sample(labels):
+    from pathlib import Path
+
+    from eotorch.data import get_regression_dataset, get_segmentation_dataset
+
+    get_dataset = get_segmentation_dataset
+    kwargs = {"nodata_value": 0}
+    if labels == "target":
+        get_dataset = get_regression_dataset
+        kwargs = {"nodata_value": -9999.0}
+    data = Path(__file__).parent / "data"
+    ds = get_dataset(
+        images_dir=data,
+        labels_dir=data,
+        image_glob="image_0.tif",
+        label_glob=f"{labels}_0.tif",
+        all_image_bands=("red", "green", "blue"),
+        **kwargs,
+    )
+    sample = ds[ds.bounds]
+    sample["prediction"] = sample["mask"].clone()
+    original = {k: v.clone() for k, v in sample.items()}
+
+    for _ in range(2):
+        ds.plot(sample)
+        plt.close("all")
+
+    assert sample.keys() == original.keys()
+    for key, value in original.items():
+        # Regression targets are NaN where there is no target
+        np.testing.assert_array_equal(sample[key].numpy(), value.numpy(), err_msg=key)
+
+
+def test_plot_numpy_array_with_more_classes_than_colors():
+    array = np.arange(30).reshape(5, 6)
+
+    fig, ax = plt.subplots()
+    plot_numpy_array(array, ax=ax, nodata_value=0)
+
+    assert len(ax.get_legend().get_texts()) >= 29
+    plt.close(fig)
+
+
+def _segmentation_dataset(**kwargs):
+    from pathlib import Path
+
+    from eotorch.data import get_segmentation_dataset
+
+    data = Path(__file__).parent / "data"
+    return get_segmentation_dataset(
+        images_dir=data / "image_0.tif",
+        labels_dir=data / "label_0.tif",
+        all_image_bands=("red", "green", "blue"),
+        **kwargs,
+    )
+
+
+def _plotted_image(image_dataset) -> np.ndarray:
+    sample = image_dataset[image_dataset.bounds]
+    fig, ax = plt.subplots()
+    image_dataset.plot(sample, ax=ax)
+    plotted = ax.get_images()[0].get_array()
+    plt.close(fig)
+    return plotted
+
+
+def test_image_plot_finds_rgb_bands_among_the_selected_bands():
+    images = _segmentation_dataset().datasets[0]
+    reordered = _segmentation_dataset(bands_to_return=("blue", "green", "red"))
+    np.testing.assert_array_equal(
+        _plotted_image(reordered.datasets[0]), _plotted_image(images)
+    )
+
+
+def test_image_plot_without_rgb_bands_raises():
+    from torchgeo.datasets import RGBBandsMissingError
+
+    images = _segmentation_dataset(bands_to_return=("blue", "green")).datasets[0]
+    with pytest.raises(RGBBandsMissingError):
+        images.plot(images[images.bounds])
+    plt.close("all")
+
+
+@pytest.mark.parametrize("labels", ["label", "target"])
+def test_plots_show_filepaths_without_given_axes(labels):
+    from pathlib import Path
+
+    from eotorch.data import get_regression_dataset
+
+    if labels == "label":
+        ds = _segmentation_dataset()
+    else:
+        data = Path(__file__).parent / "data"
+        ds = get_regression_dataset(
+            images_dir=data / "image_0.tif",
+            labels_dir=data / "target_0.tif",
+            all_image_bands=("red", "green", "blue"),
+            nodata_value=-9999.0,
+        )
+    sample = ds[ds.bounds]
+    image_ds, label_ds = ds.datasets
+
+    label_ds.plot(sample, show_filepaths=True)
+    assert f"{labels}_0.tif" in plt.gcf().axes[0].get_title()
+
+    image_ds.plot({**sample, "prediction": sample["mask"]}, show_filepaths=True)
+    assert "image_0.tif" in plt.gcf().axes[0].get_title()
+    plt.close("all")
+
+
+def test_plot_samples_keeps_regression_targets_of_minus_one(tmp_path, monkeypatch):
+    """-1 only marks unlabelled pixels in classification labels."""
+    from pathlib import Path
+
+    import rasterio as rst
+
+    from eotorch.data import get_regression_dataset
+
+    data = Path(__file__).parent / "data"
+    with rst.open(data / "target_0.tif") as src:
+        profile = src.profile
+    target = tmp_path / "target.tif"
+    with rst.open(target, "w", **profile) as dst:
+        dst.write(np.full((1, profile["height"], profile["width"]), -1.0))
+    ds = get_regression_dataset(
+        images_dir=data / "image_0.tif",
+        labels_dir=target,
+        all_image_bands=("red", "green", "blue"),
+        nodata_value=-9999.0,
+    )
+    shown = []
+    monkeypatch.setattr(plt, "show", lambda: shown.append(plt.gcf()))
+
+    ds.plot_samples(n=1, patch_size=100)
+
+    assert len(shown) == 1
+    plt.close("all")
+
+
+def test_plot_numpy_array_masks_nan_as_nodata():
+    array = np.arange(16, dtype="float32").reshape(4, 4) / 2
+    array[0] = np.nan
+
+    fig, ax = plt.subplots()
+    plot_numpy_array(array, ax=ax, nodata_value=np.nan, colormap="viridis")
+
+    plotted = ax.get_images()[0].get_array()
+    assert plotted.mask[0].all() and not plotted.mask[1:].any()
+    # The colors range over the values that are not nodata
+    norm = ax.get_images()[0].norm
+    assert (norm.vmin, norm.vmax) == (2.0, 7.5)
+    plt.close(fig)

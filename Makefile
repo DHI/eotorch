@@ -1,4 +1,6 @@
 LIB = eotorch
+# Pinned, as new ruff versions enable more lint rules
+RUFF = uvx ruff@0.17.4
 
 check: lint typecheck test doctest
 
@@ -6,10 +8,11 @@ build: typecheck test
 	python -m build
 
 lint:
-	ruff check $(LIB)
+	$(RUFF) check $(LIB) tests
+	$(RUFF) format --check $(LIB) tests
 
 format:
-	ruff format $(LIB)
+	$(RUFF) format $(LIB) tests
 
 test:
 	pytest --disable-warnings

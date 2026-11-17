@@ -3,7 +3,6 @@ import json
 import logging
 import random
 from pathlib import Path
-from typing import Dict, List, Tuple, Union
 
 # Data management
 import numpy as np
@@ -20,12 +19,12 @@ logger = logging.getLogger(__name__)
 def normalize(
     img_path: str | Path,
     sensor: str | None = None,
-    indexes: List | None = None,
-    limits: Dict | Tuple = (1, 99),
+    indexes: list | None = None,
+    limits: dict | tuple = (1, 99),
     out_res: float | None = None,
-    bands: List | None = None,
-    out_path: str | Path = None,
-    sample_size: int | float = 0.5,
+    bands: list | None = None,
+    out_path: str | Path | None = None,
+    sample_size: float = 0.5,
 ) -> Path:
     """
     Normalizes images within given bounds (percentile or fixed) and converts it to float values in range (0, 1).
@@ -121,10 +120,10 @@ def normalize(
 
 def sample_limits(
     img_path: Path | str,
-    limits: Tuple,
-    sample_size: int | float,
-    band_list: List = None,
-) -> Dict:
+    limits: tuple,
+    sample_size: float,
+    band_list: list | None = None,
+) -> dict:
     """
     Finds the percentile `limits` of the input image by sampling a number of internal tiles/blocks.
 
@@ -180,7 +179,7 @@ def sample_limits(
 
 def band_scaling(
     img: np.ndarray,
-    limits: Tuple | Dict,
+    limits: tuple | dict,
 ) -> np.ndarray:
     """
     Band scaling using either percentile cutoffs (e.g. 2nd and 98th percentile) common to visualization
@@ -188,19 +187,16 @@ def band_scaling(
 
     Parameters
     ----------
-        img (np.ndarray):
-            The array/image to be rescaled. Can be either 2D or 3D.
-        limits (Dict, optional):
-            Either a dictionary of manually defined bounds for each band given in the format {band : (lower, upper)}
-            or a tuple of the percentile cutoffs. Defaults to (2, 98).
-        heuristic (bool, optional):
-            Reduce the memory overhead by calculating statistics from a random subset of pixels. Defaults to False.
-        n_samples (int, optional):
-            Number of sample pixels to use when applying heuristics to find the limits. Defaults to 1e5.
+    img : np.ndarray
+        The array/image to be rescaled. Can be either 2D or 3D.
+    limits : tuple | dict
+        Either a dictionary of manually defined bounds for each band given in the format {band : (lower, upper)}
+        or a tuple of the percentile cutoffs, e.g. (2, 98).
 
     Returns
-    ----------
-        np.ndarray: Rescaled image as float in range 0, 1
+    -------
+    np.ndarray
+        Rescaled image as float in range 0, 1
     """
     if isinstance(limits, tuple):
         lower, upper = limits
@@ -228,7 +224,7 @@ def band_scaling(
 
 def resample(
     img_path: Path | str, res: float, resampling: str = "nearest", **kwargs
-) -> Tuple[np.ndarray, dict]:
+) -> tuple[np.ndarray, dict]:
     """
     Resamples the input raster to the target spatial resolution using the specified resampling method.
 
@@ -293,12 +289,12 @@ def resample(
 
 
 def zscore_normalize(
-    input_files: Union[str, Path, List[Union[str, Path]]],
-    out_dir: Union[str, Path],
-    bands: List[int] = None,
+    input_files: str | Path | list[str | Path],
+    out_dir: str | Path,
+    bands: list[int] | None = None,
     save_stats: bool = False,
     sample_size: float = 1.0,
-) -> Dict[str, np.ndarray]:
+) -> dict[str, np.ndarray]:
     """
     Applies z-score normalization to a set of images based on mean and standard deviation
     computed across all input files.
@@ -394,7 +390,8 @@ def zscore_normalize(
     # First pass: compute mean and std across all files
     band_sums = np.zeros(len(bands), dtype=np.float64)
     band_sq_sums = np.zeros(len(bands), dtype=np.float64)
-    total_pixels = 0
+    # Counted per band, as each band can have its own invalid pixels
+    band_counts = np.zeros(len(bands), dtype=np.int64)
 
     with alive_bar(len(file_list), title="Computing statistics", unit="files") as bar:
         for file_path in file_list:
@@ -423,25 +420,25 @@ def zscore_normalize(
 
                     # Compute sums per band
                     for i in range(len(bands)):
-                        valid_pixels = ~np.isnan(data[i])
-                        if i == 0:  # Count pixels only once
-                            total_pixels += np.sum(valid_pixels)
+                        band_counts[i] += np.sum(~np.isnan(data[i]))
                         band_sums[i] += np.nansum(data[i])
                         band_sq_sums[i] += np.nansum(data[i] ** 2)
 
             bar()
 
-    if total_pixels == 0:
-        raise ValueError("No valid pixels found in input files")
+    if (band_counts == 0).any():
+        raise ValueError(
+            f"No valid pixels found in input files for bands {np.array(bands)[band_counts == 0]}"
+        )
 
     # Compute mean and std
-    means = band_sums / total_pixels
-    stds = np.sqrt((band_sq_sums / total_pixels) - (means**2))
+    means = band_sums / band_counts
+    stds = np.sqrt((band_sq_sums / band_counts) - (means**2))
 
     # Avoid division by zero
     stds[stds < 1e-10] = 1.0
 
-    logger.info(f"Computed statistics from {total_pixels:,} pixels")
+    logger.info(f"Computed statistics from {band_counts.tolist()} pixels per band")
     logger.info(f"Means: {means}")
     logger.info(f"Stds: {stds}")
 
@@ -453,7 +450,7 @@ def zscore_normalize(
             "stds": stds.tolist(),
             "bands": bands,
             "n_files": len(file_list),
-            "total_pixels": int(total_pixels),
+            "valid_pixels_per_band": band_counts.tolist(),
         }
         with open(stats_file, "w") as f:
             json.dump(stats_dict, f, indent=2)
@@ -467,10 +464,7 @@ def zscore_normalize(
 
             with rst.open(file_path) as src:
                 profile = src.profile.copy()
-                profile.update(
-                    dtype="float32",
-                    # nodata=np.nan,
-                )
+                profile.update(dtype="float32", count=len(bands))
 
                 # Determine the fill value for nodata pixels
                 nodata_fill = src.nodata if src.nodata is not None else 0.0
@@ -505,3 +499,45 @@ def zscore_normalize(
     logger.info(f"Z-score normalization complete. Files saved to {out_dir}")
 
     return {"mean": means, "std": stds}
+
+
+def band_statistics(
+    dataset, nodata: float | None = 0
+) -> tuple[list[float], list[float]]:
+    """
+    Computes the mean and standard deviation of each band over all image files of a dataset.
+
+    Pass the results to RasterDataModule(mean=..., std=...) to normalize the images on the
+    fly. Compute them on the training data only, so no information leaks from the
+    validation data.
+
+    Parameters:
+        dataset (RasterDataset | IntersectionDataset):
+            Dataset as created by eotorch.data.get_segmentation_dataset or
+            get_regression_dataset. Only its selected bands are used.
+        nodata (float | None):
+            Pixels where all bands have this value are ignored. Defaults to 0.
+
+    Returns:
+        tuple[list[float], list[float]]:
+            Mean and standard deviation of each band.
+    """
+    from torchgeo.datasets import IntersectionDataset
+
+    if isinstance(dataset, IntersectionDataset):
+        dataset = dataset.datasets[0]
+
+    total, total_sq, count = 0.0, 0.0, 0
+    for path in dataset.index.filepath.unique():
+        with rst.open(path) as src:
+            data = src.read(dataset.band_indexes).reshape(-1, src.width * src.height)
+        if nodata is not None:
+            data = data[:, ~(data == nodata).all(axis=0)]
+        data = data.astype("float64")
+        total += data.sum(axis=1)
+        total_sq += (data**2).sum(axis=1)
+        count += data.shape[1]
+
+    mean = total / count
+    std = np.sqrt(total_sq / count - mean**2)
+    return mean.tolist(), std.tolist()

@@ -4,12 +4,11 @@ import logging
 import os
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING
 
 import geopandas as gpd
 import numpy as np
 import rasterio as rst
-from pyogrio import read_dataframe
 from rasterio.features import rasterize
 from rasterio.windows import Window, get_data_window
 from rasterio.windows import transform as window_transform
@@ -17,9 +16,8 @@ from rasterio.windows import transform as window_transform
 from eotorch import utils
 
 if TYPE_CHECKING:
-    import rasterio.CRS
     from affine import Affine
-    from shapely.geometry import MultiPolygon, Polygon
+    from rasterio.crs import CRS
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +31,7 @@ class VectorSource(ABC):
         self,
         transform: Affine | None = None,
         shape: tuple[int, int] | None = None,
-        crs: rasterio.CRS | str | None = None,
+        crs: CRS | str | None = None,
     ):
         self.transform = transform
         self.shape = shape
@@ -64,7 +62,7 @@ class VectorSource(ABC):
         out_path: Path | str,
         exclude_nodata_bounds: bool = True,
         min_size: int = 300,
-        class_order: List[int] = None,
+        class_order: list[int] | None = None,
         **kwargs,
     ):
         geoms = self._get_geoms()
@@ -75,7 +73,7 @@ class VectorSource(ABC):
 
         class_order = [c for c in class_order if c in geoms]
 
-        idc_not_in_class_order = [i for i in geoms.keys() if i not in class_order]
+        idc_not_in_class_order = [i for i in geoms if i not in class_order]
 
         for i in idc_not_in_class_order:
             geom = geoms[i]
@@ -99,18 +97,15 @@ class VectorSource(ABC):
         self.profile.update(dtype="uint8")
 
         if exclude_nodata_bounds:
-            window = get_data_window(labels, nodata=0)
-            # make sure the window is at least of size min_size
-            window_height = max(window.height + 50, min_size)
-            window_width = max(window.width + 50, min_size)
-            col_off = max(0, window.col_off - 50)
-            row_off = max(0, window.row_off - 50)
-            window = Window(
-                col_off=col_off,
-                row_off=row_off,
-                height=window_height,
-                width=window_width,
-            )
+            # Crop to the labels with a margin on all sides, and to at least min_size
+            # pixels. Rows and columns past the end of the array are left out by numpy.
+            margin = 50
+            data = get_data_window(labels, nodata=0)
+            top = max(data.row_off - margin, 0)
+            left = max(data.col_off - margin, 0)
+            bottom = max(data.row_off + data.height + margin, top + min_size)
+            right = max(data.col_off + data.width + margin, left + min_size)
+            window = Window.from_slices((top, bottom), (left, right))
 
             labels = labels[utils.window_to_np_idc(window)]
             # Update the transform to reflect the new origin after cropping
@@ -137,7 +132,7 @@ class FileSource(VectorSource):
         img_path: Path | str | None = None,
         transform: Affine | None = None,
         shape: tuple[int, int] | None = None,
-        crs: rasterio.CRS | str | None = None,
+        crs: CRS | str | None = None,
     ):
         if img_path is not None and None in [transform, shape, crs]:
             transform, shape, crs = infer_meta(img_path)
@@ -149,7 +144,11 @@ class FileSource(VectorSource):
     def _get_geoms(self) -> list:
         features = []
         for c in self.classes:
-            features.append(read_vector(os.path.join(self.root_dir, f"{c}.shp")).to_crs(self.crs).geometry)
+            features.append(
+                read_vector(os.path.join(self.root_dir, f"{c}.shp"))
+                .to_crs(self.crs)
+                .geometry
+            )
         features = {i: f for i, f in enumerate(features, start=1)}
         return features
 
@@ -164,9 +163,9 @@ class DataframeSource(VectorSource):
         dataframe: gpd.GeoDataFrame,
         class_column: str,
         img_path: Path | str | None = None,
-        transform: rasterio.Affine | None = None,
+        transform: Affine | None = None,
         shape: tuple[int, int] | None = None,
-        crs: rasterio.CRS | str | None = None,
+        crs: CRS | str | None = None,
     ):
         if img_path is not None and None in [transform, shape, crs]:
             transform, shape, crs = infer_meta(img_path)
@@ -181,7 +180,7 @@ class DataframeSource(VectorSource):
         return features
 
 
-def infer_meta(img_path: Path | str) -> tuple[rasterio.Affine, tuple, rasterio.CRS]:
+def infer_meta(img_path: Path | str) -> tuple[Affine, tuple, CRS]:
     """
     Infer basic raster metadata information from a raster path.
 
@@ -190,7 +189,7 @@ def infer_meta(img_path: Path | str) -> tuple[rasterio.Affine, tuple, rasterio.C
             Raster image path.
 
     Returns:
-        tuple[rasterio.Affine, tuple, rasterio.CRS]:
+        tuple[Affine, tuple, CRS]:
             Tuple of raster transform, shape, and coordinate system.
     """
     img_path = Path(img_path)
@@ -215,7 +214,7 @@ def read_vector(path: str | Path) -> gpd.GeoDataFrame:
         GeoDataFrame with geometry and attributes from the input file.
     """
     path = Path(path)
-    if path.suffix == '.parquet':
+    if path.suffix == ".parquet":
         return gpd.read_parquet(path)
     else:
         return gpd.read_file(path)
