@@ -1,290 +1,355 @@
+from __future__ import annotations
+
 from pathlib import Path
-from typing import List
 
 import torch
 import torch.nn as nn
 
-from eotorch.models.layers import Conv2d, SeparableConv2d
+
+def conv1x1(in_channels: int, out_channels: int, stride: int = 1) -> nn.Conv2d:
+    """1x1 convolution with bias."""
+    return nn.Conv2d(
+        in_channels=in_channels, out_channels=out_channels, kernel_size=1, stride=stride, bias=True
+    )
 
 
-class PointwiseBlock(nn.Module):
+def _drop_unused_shortcut_keys(module, state_dict, prefix, *args) -> None:
+    """Load-state-dict pre-hook dropping shortcut weights of identity-shortcut blocks.
+
+    The reference implementation always creates ``conv_shortcut``/``bn_shortcut`` even when
+    the identity shortcut is used, so its checkpoints contain these (unused) weights.
+    """
+    for key in list(state_dict):
+        if key.startswith((f"{prefix}conv_shortcut.", f"{prefix}bn_shortcut.")):
+            del state_dict[key]
+
+
+class _ResidualBlock(nn.Module):
+    """Shortcut handling shared by the Xception blocks.
+
+    Unlike the reference, the projection shortcut is only created when it is used, so
+    there are no parameters without gradients (which would require
+    ``find_unused_parameters=True`` under DDP). Reference checkpoints still load.
+    """
+
+    def _make_shortcut(self, in_channels: int, out_channels: int, norm_layer) -> None:
+        self.identity_shortcut = in_channels == out_channels
+        if self.identity_shortcut:
+            self._register_load_state_dict_pre_hook(_drop_unused_shortcut_keys, with_module=True)
+        else:
+            self.conv_shortcut = conv1x1(in_channels, out_channels)
+            self.bn_shortcut = norm_layer(out_channels)
+
+    def _shortcut(self, x: torch.Tensor) -> torch.Tensor:
+        if self.identity_shortcut:
+            return x
+        return self.bn_shortcut(self.conv_shortcut(x))
+
+
+class SeparableConv2d(nn.Module):
+    """Depthwise separable convolution (depthwise followed by pointwise), without bias."""
+
     def __init__(
         self,
         in_channels: int,
-        num_filters: List[int],
+        out_channels: int,
+        kernel_size: int = 3,
+        stride: int = 1,
+        padding: int = 1,
+        dilation: int = 1,
     ):
-        assert len(num_filters) == 3, (
-            "num_filters requires a list of exactly three values."
-        )
         super().__init__()
+        self.depthwise = nn.Conv2d(
+            in_channels=in_channels,
+            out_channels=in_channels,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+            dilation=dilation,
+            groups=in_channels,
+            bias=False,
+        )
+        self.pointwise = nn.Conv2d(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=1,
+            stride=1,
+            padding=0,
+            dilation=1,
+            groups=1,
+            bias=False,
+        )
 
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.pointwise(self.depthwise(x))
+
+
+class PointwiseBlock(_ResidualBlock):
+    """Entry block: three 1x1 conv + BN layers with a residual connection.
+
+    Parameters
+    ----------
+    in_channels : int
+        Number of input channels.
+    filters : list of int
+        Output channels of the three 1x1 convolutions.
+    norm_layer : type of nn.Module, optional
+        Normalization layer. Defaults to ``nn.BatchNorm2d``.
+    """
+
+    def __init__(self, in_channels: int, filters: list[int], norm_layer=nn.BatchNorm2d):
+        super().__init__()
+        if len(filters) != 3:
+            raise ValueError("filters requires a list of exactly three values.")
         self.in_channels = in_channels
-        self.num_filters = num_filters
+        self.filters = filters
 
-        self.conv1 = Conv2d(in_channels, num_filters[0], kernel_size=(1, 1), relu=True)
-        self.conv2 = Conv2d(in_channels, num_filters[1], kernel_size=(1, 1), relu=True)
-        self.conv3 = Conv2d(in_channels, num_filters[2], kernel_size=(1, 1), relu=False)
-        self.conv_shortcut = Conv2d(
-            in_channels, num_filters[2], kernel_size=(1, 1), relu=False
-        )
+        self.conv1 = conv1x1(in_channels, filters[0])
+        self.bn1 = norm_layer(filters[0])
+        self.conv2 = conv1x1(filters[0], filters[1])
+        self.bn2 = norm_layer(filters[1])
+        self.conv3 = conv1x1(filters[1], filters[2])
+        self.bn3 = norm_layer(filters[2])
         self.relu = nn.ReLU(inplace=True)
+        self._make_shortcut(in_channels, filters[2], norm_layer)
 
-    def forward(self, inputs: torch.Tensor):
-        if self.in_channels == self.num_filters[-1]:
-            shortcut = inputs
-        else:
-            shortcut = self.conv_shortcut(inputs)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        shortcut = self._shortcut(x)
 
-        x = self.conv1(inputs)
-        x = self.conv2(x)
-        x = self.conv3(x)
-        x = x + shortcut
-        x = self.relu(x)
-        return x
+        out = self.relu(self.bn1(self.conv1(x)))
+        out = self.relu(self.bn2(self.conv2(out)))
+        out = self.bn3(self.conv3(out))
+
+        out = out + shortcut
+        return self.relu(out)
 
 
-class SepConvBlock(nn.Module):
-    def __init__(self, in_channels: int, num_filters: int):
+class SepConvBlock(_ResidualBlock):
+    """Residual block: (ReLU, SepConv 3x3, BN) x 2 plus shortcut.
+
+    Parameters
+    ----------
+    in_channels : int
+        Number of input channels.
+    filters : list of int
+        Output channels of the two separable convolutions.
+    norm_layer : type of nn.Module, optional
+        Normalization layer. Defaults to ``nn.BatchNorm2d``.
+    """
+
+    def __init__(self, in_channels: int, filters: list[int], norm_layer=nn.BatchNorm2d):
         super().__init__()
-
+        if len(filters) != 2:
+            raise ValueError("filters requires a list of exactly two values.")
         self.in_channels = in_channels
-        self.num_filters = num_filters
+        self.filters = filters
 
-        self.relu = nn.ReLU(inplace=True)
-        self.sepconv1 = SeparableConv2d(in_channels, num_filters)
-        self.sepconv2 = SeparableConv2d(num_filters, num_filters, relu=False)
-        self.conv_shortcut = Conv2d(
-            in_channels, num_filters, kernel_size=(1, 1), relu=False
-        )
+        self.sepconv1 = SeparableConv2d(in_channels, filters[0], kernel_size=3)
+        self.bn1 = norm_layer(filters[0])
+        self.sepconv2 = SeparableConv2d(filters[0], filters[1], kernel_size=3)
+        self.bn2 = norm_layer(filters[1])
+        # Not inplace: the block input is also used by the shortcut.
+        self.relu = nn.ReLU(inplace=False)
+        self._make_shortcut(in_channels, filters[1], norm_layer)
 
-    def forward(self, inputs: torch.Tensor):
-        if self.in_channels == self.num_filters[-1]:
-            # identity shortcut
-            shortcut = inputs
-        else:
-            shortcut = self.conv_shortcut(inputs)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        shortcut = self._shortcut(x)
 
-        x = self.relu(inputs)
-        x = self.sepconv1(x)
-        x = self.sepconv2(x)
-        x = x + shortcut
-        return x
+        out = self.bn1(self.sepconv1(self.relu(x)))
+        out = self.bn2(self.sepconv2(self.relu(out)))
+
+        return out + shortcut
 
 
-class AuxModel(nn.Module):
-    def __init__(
-        self,
-        in_channels: int,
-        num_filters: int,
-    ):
-        self.residual = Conv2d(
-            in_channels, num_filters, kernel_size=(1, 1), bn=False, bias=True
-        )
-        self.reslayer1 = ResLayer(num_filters, num_filters)
-        self.reslayer2 = ResLayer(num_filters, num_filters)
-        self.reslayer3 = ResLayer(num_filters, num_filters)
-        self.reslayer4 = ResLayer(num_filters, num_filters)
-        self.output = nn.Conv2d(num_filters, 1, kernel_size=(1, 1), padding="same")
-
-    def forward(self, inputs: torch.Tensor):
-        x = self.residual(inputs)
-        x = self.reslayer1(x)
-        x = self.reslayer2(x)
-        x = self.reslayer3(x)
-        x = self.reslayer4(x)
-        x = self.output(x)
-        return x
+def ELUplus1(x: torch.Tensor) -> torch.Tensor:
+    """ELU shifted by +1, a smooth positive activation for variances."""
+    return nn.functional.elu(x) + 1.0
 
 
-class ResLayer(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int):
-        super().__init__()
-        self.conv1 = Conv2d(
-            in_channels, out_channels, kernel_size=(1, 1), bn=False, bias=True
-        )
-        self.dropout = nn.Dropout(0.5)
-        self.conv2 = Conv2d(
-            out_channels, out_channels, kernel_size=(1, 1), bn=False, bias=True
-        )
-
-    def forward(self, inputs: torch.Tensor):
-        x = self.conv1(inputs)
-        x = self.dropout(x)
-        x = self.conv2(x)
-        x = x + inputs
-        return x
-
-
-def ELUplus1(x: torch.Tensor):
-    elu = nn.ELU(inplace=False)(x)
-    return torch.add(elu, 1.0)
-
-
-def clamp_exp(x: torch.Tensor, min_x: float = -100, max_x: float = 10):
-    x = torch.clamp(x, min=min_x, max=max_x)
-    return torch.exp(x)
+def clamp_exp(x: torch.Tensor, min_x: float = -100, max_x: float = 10) -> torch.Tensor:
+    """Exponential with clamped input, for log-variance outputs."""
+    return torch.exp(torch.clamp(x, min=min_x, max=max_x))
 
 
 class XceptionSDB(nn.Module):
     """
-    A custom fully convolutional neural network designed for pixel-wise analysis of Sentinel-2 satellite images.
+    A fully convolutional network for pixel-wise regression on Sentinel-2 images.
 
-    "XceptionSDB" builds on the separable convolution described by Chollet (2017) who proposed the Xception network.
-    Any kind of down sampling is avoided (no pooling, striding, etc.).
+    "XceptionS2" builds on the separable convolution described by Chollet (2017) who proposed the Xception
+    network. Any kind of down sampling is avoided (no pooling, striding, etc.), so every block runs at full
+    patch resolution with ``num_sepconv_filters`` channels; reduce ``num_sepconv_filters`` (the global canopy
+    height model uses 256), ``num_sepconv_blocks`` or the patch/batch size if memory is tight.
 
-    This architecture is adapted from:
+    Mirrors ``XceptionS2`` from https://github.com/langnico/global-canopy-height-model without the
+    geographic prior. Adapted from:
     Lang, N., Schindler, K., Wegner, J.D.: Country-wide high-resolution vegetation height mapping with Sentinel-2,
     Remote Sensing of Environment, vol. 233 (2019) <https://arxiv.org/abs/1904.13270>
-    Lang, N., Jetz, W., Schindler, K., & Wegner, J. D. (2022). A high-resolution canopy height model of the Earth.
-    arXiv preprint arXiv:2204.08322.
+    Lang, N., Jetz, W., Schindler, K., & Wegner, J. D. (2023). A high-resolution canopy height model of the Earth.
+    Nature Ecology & Evolution <https://arxiv.org/abs/2204.08322>
 
     Parameters:
         in_channels (int):
-            Number of input channels
-        num_filters (int, optional):
-            Number of filters. Defaults to 128.
-        n_sepconv_filters (int, optional):
-            Number of filters in the separable convolutional layers. Defaults to 728.
-        sepconv_blocks (int, optional):
+            Number of input channels.
+        out_channels (int, optional):
+            Number of output channels (set >1 for multi-task learning). Defaults to 1.
+        num_sepconv_blocks (int, optional):
             Number of separable convolution blocks. Defaults to 8.
-        aux_layers (int, optional):
-            Number of auxiliary layers from the input. Note that auxiliary layers are read as the last
-            `aux_layers` layers of the input. Defaults to 0.
-        aux_filters (int, optional):
-            Number of filters in the auxiliary model.
-        long_skip (bool, optional):
-            Add a long skip (residual) connection from the entry block to the last feature.
+        num_sepconv_filters (int, optional):
+            Number of filters in the separable convolution blocks. Defaults to 728.
         returns (str, optional):
-            The return type. Either 'targets' for mean predictions only or 'variances' for both means
-            and variances. Defaults to 'variances'.
-        detach_variance (bool, optional):
-            Detach the graph before computing the variance. Defaults to False.
-        min_variance (float, optional):
-            Shift the output variance by `min_var`. Defaults to 0..
-        trainable (bool, optional):
-            All parameters in the model can be trained. If False, only the parameters in the last output
-            layer(s) can be trained. Used for finetuning results. Defaults to True.
-        var_activation (str, optional):
-            Activation function applied to the variance. One of 'relu', 'elu', or 'exp'. Defaults to 'relu'.
-        model_weights_path (Path | str | None, optional):
-            Path to load pretrained model weights used to initialize.
+            What ``forward`` returns. Defaults to 'targets'.
 
+            - 'targets': the predictions (means) only.
+            - 'variances_exp': ``(predictions, variances)`` with the variance head predicting
+              log-variances, passed through a clamped exponential (used for the global
+              canopy height model).
+            - 'variances': ``(predictions, variances)`` with ``var_activation`` applied to the
+              variance head.
+            - 'var_from_second_moments': ``(predictions, variances, second_moments)`` with
+              variances derived as ``second_moments - predictions**2``.
+        var_activation (str, optional):
+            Activation applied to the variances for 'variances' and 'var_from_second_moments'.
+            One of 'relu', 'elu' (ELU + 1) or 'exp'. Defaults to 'relu'.
+        min_var (float, optional):
+            Shift the output variance by adding ``min_var`` (not applied for 'variances_exp').
+            Defaults to 0.
+        detach_var_input (bool, optional):
+            Detach the graph before computing the variance. Defaults to False.
+        long_skip (bool, optional):
+            Add a long skip (residual) connection from the entry block features to the last
+            features. Defaults to False.
+        manual_init (bool, optional):
+            Xavier-uniform init of convolutions and unit/zero init of batch norms. Defaults to False.
+        freeze_features (bool, optional):
+            Freeze the feature extractor; only the last linear layers (unless frozen below) are trained.
+            Defaults to False.
+        freeze_last_mean (bool, optional):
+            With ``freeze_features``, also freeze the prediction (mean) layer. Defaults to False.
+        freeze_last_var (bool, optional):
+            With ``freeze_features``, also freeze the variance layer. Defaults to False.
+        model_weights_path (Path | str | None, optional):
+            Path to pretrained weights used to initialize; a reference checkpoint with a
+            'model_state_dict' key or a plain state dict.
     """
+
+    RETURNS = ("targets", "variances_exp", "variances", "var_from_second_moments")
 
     def __init__(
         self,
         in_channels: int,
-        num_filters: int = 128,
-        n_sepconv_filters: int = 728,
-        sepconv_blocks: int = 8,
-        aux_layers: int = 0,
-        aux_filters: int = 128,
-        long_skip: bool = False,
-        returns: str = "variances",
-        detach_variance: bool = False,
-        min_variance: float = 0.0,
-        trainable: bool = True,
+        out_channels: int = 1,
+        num_sepconv_blocks: int = 8,
+        num_sepconv_filters: int = 728,
+        returns: str = "targets",
         var_activation: str = "relu",
+        min_var: float = 0.0,
+        detach_var_input: bool = False,
+        long_skip: bool = False,
+        manual_init: bool = False,
+        freeze_features: bool = False,
+        freeze_last_mean: bool = False,
+        freeze_last_var: bool = False,
         model_weights_path: Path | str | None = None,
     ):
         super().__init__()
 
-        assert n_sepconv_filters > filters * 2, (
-            "The separable convolution filter size in \
-            is smaller than the final filter size in the point-wise block."
-        )
-        filters = [num_filters, num_filters * 2, n_sepconv_filters]
-
-        activations = {
-            "relu": nn.ReLU(inplace=True),
+        var_activations = {
+            "relu": nn.functional.relu,
             "elu": ELUplus1,
             "exp": clamp_exp,
         }
+        if returns not in self.RETURNS:
+            raise ValueError(f"returns must be one of {self.RETURNS}, got {returns!r}.")
+        if var_activation not in var_activations:
+            raise ValueError(
+                f"var_activation must be one of {sorted(var_activations)}, got {var_activation!r}."
+            )
 
-        self.n_sepconv_filters = n_sepconv_filters
-        self.sepconv_blocks = sepconv_blocks
-        self.aux_layers = aux_layers
-
-        self.long_skip = long_skip
+        self.num_sepconv_blocks = num_sepconv_blocks
+        self.num_sepconv_filters = num_sepconv_filters
         self.returns = returns
-        self.detach_variance = detach_variance
-        self.min_variance = min_variance
-        self.var_activation = activations[var_activation]
+        self.min_var = min_var
+        self.detach_var_input = detach_var_input
+        self.long_skip = long_skip
+        self.freeze_features = freeze_features
+        self.freeze_last_mean = freeze_last_mean
+        self.freeze_last_var = freeze_last_var
+        self.var_activation = var_activations[var_activation]
 
-        if self.aux_layers > 0:
-            self.aux_model = AuxModel(aux_layers, aux_filters)
+        self.entry_block = PointwiseBlock(in_channels, filters=[128, 256, num_sepconv_filters])
+        self.sepconv_blocks = self._make_sepconv_blocks()
 
-        # Convolutional layers
-        self.entry_block = PointwiseBlock(
-            in_channels, filters=[num_filters, num_filters * 2, n_sepconv_filters]
-        )
-        self.sepconvblock = self._make_sepconv_blocks()
-        self.mean = Conv2d(
-            n_sepconv_filters, 1, kernel_size=(1, 1), relu=False, bn=False
-        )
-        self.variance = Conv2d(
-            n_sepconv_filters, 1, kernel_size=(1, 1), relu=False, bn=False
-        )
+        self.predictions = conv1x1(num_sepconv_filters, out_channels)
+        self.variances = conv1x1(num_sepconv_filters, out_channels)
+        self.second_moments = conv1x1(num_sepconv_filters, out_channels)
 
-        if not trainable:
+        if manual_init:
+            self._manual_init()
+
+        if freeze_features:
             for param in self.parameters():
                 param.requires_grad = False
-            for param in self.aux_model.parameters():
-                param.requires_grad = False
-
-            # unfreeze the last layer(s) of the regressor
-            for param_mean, param_var in zip(
-                self.mean.parameters(), self.variance.parameters()
-            ):
-                param_mean.requires_grad = True
-                param_var.requires_grad = True
+            if not freeze_last_mean:
+                for param in self.predictions.parameters():
+                    param.requires_grad = True
+            if not freeze_last_var:
+                for param in self.variances.parameters():
+                    param.requires_grad = True
 
         if model_weights_path is not None:
-            print("Loading pretrained model weights from:")
-            print(model_weights_path)
-            self._load_model_weights(Path(model_weights_path))
+            print(f"Loading pretrained model weights from: {model_weights_path}")
+            self._load_model_weights(model_weights_path)
 
-    def forward(self, inputs: torch.Tensor):
-        if self.aux_layers:
-            aux_inputs = inputs[:, -self.aux_layers :, ...]
-            aux_output = self.aux_model(aux_inputs)
-            x = inputs[:, : self.aux_layers, ...]
-        else:
-            x = inputs
-
+    def forward(self, x: torch.Tensor):
         x = self.entry_block(x)
         if self.long_skip:
             shortcut = x
-        x = self.sepconvblock(x)
+        x = self.sepconv_blocks(x)
         if self.long_skip:
             x = x + shortcut
-
-        mean = self.mean(x)
-        if self.aux_layers:
-            mean = mean + aux_output
+        predictions = self.predictions(x)
 
         if self.returns == "targets":
-            return mean
-        elif self.returns == "variances":
-            if self.detach_variance:
-                x = x.detach()
-            variance = self.variance(x)
-            variance = self._constrain_variance(variance)
-            return mean, variance
+            return predictions
 
-    def _constrain_variance(self, variance: torch.Tensor):
-        variance = self.var_activation(variance)
-        variance = variance + self.min_variance
-        return variance
+        if self.returns == "variances_exp":
+            return predictions, clamp_exp(self.variances(x))
 
-    def _make_sepconv_blocks(self):
-        blocks = []
-        for _ in range(self.sepconv_blocks):
-            blocks.append(SepConvBlock(self.n_sepconv_filters, self.n_sepconv_filters))
+        if self.detach_var_input:
+            x = x.detach()
 
-        return nn.Sequential(*blocks)
+        if self.returns == "variances":
+            return predictions, self._constrain_variances(self.variances(x))
 
-    def _load_model_weights(self, model_weights_path: Path):
-        checkpoint = torch.load(model_weights_path)
-        model_weights = checkpoint["model_state_dict"]
-        self.load_state_dict(model_weights)
+        # var_from_second_moments
+        second_moments = self.second_moments(x)
+        variances = self._constrain_variances(second_moments - predictions**2)
+        return predictions, variances, second_moments
+
+    def _make_sepconv_blocks(self) -> nn.Sequential:
+        return nn.Sequential(
+            *[
+                SepConvBlock(
+                    self.num_sepconv_filters,
+                    filters=[self.num_sepconv_filters, self.num_sepconv_filters],
+                )
+                for _ in range(self.num_sepconv_blocks)
+            ]
+        )
+
+    def _manual_init(self) -> None:
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.xavier_uniform_(m.weight, gain=1.0)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+
+    def _constrain_variances(self, variances: torch.Tensor) -> torch.Tensor:
+        return self.var_activation(variances) + self.min_var
+
+    def _load_model_weights(self, model_weights_path: Path | str) -> None:
+        checkpoint = torch.load(model_weights_path, map_location="cpu")
+        self.load_state_dict(checkpoint.get("model_state_dict", checkpoint))
