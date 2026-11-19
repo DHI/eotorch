@@ -21,6 +21,7 @@ from torchvision.models._api import WeightsEnum
 from eotorch.data.datamodules import normalize_image
 from eotorch.models import MODEL_MAPPING
 from eotorch.models.loss import segmentation_loss
+from eotorch.models.xception import XceptionSDB
 from eotorch.utils import get_init_args
 
 if TYPE_CHECKING:
@@ -111,7 +112,7 @@ class _TaskMixin:
             backbone=self.hparams["backbone"],
             weights=self.weights,
             num_filters=self.hparams["num_filters"],
-            model_kwargs=self.hparams["model_kwargs"],
+            model_kwargs=self._model_kwargs(),
         )
         for part in ("backbone", "decoder"):
             if not self.hparams[f"freeze_{part}"]:
@@ -125,6 +126,10 @@ class _TaskMixin:
                 )
             for param in module.parameters():
                 param.requires_grad = False
+
+    def _model_kwargs(self) -> dict[str, Any]:
+        """Keyword arguments for the model, passed on to create_model."""
+        return self.hparams["model_kwargs"] or {}
 
     def configure_optimizers(self) -> dict[str, Any]:
         optimizer = torch.optim.AdamW(
@@ -522,6 +527,13 @@ class RegressionTask(_TaskMixin, PixelwiseRegression):
         sparse labels. Regression datasets of eotorch read pixels without a target
         as NaN.
 
+        With ``loss="gaussian_nll"``, the model predicts a variance (uncertainty) per
+        pixel along with the mean, and is trained with the Gaussian negative log
+        likelihood (:class:`torch.nn.GaussianNLLLoss`). The model must then return a
+        ``(mean, variance, ...)`` tuple; "xception" is set to do so automatically
+        (``returns="variances_exp"``) unless ``returns`` is given in ``model_kwargs``.
+        The metrics are computed on the mean.
+
         Args:
             in_channels: Number of input channels.
             num_outputs: Number of values to predict per pixel.
@@ -529,7 +541,7 @@ class RegressionTask(_TaskMixin, PixelwiseRegression):
             backbone: Encoder of smp models.
             weights: Initial weights, see :func:`create_model`.
             num_filters: Number of filters for models with that parameter.
-            loss: One of "mse", "mae", "huber" or "smoothl1".
+            loss: One of "mse", "mae", "huber", "smoothl1" or "gaussian_nll".
             lr: Learning rate.
             freeze_backbone: Whether to freeze the encoder of the model.
             freeze_decoder: Whether to freeze the decoder of the model.
@@ -553,16 +565,49 @@ class RegressionTask(_TaskMixin, PixelwiseRegression):
             freeze_decoder=freeze_decoder,
         )
 
+    @property
+    def predicts_variance(self) -> bool:
+        """Whether the model predicts a variance along with the mean."""
+        return self.hparams["loss"] == "gaussian_nll"
+
+    def _model_kwargs(self) -> dict[str, Any]:
+        kwargs = super()._model_kwargs()
+        model_cls = MODEL_MAPPING.get(self.hparams["model"])
+        if (
+            self.predicts_variance
+            and model_cls is not None
+            and issubclass(model_cls, XceptionSDB)
+            and "returns" not in kwargs
+        ):
+            kwargs = {**kwargs, "returns": "variances_exp"}
+        return kwargs
+
     def configure_losses(self) -> None:
         losses = {
             "mse": nn.MSELoss,
             "mae": nn.L1Loss,
             "huber": nn.HuberLoss,
             "smoothl1": nn.SmoothL1Loss,
+            "gaussian_nll": nn.GaussianNLLLoss,
         }
         if self.hparams["loss"] not in losses:
             raise ValueError(f"Unknown loss: {self.hparams['loss']}")
         self.criterion = losses[self.hparams["loss"]]()
+
+    def _split_output(
+        self, output: Tensor | tuple[Tensor, ...]
+    ) -> tuple[Tensor, Tensor | None]:
+        """Mean and variance maps of a model output; the variance is None if not used."""
+        if not self.predicts_variance:
+            if isinstance(output, (tuple, list)):
+                output = output[0]
+            return output, None
+        if not isinstance(output, (tuple, list)) or len(output) < 2:
+            raise ValueError(
+                'loss="gaussian_nll" requires a model that returns (mean, variance), '
+                f"but {type(self.model).__name__} returned a single tensor."
+            )
+        return output[0], output[1]
 
     def _valid_pixels(self, y_hat: Tensor, y: Tensor) -> tuple[Tensor, Tensor]:
         """Pixels as rows of (N, num_outputs), without those where the target is NaN."""
@@ -577,12 +622,16 @@ class RegressionTask(_TaskMixin, PixelwiseRegression):
         x, y = batch["image"], batch["mask"]
         if y.ndim == 3:
             y = y.unsqueeze(1)
-        y_hat_map = self(x)
+        y_hat_map, variance_map = self._split_output(self(x))
         y_hat, y_valid = self._valid_pixels(y_hat_map, y)
         if not len(y_valid):
             return None, x, y, y_hat_map
 
-        loss = self.criterion(y_hat, y_valid.float())
+        if variance_map is None:
+            loss = self.criterion(y_hat, y_valid.float())
+        else:
+            variance, _ = self._valid_pixels(variance_map, y)
+            loss = self.criterion(y_hat, y_valid.float(), variance)
         self.log(
             f"{stage}_loss",
             loss,
@@ -611,13 +660,21 @@ class RegressionTask(_TaskMixin, PixelwiseRegression):
 
     @torch.inference_mode()
     def predict_value(self, batch: Tensor | np.ndarray) -> np.ndarray:
-        """Predicted values (B, num_outputs, H, W) for a batch of images."""
-        return self(self._prepare_input(batch)).float().cpu().numpy()
+        """Predicted values (B, num_outputs, H, W) for a batch of images.
+
+        With ``loss="gaussian_nll"``, the predicted variances follow the values:
+        (B, 2 * num_outputs, H, W).
+        """
+        mean, variance = self._split_output(self(self._prepare_input(batch)))
+        if variance is not None:
+            mean = torch.cat([mean, variance], dim=1)
+        return mean.float().cpu().numpy()
 
     def _inference_settings(self, dataset_args: dict[str, Any]) -> dict[str, Any]:
+        bands_per_output = 2 if self.predicts_variance else 1
         return {
             "prediction_func": self.predict_value,
             "dtype": "float32",
-            "count": self.num_outputs,
+            "count": bands_per_output * self.num_outputs,
             "nodata": np.nan,
         }

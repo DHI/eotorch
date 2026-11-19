@@ -329,7 +329,7 @@ task = SegmentationTask(
 Trainer(max_epochs=50).fit(task, datamodule=module)
 ```
 
-**Models**: `model` is one of the eotorch models (`"deepresunet"`, `"unet_lite"`, a small UNet whose size is set by `num_filters`, and `"dinov3_upernet"`), TorchGeo's `"fcn"`, or any architecture of [segmentation_models_pytorch](https://smp.readthedocs.io/en/latest/models.html) such as `"unet"`, `"unetplusplus"`, `"deeplabv3plus"`, `"upernet"`, `"segformer"` or `"dpt"`. Model-specific arguments go into `model_kwargs`, e.g. `model_kwargs={"decoder_channels": [128, 64, 32, 16, 8]}`. Pretrained encoders can be loaded with `weights` (`True` for ImageNet, or a TorchGeo weight enum), and frozen with `freeze_backbone=True`.
+**Models**: `model` is one of the eotorch models (`"deepresunet"`, `"unet_lite"`, a small UNet whose size is set by `num_filters`, `"dinov3_upernet"`, and `"xception"`, a full-resolution regression network after [Lang et al.](https://github.com/langnico/global-canopy-height-model)), TorchGeo's `"fcn"`, or any architecture of [segmentation_models_pytorch](https://smp.readthedocs.io/en/latest/models.html) such as `"unet"`, `"unetplusplus"`, `"deeplabv3plus"`, `"upernet"`, `"segformer"` or `"dpt"`. Model-specific arguments go into `model_kwargs`, e.g. `model_kwargs={"decoder_channels": [128, 64, 32, 16, 8]}`. Pretrained encoders can be loaded with `weights` (`True` for ImageNet, or a TorchGeo weight enum), and frozen with `freeze_backbone=True`.
 
 **Losses**: `"ce"`, `"bce"`, `"dice"`, `"focal"`, `"tversky"`, `"boundary"` and `"boundary_distance"` (Kervadec et al.), or a weighted combination of them as a dict. Extra arguments per loss go into `loss_kwargs`, e.g. `loss_kwargs={"focal": {"gamma": 2.0}}`. The `LossWeightScheduler` callback in `eotorch.models.callbacks` can ramp up the weight of one term, which is useful for the boundary losses.
 
@@ -342,6 +342,17 @@ from eotorch.data import RegressionTask, get_regression_dataset
 
 ds = get_regression_dataset(images_dir=..., labels_dir=..., nodata_value=-9999, ...)
 task = RegressionTask(in_channels=6, model="unet", loss="huber")
+```
+
+The regression losses are `"mse"`, `"mae"`, `"huber"`, `"smoothl1"` and `"gaussian_nll"`. With `"gaussian_nll"`, the model also predicts a variance per pixel, i.e. how uncertain each prediction is, and `predict_on_tif_file()` writes the variances as extra bands after the predicted values. The model then has to return a `(mean, variance)` tuple, which `"xception"` does automatically:
+
+```python
+task = RegressionTask(
+    in_channels=12,
+    model="xception",
+    loss="gaussian_nll",
+    model_kwargs={"num_sepconv_filters": 256, "long_skip": True},
+)
 ```
 
 ### 5. Inference with `predict_on_tif_file()`
