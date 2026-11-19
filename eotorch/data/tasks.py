@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -92,6 +93,17 @@ def create_model(
             state_dict = get_weight(weights).get_state_dict(progress=True)
         net.encoder.load_state_dict(state_dict)
     return net
+
+
+def _full_checkpoint_load_kwargs(task_cls: type) -> dict[str, Any]:
+    """Keyword arguments for ``load_from_checkpoint`` to unpickle a whole eotorch checkpoint.
+
+    Lightning >= 2.6 loads checkpoints with ``weights_only=True`` by default,
+    which would ignore parameters like CRS, so ``weights_only=False`` is passed where 
+    Lightning supports it.
+    """
+    parameters = inspect.signature(task_cls.load_from_checkpoint).parameters
+    return {"weights_only": False} if "weights_only" in parameters else {}
 
 
 class _TaskMixin:
@@ -248,7 +260,9 @@ class _TaskMixin:
         from eotorch.inference.inference import predict_on_tif_generic
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        module = cls.load_from_checkpoint(checkpoint_path, map_location=device).eval()
+        module = cls.load_from_checkpoint(
+            checkpoint_path, map_location=device, **_full_checkpoint_load_kwargs(cls)
+        ).eval()
         checkpoint = torch.load(checkpoint_path, weights_only=False, map_location="cpu")
         datamodule_params = checkpoint.get("datamodule_hyper_parameters") or {}
 
