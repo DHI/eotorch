@@ -191,6 +191,73 @@ def test_regression_loss_excludes_pixels_without_target():
     torch.testing.assert_close(loss, expected)
 
 
+SMALL_XCEPTION = {"num_sepconv_blocks": 1, "num_sepconv_filters": 16}
+
+
+def test_gaussian_nll_uses_predicted_variance_of_valid_pixels():
+    task = RegressionTask(
+        in_channels=3, model="xception", loss="gaussian_nll", model_kwargs=SMALL_XCEPTION
+    )
+    assert task.model.returns == "variances_exp"
+    x = torch.randn(2, 3, 16, 16)
+    y = torch.full((2, 1, 16, 16), torch.nan)
+    y[:, :, :8] = 1.0
+
+    loss = task.training_step({"image": x, "mask": y}, 0)
+
+    mean, variance = task(x)
+    expected = torch.nn.functional.gaussian_nll_loss(
+        mean[:, :, :8], y[:, :, :8], variance[:, :, :8]
+    )
+    torch.testing.assert_close(loss, expected)
+
+
+def test_gaussian_nll_respects_returns_in_model_kwargs():
+    task = RegressionTask(
+        in_channels=3,
+        model="xception",
+        loss="gaussian_nll",
+        model_kwargs={**SMALL_XCEPTION, "returns": "variances", "var_activation": "elu"},
+    )
+    assert task.model.returns == "variances"
+
+
+def test_gaussian_nll_requires_a_model_predicting_variance():
+    task = RegressionTask(
+        in_channels=3, model="unet_lite", num_filters=4, loss="gaussian_nll"
+    )
+    batch = {"image": torch.randn(2, 3, 16, 16), "mask": torch.ones(2, 1, 16, 16)}
+    with pytest.raises(ValueError, match="returns \\(mean, variance\\)"):
+        task.training_step(batch, 0)
+
+
+def test_gaussian_nll_fit_and_predict_writes_variances(tmp_path):
+    dataset = get_regression_dataset(
+        images_dir=TEST_DATA,
+        labels_dir=TEST_DATA,
+        image_glob="image_*.tif",
+        label_glob="target_*.tif",
+        all_image_bands=("red", "green", "blue"),
+        cache_size=0,
+    )
+    task = RegressionTask(
+        in_channels=3, model="xception", loss="gaussian_nll", model_kwargs=SMALL_XCEPTION
+    )
+    checkpoint = _fit(task, dataset, tmp_path)
+
+    out = RegressionTask.predict_on_tif_file(
+        TEST_DATA / "image_0.tif",
+        checkpoint,
+        out_file_path=tmp_path / "pred.tif",
+        progress_bar=False,
+    )
+    with rst.open(out) as src:
+        assert src.count == 2 and src.dtypes[0] == "float32"
+        values, variances = src.read()
+    assert np.isfinite(values).all()
+    assert np.isfinite(variances).all() and (variances > 0).all()
+
+
 def test_segmentation_skips_unlabelled_patches():
     task = SegmentationTask(
         num_classes=3, in_channels=3, model="unet_lite", num_filters=4, ignore_index=0
@@ -376,3 +443,20 @@ def test_regression_nodata_pixels_are_read_as_nan():
 
         np.testing.assert_array_equal(mask.isnan().numpy(), stored == NODATA)
         np.testing.assert_array_equal(label_ds.values_as_in_files(mask), stored)
+
+
+def test_checkpoints_load_fully_with_and_without_lightning_weights_only():
+    """Lightning >= 2.6 needs weights_only=False for the CRS in eotorch checkpoints;
+    older versions have no such argument and would take it as a hyperparameter."""
+    from eotorch.data.tasks import _full_checkpoint_load_kwargs
+
+    class NewLightning:
+        @classmethod
+        def load_from_checkpoint(cls, checkpoint_path, weights_only=None, **kwargs): ...
+
+    class OldLightning:
+        @classmethod
+        def load_from_checkpoint(cls, checkpoint_path, **kwargs): ...
+
+    assert _full_checkpoint_load_kwargs(NewLightning) == {"weights_only": False}
+    assert _full_checkpoint_load_kwargs(OldLightning) == {}
